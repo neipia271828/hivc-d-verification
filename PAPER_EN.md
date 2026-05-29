@@ -1,7 +1,7 @@
 # Does Disagreement in Judgment Criteria (V) Degrade Consensus Quality Under a Shared Goal?
 ## A Multi-Agent Simulation Test of the HIVC-D Framework
 
-**Author**: HIVC-D Verification Project
+**Author**: pai314
 **Date**: May 2026
 
 ---
