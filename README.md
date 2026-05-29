@@ -2,7 +2,8 @@
 
 対立解消フレームワーク **HIVC-D** の中核仮説——「共通目標の下でも判断基準 V の不一致が合意品質を低下させる」「HIVC-D 介入フローは単純交渉より優れる」——を、マルチエージェント・シミュレーションで定量検証するためのコードと結果一式。
 
-研究の背景・設計・結果の詳細は **[PAPER.md](PAPER.md)** を参照。
+研究の背景・設計・結果の詳細は **[PAPER.md](PAPER.md)**（日本語 / LaTeX版 [PAPER.tex](PAPER.tex)）を参照。
+English version: **[PAPER_EN.md](PAPER_EN.md)** (LaTeX: [PAPER_EN.tex](PAPER_EN.tex)).
 
 ## 主要な知見（要約）
 

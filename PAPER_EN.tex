@@ -1,0 +1,441 @@
+% Compile with pdfLaTeX (or lualatex):
+%   pdflatex PAPER_EN.tex
+\documentclass[11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{graphicx}
+\usepackage[margin=25mm]{geometry}
+\usepackage{fancyvrb}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+
+\newcommand{\Ct}{\ensuremath{C_t}}
+\newcommand{\norm}[1]{\ensuremath{\lVert #1 \rVert}}
+
+\title{Does Disagreement in Judgment Criteria (V) Degrade Consensus Quality Under a Shared Goal?\\[2pt]
+\large A Multi-Agent Simulation Test of the HIVC-D Framework}
+\author{HIVC-D Verification Project}
+\date{May 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+The conflict-resolution framework ``HIVC-D'' claims that even when multiple decision-makers share a common goal, a mismatch in their judgment-criteria vectors \textbf{V} (value weightings) drives the consensus away from the true optimal choice \Ct{}, thereby degrading outcomes. This study quantitatively tests that core hypothesis using a multi-agent simulation in which two foragers jointly explore a field of rewards (food). We manipulated the degree of V-disagreement at three levels (low, mid, high) and the agreement mechanism at two levels (simple averaging = baseline / the HIVC-D intervention flow = information sharing $\to$ V-alignment check $\to$ V-negotiation when needed), running 100 trials per cell for 600 trials total.
+
+In the initial implementation, hypotheses H1--H3 were all non-significant, but we discovered several confounds in internal validity (both agents moving along identical trajectories, an information-quantity asymmetry between baseline and HIVC-D, and an inconsistent definition of \Ct{}). After a redesign that removed these confounds (a single-team-position model, symmetrization of information quantity via observation averaging, and a choice-set-relative definition of \Ct{}), \textbf{measurement reliability improved but hypotheses H1--H3 remained non-significant}. Decomposing the causal chain revealed that the theory's first link, ``V-disagreement $\to$ \Ct{} deviation,'' structurally does not hold (linear regression slope $=-0.033$, $p=0.49$, $r^2=0.0016$). Meanwhile, hypothesis H4 (``after information sharing, the rank correlation $\rho$ is inversely proportional to V-disagreement'') held strongly and consistently ($r^2=0.733$, $p<0.001$), but this is a quasi-tautological relationship that closes within the score computation alone.
+
+In conclusion, \textbf{in a regime where all options are aligned with the shared goal, agreement is a symmetric average, and the goal is shared, V-disagreement is self-canceled by the averaging operation and does not degrade consensus quality}. For the HIVC-D intervention to demonstrate superiority, a structure in which V systematically biases toward inferior choices (misleading information, asymmetric agreement, or V components orthogonal to the goal) appears to be required.
+\end{abstract}
+
+\noindent\textbf{Keywords}: consensus formation, value disagreement, multi-agent simulation, collective decision-making, null result
+
+\section{Introduction}
+
+\subsection{Background and the Originating Idea}
+
+In organizational and team decision-making, the question often arises: ``Everyone is aiming at the same goal, so why does reaching agreement fail?'' The HIVC-D framework explains this phenomenon by decomposing it into the following elements.
+
+\begin{itemize}[nosep]
+  \item \textbf{Holding a common goal G} is not a sufficient condition for agreement.
+  \item If the \textbf{judgment criteria V (what to value and by how much)} used by each decision-maker differ, the same information and the same goal can still lead to different conclusions.
+  \item Furthermore, the \textbf{environmental information I} each decision-maker references may also differ.
+\end{itemize}
+
+The starting idea of this study can be distilled to a single point:
+
+\begin{quote}
+\textbf{Despite the existence of a common goal G, could disagreement in judgment criteria V itself be an independent factor that drives a group's consensus away from the true optimal choice and harms outcomes?}
+\end{quote}
+
+If this is correct, it implies the practical lesson that conflict-resolution intervention should prioritize ``\textbf{diagnosing and aligning judgment criteria (V-alignment)}'' over ``reconciling goals.'' HIVC-D codifies this intervention order as a diagnostic flow: ``share I (information) $\to$ align V (criteria) $\to$ confirm A (ability).''
+
+\subsection{Objectives}
+
+This study aims to operationalize the abstract theoretical claims into a falsifiable form and to test the following four hypotheses via simulation.
+
+\begin{longtable}{@{}l p{0.78\linewidth}@{}}
+\toprule
+Hypothesis & Statement \\
+\midrule
+\textbf{H1} & The higher the V-disagreement, the lower the consensus outcome (cumulative reward). \\
+\textbf{H2} & The HIVC-D intervention flow (Condition B) yields higher outcomes than simple-average agreement (Condition A). \\
+\textbf{H3} & The greater the V-disagreement, the larger the room for improvement from intervention (the A--B gap). \\
+\textbf{H4} & Sharing common information I promotes convergence of the rank correlation $\rho$ independent of V. \\
+\bottomrule
+\end{longtable}
+
+\section{The HIVC-D Framework}
+
+This section provides a self-contained explanation of the framework's purpose, components, and claims for researchers encountering HIVC-D for the first time. Readers already familiar may skip to the verification scope in 2.7.
+
+\subsection{The Problem the Framework Addresses}
+
+HIVC-D is \textbf{a descriptive framework for decomposing and diagnosing the process by which multiple decision-makers reach ``agreement.''} Its motivating empirical observation distills to a single point.
+
+\begin{quote}
+Even though all team members hold the same goal, agreement often fails to form, and when it does form, it can reach an erroneous conclusion.
+\end{quote}
+
+In everyday terms, this failure tends to be lumped together as ``interpersonal problems'' or ``lack of communication.'' HIVC-D's claim is that such agreement failures can in fact be reduced to \textbf{a mismatch in one of a small number of identifiable factors (information, judgment criteria, ability)}, and that identifying the factor lets one select the corresponding intervention. In other words, the framework's goal is to treat conflict not as a matter of mindset but as \textbf{a diagnosable structure}.
+
+\subsection{Name and Basic Elements}
+
+The framework name \textbf{HIVC-D} combines the initials of its core components (judge \textbf{H}, information \textbf{I}, judgment criterion \textbf{V}, choice \textbf{C}) with the extension \textbf{D (Dynamic)} denoting iterativeness. A decision situation is described by the following elements.
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+E   : Environment (external constraints and resource limits)
+H   : Set of judges (Human) {h1, h2, ...}
+G   : Common goal (assumed already agreed upon)
+P   : Proposition to be solved (what to decide)
+C   : Set of choices (available moves)
+C_t : True optimal choice w.r.t. G (Choice True; exists but not necessarily unique)
+I   : Environmental information (data/facts each judge references)
+V   : Judgment criterion (Value; the value weighting used to evaluate choices)
+A   : Each h's estimation ability (precision ceiling of judgment)
+\end{Verbatim}
+
+Intuitively, each judge h evaluates choices \textbf{C} by weighting their own information \textbf{I} with their own values \textbf{V}, and selects the move deemed best. If everyone selects the true optimum \Ct{}, agreement is trivial; but in reality, because one of I, V, or A differs across people, evaluations diverge and conflict arises.
+
+\textbf{Key premise}: HIVC-D addresses situations where the common goal G is \textit{already agreed upon}. That is, the trivial case of ``fighting because goals differ'' is out of scope; the focus is sharpened on \textbf{``why we clash even with the same goal.''} This is what makes the framework's problem setting incisive.
+
+\subsection{Structure and Weaknesses of the Original Version}
+
+The early HIVC-D was a static model asserting that ``if all judges reason ideally, they necessarily converge to \Ct{} and agree.'' This formulation, however, has the following theoretical weaknesses. This study takes as its object the revised version (Dynamic) that corrects them.
+
+\begin{longtable}{@{}p{0.32\linewidth} p{0.60\linewidth}@{}}
+\toprule
+Problem & Concrete defect \\
+\midrule
+Independence assumption of V and I & Ignores the interdependence whereby information changes V and V changes the direction of I collection \\
+Tautology assumption & ``If everyone is ideal, they agree'' is a definition with no predictive power \\
+Static model & Treats decisions as one-shot, ignoring the iterativeness (feedback) of practice \\
+Coarse ability term & Discards ``lack of ability'' as untreatable \\
+Agreement $\neq$ execution & Post-agreement commitment/execution is undefined \\
+\bottomrule
+\end{longtable}
+
+\subsection{Revised Assumptions of HIVC-D (Dynamic)}
+
+\begin{longtable}{@{}p{0.34\linewidth} p{0.58\linewidth}@{}}
+\toprule
+Old assumption & Revision \\
+\midrule
+\Ct{} exists uniquely & \Ct{} exists as a \textbf{Pareto-optimal set}; uniqueness is not guaranteed \\
+I and V are independent & $I(t)$ and $V(t)$ are \textbf{interdependent}: I updates V, and V determines the direction of I collection \\
+All ideal $\to$ agreement (tautology) & \textbf{Removed}, replaced by an explicit definition of agreement conditions (2.5) \\
+Ability is fixed & A is a \textbf{manipulable parameter} via training, delegation, and division of labor \\
+\bottomrule
+\end{longtable}
+
+\subsection{Explicit Definition of Agreement Conditions (Replacing the Tautology)}
+
+The revised version discards ``ideal implies agreement'' and defines agreement by three verifiable conditions.
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+For any pair of judges hi, hj in H, agreement is reached when all hold:
+
+  1. I-match condition  : the difference between the I that hi and hj
+                          reference is within tolerance epsilon
+  2. V-alignment cond.  : the priority orders of Vi and Vj match, or both
+                          converge to a mutually acceptable V*
+  3. Ability condition  : each h's ability A is sufficient to evaluate C_t
+\end{Verbatim}
+
+These three conditions are also the starting point of the diagnosis described later (2.6). When agreement fails, asking which of the three conditions is broken isolates the cause.
+
+\subsection{The Dynamic Model and Diagnosis/Intervention}
+
+The essence of the revised version is to treat decisions \textbf{not as one-shot but as an iterative process with environmental feedback}.
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+t=0: Agree on the common goal G
+      |
+Step 1: Collect I(t)     -- V governs the direction of I collection
+      |
+Step 2: Update V(t)      -- the collected I may revise V
+      |
+Step 3: Evaluate C(t)    -- estimate C_t with current I(t), V(t), A(t)
+      |
+Step 4: Agreement check  -- are the 3 conditions met?
+      |- YES -> execute/commit -> feedback E(t+1), I(t+1) -> next cycle
+      `- NO  -> diagnose -> intervene (table below)
+\end{Verbatim}
+
+When agreement fails, one first diagnoses the cause by asking \textbf{``would they agree if given the same $I(t)$?''}
+
+\begin{itemize}[nosep]
+  \item \textbf{YES (they agree given the same information)} $\to$ the cause is \textbf{V-disagreement}.
+  \item \textbf{NO (they disagree even with the same information)} $\to$ the cause is \textbf{I-disagreement} or \textbf{lack of ability}.
+\end{itemize}
+
+Depending on the diagnosis, interventions are applied in order of lowest cost.
+
+\begin{longtable}{@{}l l l p{0.42\linewidth}@{}}
+\toprule
+Intervention & Target cause & Cost & Notes \\
+\midrule
+Share I & I-disagreement & Low & Try first \\
+Negotiate V & V-disagreement & Mid & Seek a common $V^*$ anchored to consistency with G \\
+Enumerate C & I$\cdot$V compound & Mid & Search for new choices that partially satisfy both sides' V \\
+Strengthen A & Lack of ability & High & Training, delegation, bringing in outside experts \\
+Random C & Time-out & --- & The decision to \textbf{explicitly give up} converging to \Ct{} \\
+\bottomrule
+\end{longtable}
+
+This ``\textbf{diagnostic order I $\to$ V $\to$ A}'' is the practical core of HIVC-D. Information mismatches (I) can be resolved cheaply, so they are eliminated first; if agreement still fails, value mismatches (V) are negotiated; and finally, ability (A) issues are addressed.
+
+\subsection{The Claims This Study Tests and Their Scope}
+
+Of the entire framework above, this study quantitatively tests only the following two points.
+
+\begin{enumerate}[nosep]
+  \item \textbf{Core hypothesis (the harm of V-disagreement)}: Even under a common goal G, V-disagreement drives consensus away from the true optimum \Ct{} and lowers outcomes.
+  \item \textbf{Superiority of the diagnostic order (HIVC-D intervention)}: The intervention flow ``share I $\to$ check V-alignment $\to$ negotiate V when needed'' yields better outcomes than a simple compromise (averaging).
+\end{enumerate}
+
+Ability A heterogeneity, scaling to many participants, interventions such as C-enumeration and A-strengthening, and post-agreement execution/feedback are out of scope; A is held uniform.
+
+The theory predicts the core hypothesis as the following \textbf{two-stage causal chain}. The methodological contribution of this study is to decompose this chain and measure each link individually.
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+V-disagreement --(Link 1)--> C_t deviation --(Link 2)--> drop in cumulative reward
+\end{Verbatim}
+
+If Link 1 does not hold, then even if Link 2 (deviation lowers outcomes) is true, V does not affect outcomes. As shown in Section 4, the main finding of this study is precisely the failure of Link 1.
+
+\subsection{Correspondence of Framework Elements to the Simulation}
+
+The abstract elements were operationalized into a foraging simulation as follows (details in Section 3).
+
+\begin{longtable}{@{}l l p{0.52\linewidth}@{}}
+\toprule
+Symbol & Name & Correspondence in the simulation \\
+\midrule
+E    & Environment & The field (placement of food and signs) \\
+H    & Set of judges & Two foragers \\
+G    & Common goal & Maximizing cumulative reward \\
+C    & Set of choices & Direction of travel (a vector in continuous space) \\
+\Ct{} & True optimal choice & Direction of maximal reward efficiency (noise-free ideal) \\
+I    & Environmental information & The set of signs each forager observes \\
+V    & Judgment criterion & A weight vector $(w_c, w_d, w_p)$ \\
+A    & Estimation ability & Held uniform in this experiment (control variable) \\
+\bottomrule
+\end{longtable}
+
+The judgment criterion $V = (w_c, w_d, w_p)$ is the weight each forager uses to evaluate a sign, expressing preferences for ``consistency with the direction of travel ($c$),'' ``distance efficiency ($d$),'' and ``reward magnitude ($p$),'' respectively (normalized to sum to 1). The three agreement conditions are operationalized in this simulation as follows.
+
+\begin{itemize}[nosep]
+  \item \textbf{I-match condition}: In the HIVC-D condition, the two foragers' observations are shared (\texttt{shared\_obs}), forcibly satisfying it.
+  \item \textbf{V-alignment condition}: The Spearman rank correlation $\rho$ of the score rankings over the common information is at or above a threshold (\texttt{RHO\_AGREE\_THRESHOLD} $= 0.6$). When $\rho < 0.6$, ``V-misalignment'' is declared and V-negotiation ($v^* = (v_1 + v_2)/2$, both sides conceding equally) is triggered.
+  \item \textbf{Ability condition}: Held uniform in this experiment and kept out of scope.
+\end{itemize}
+
+\section{Methods}
+
+\subsection{Environment}
+
+In a $100\times100$ continuous 2D field, 20 food items with reward magnitude in $[1.0, 10.0]$ and 50 signs are randomly placed. Each sign points to the nearest food, and on observation independently adds direction noise ($\sigma_\theta=0.3$ rad), distance noise ($\sigma_d=0.2$, multiplicative), and reward noise ($\sigma_p=1.0$, additive). Each turn, a forager observes the $K=5$ nearest signs and moves \texttt{MOVE\_STEP}$=2.0$ in the agreed direction. The food-acquisition radius is 2.0. One trial is \texttt{T\_MAX}$=200$ turns.
+
+\subsection{Independent Variables}
+
+\textbf{(a) Degree of V-disagreement (3 levels)}
+
+\begin{longtable}{@{}l c c c@{}}
+\toprule
+Condition & $V_1$ & $V_2$ & $\norm{V_1-V_2}_2$ \\
+\midrule
+V-Low  & $(0.33, 0.33, 0.33)$ & $(0.40, 0.30, 0.30)$ & 0.082 \\
+V-Mid  & $(0.60, 0.20, 0.20)$ & $(0.20, 0.20, 0.60)$ & 0.566 \\
+V-High & $(0.80, 0.10, 0.10)$ & $(0.10, 0.10, 0.80)$ & 0.990 \\
+\bottomrule
+\end{longtable}
+
+In V-Mid and V-High, $w_d$ (the distance weight) is identical for both foragers, so the disagreement appears mainly as a conflict between ``emphasis on directional consistency ($w_c$)'' and ``emphasis on reward magnitude ($w_p$).''
+
+\textbf{(b) Agreement mechanism (2 levels)}
+
+\begin{itemize}[nosep]
+  \item \textbf{Condition A (baseline)}: Each forager independently computes a desired vector, and their simple average is the direction of travel. Neither I-sharing nor V-negotiation is performed.
+  \item \textbf{Condition B (HIVC-D)}: (1) Share I (integrate both foragers' observations) $\to$ (2) V-alignment check (compute $\rho$) $\to$ (3) if $\rho\ge0.6$, average desired vectors over the integrated information; if $\rho<0.6$, V-negotiation (recompute desired vectors with $v^*$).
+\end{itemize}
+
+$3\times2=6$ cells, 100 trials each, 600 trials total. Randomness was controlled with \texttt{seed = 42 + trial\_id} for reproducibility.
+
+\subsection{Dependent Variables}
+
+\begin{itemize}[nosep]
+  \item \textbf{Cumulative reward} (primary outcome measure)
+  \item \textbf{\Ct{} approximation rate} (inner product of the agreed vector and \Ct{}; a direct measure of Link 1)
+  \item \textbf{Rank correlation $\rho$} (V-alignment; Condition B only)
+  \item \textbf{Mean agreement cost} (V-negotiation occurrence rate)
+\end{itemize}
+
+\subsection{Statistical Methods}
+
+\begin{itemize}[nosep]
+  \item H1: One-way ANOVA over V-Low/Mid/High on baseline only, plus a linear trend regression treating V-distance as a continuous variable.
+  \item H2: Welch's t-test (baseline vs hivc) per V condition, with Bonferroni correction for the three multiple comparisons ($\alpha=0.0167$).
+  \item H3: The interaction term of a two-way ANOVA (V condition $\times$ mechanism).
+  \item H4: Linear regression of $\rho_{\text{before}}$ (pre-negotiation) on V-disagreement.
+\end{itemize}
+
+\subsection{Iterative Refinement and Securing Internal Validity}
+
+Because all hypotheses were non-significant in the initial implementation, we conducted a systematic review of internal validity and identified and removed the following confounds. This process itself is a methodological contribution of the study.
+
+\begin{longtable}{@{}p{0.22\linewidth} p{0.38\linewidth} p{0.32\linewidth}@{}}
+\toprule
+Confound found & Problem & Fix \\
+\midrule
+\textbf{Identical-trajectory movement} & Both agents move by the same vector every turn, so the initial coordinate gap is conserved as a constant---effectively a pseudo two-body problem & Move to a single-team-position model; purify I-disagreement as observation noise \\
+\textbf{Information-quantity asymmetry} & Baseline uses K signs while HIVC-D uses up to 2K, so the comparison measures a ``difference in information'' rather than a ``difference in mechanism'' & Average observations of the same signs index-wise, symmetrizing both to K \\
+\textbf{Inconsistent \Ct{} definition} & \Ct{} was the best food over the whole field (including distant ones), diverging from visible choices; the \Ct{} approximation rate was systematically negative ($-0.27$) & Redefine \Ct{} as the noise-free best direction within the visible sign set C \\
+\textbf{Scale of the score's distance term} & Normalization by an arbitrary constant & Physically meaningful normalization with \texttt{FOOD\_RADIUS} as the unit \\
+\textbf{Field reset} & \texttt{seed+t} made it depend on the reset timing & Made deterministic with \texttt{seed + reset\_count $\times$ 100003} \\
+\textbf{Direction duplicate detection} & The 0.1-rad threshold was arbitrary and did not handle $\pm\pi$ wraparound & Replaced with a circular mean \\
+\bottomrule
+\end{longtable}
+
+After these fixes, the sign of the \Ct{} approximation rate normalized from \textbf{$-0.27 \to +0.53$}, enabling a reliable decomposed measurement of the causal chain.
+
+\section{Results}
+
+\subsection{Tests of the Main Hypotheses (final model, $n=100$/cell)}
+
+\begin{longtable}{@{}l l l l@{}}
+\toprule
+Hypothesis & Statistic & $p$-value & Verdict \\
+\midrule
+H1 (ANOVA) & $F=0.196$, $\eta^2=0.001$ & 0.822 & n.s. \\
+H1 (linear regression) & slope $=0.350$, $r^2=0.000$ & 0.736 & n.s. \\
+H2 V-Low & $t=-0.923$ & 0.357 & n.s. \\
+H2 V-Mid & $t=-0.987$ & 0.325 & n.s. \\
+H2 V-High & $t=-0.383$ & 0.702 & n.s. \\
+H3 (interaction) & $F=0.091$ & 0.914 & n.s. \\
+H4 ($\rho$ vs V-distance) & slope $=-0.661$, $r^2=0.733$ & $<0.001$ & \textbf{significant} \\
+\bottomrule
+\end{longtable}
+
+\subsection{Cumulative Reward by Condition}
+
+\begin{longtable}{@{}l l c c@{}}
+\toprule
+V condition & Mechanism & Mean & Std.\ dev. \\
+\midrule
+V-Low  & baseline & 7.06 & 6.70 \\
+V-Low  & hivc     & 6.21 & 6.30 \\
+V-Mid  & baseline & 6.80 & 6.20 \\
+V-Mid  & hivc     & 5.98 & 5.65 \\
+V-High & baseline & 7.39 & 7.08 \\
+V-High & hivc     & 7.03 & 6.44 \\
+\bottomrule
+\end{longtable}
+
+Neither a systematic decline in reward with increasing V-disagreement (H1) nor a superiority of HIVC-D (H2) was observed. If anything, HIVC-D showed slightly lower means across all conditions.
+
+\subsection{Decomposition of the Causal Chain}
+
+Measuring each stage of the theory's two-stage chain individually (baseline condition):
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+Link 1: V-disagreement -> C_t deviation    slope=-0.033, p=0.49, r^2=0.0016  -- fails
+Link 2: C_t deviation  -> cumulative reward slope=-1.58,  p=0.21              -- weak
+\end{Verbatim}
+
+The \Ct{} approximation rate was nearly constant across all V conditions (V-Low: 0.558, V-Mid: 0.530, V-High: 0.528). That is, \textbf{increasing V-disagreement roughly 12-fold ($0.082\to0.990$) did not change the deviation of the agreed vector from \Ct{}}.
+
+\subsection{Direct Measurement of the Intervention Effect}
+
+Directly testing whether HIVC-D improves the \Ct{} approximation rate revealed no significant improvement in any V condition (V-Low: $\Delta=-0.001$, $p=0.98$; V-Mid: $\Delta=+0.022$, $p=0.62$; V-High: $\Delta=-0.012$, $p=0.78$).
+
+\subsection{Hyperparameter Grid Search}
+
+Searching 36 settings of \texttt{RHO\_AGREE\_THRESHOLD} (4 levels) $\times$ \texttt{SIGMA\_THETA} (3 levels) $\times$ \texttt{K\_SIGNS} (3 levels) $\times$ 30 trials each, H1 was significant in 0/36 and H2 in at least one condition in only 1/36. There was a tendency for HIVC-D's superiority to be maximized when the observation noise $\sigma_\theta$ was smallest (0.1) and the number of signs \texttt{K\_SIGNS} was largest (10), but none reached a statistically significant level.
+
+\section{Discussion}
+
+\subsection{Why Was V-Disagreement Harmless?}
+
+The most important finding is that the theory's first link, ``V-disagreement $\to$ \Ct{} deviation,'' structurally does not hold in this experimental regime. Its mechanism reduces to the combination of the following three conditions.
+
+\begin{enumerate}[nosep]
+  \item \textbf{All options align with the common goal}: Every sign points (with noise) to a real food item; there are no misleading choices.
+  \item \textbf{Symmetric average agreement}: Agreement is the simple average of the two desired vectors.
+  \item \textbf{Shared goal}: Both foragers pursue the same maximization of cumulative reward.
+\end{enumerate}
+
+Under these conditions, the two desired vectors weighted by different V values each bias in different directions, but \textbf{the averaging operation cancels the biases}, and the result converges to an unbiased average. For example, in the V-High condition one side emphasizes ``directional consistency'' and the other ``reward magnitude,'' but averaging the two yields a moderate direction that reasonably satisfies both preferences, and the closeness to \Ct{} is no different from the single-criterion case. In other words, because \textbf{there is no conflict to solve}, the HIVC-D intervention has no effect to exert.
+
+\subsection{Interpretation of H4's Significance}
+
+Only H4 ($\rho$ vs V-distance) held strongly and consistently, but this is a \textbf{quasi-tautological relationship} rather than a test of the theory. $\rho$ is the degree of agreement of score rankings over the common information, determined by score computation alone without passing through any agent movement or reward. That rankings change when V differs is nearly inevitable by definition, and the holding of this relationship does not support the claim that ``V affects \Ct{} deviation or outcomes.'' Treating H4 as core evidence requires caution.
+
+\subsection{The Value of a Null Result and Its Methodological Implications}
+
+This study ended in a result that does not support the hypotheses, but this is a \textbf{reliable null result}. It is a conclusion reached after removing confounds through iterative internal-validity review, and we did not engage in ``arbitrary parameter tuning to make the hypotheses significant (p-hacking).'' Rather, in the process of removing confounds, we revealed that the apparent behavior of the initial implementation stemmed from several artifacts---this is where the methodological value lies.
+
+\subsection{Regimes Where the Hypotheses Could Hold}
+
+The conditions that could rescue the theory amount to breaking one of the premises listed in 5.1.
+
+\begin{enumerate}[nosep]
+  \item \textbf{Introducing misleading/adversarial information}: An environment where some signs present false food information. A forager strongly biased toward ``reward magnitude'' in V would be lured to false high-reward signs, and the bias could persist even under average agreement.
+  \item \textbf{Asymmetric agreement}: Agreement where one forager carries a dominant weight. Cancellation does not occur, and the dominant side's V bias is reflected directly in the outcome.
+  \item \textbf{A V component orthogonal to the goal}: A forager with a value unrelated to reward maximization (e.g., fixation on a particular direction). This component is not canceled by averaging and produces systematic \Ct{} deviation.
+\end{enumerate}
+
+In these settings, room theoretically arises for HIVC-D's ``I $\to$ V diagnostic order'' to outperform simple averaging.
+
+\section{Limitations and Future Work}
+
+\begin{itemize}[nosep]
+  \item \textbf{Single-regime test}: This experiment treated only one specific regime---``cooperative, aligned, symmetric.'' Testing the alternative regimes in 5.4 is the next task.
+  \item \textbf{Simplicity of the V-negotiation model}: Only equal-concession $v^*=(v_1+v_2)/2$ was implemented. The effects of other negotiation algorithms, such as the Nash bargaining solution, are untested.
+  \item \textbf{Two parties, fixed ability}: There are two judges and estimation ability A is held uniform. The effects of scaling to many participants or of A heterogeneity are out of scope.
+  \item \textbf{Noise in the outcome measure}: Cumulative reward is highly path-dependent and high-variance. From a statistical-power standpoint, a design using a more direct measure such as the \Ct{} approximation rate as the primary dependent variable is preferable.
+\end{itemize}
+
+\section{Conclusion}
+
+We tested HIVC-D's core hypothesis---that under a shared goal, disagreement in judgment criteria V degrades consensus quality---via a multi-agent simulation. In a final model that secured internal validity, \textbf{V-disagreement did not cause \Ct{} deviation of the agreed vector (the theory's first link does not hold) and did not affect cumulative reward}. This null result stems from the fact that, in a regime where all options align with the goal and agreement is a symmetric average, V-disagreement is self-canceled by the averaging operation. For the HIVC-D intervention to exhibit superiority, an environmental structure in which V systematically biases toward inferior choices (misleading information, asymmetric agreement, or V orthogonal to the goal) is required. The contribution of this study lies in delimiting the theory's scope of application and making its boundary conditions explicit.
+
+\section*{Code and Data Availability}
+
+All simulation code, statistical tests, the grid search, and the generated results (figures and summary statistics) used in this study are publicly available under the MIT License at the following repository.
+
+\begin{quote}
+\textbf{GitHub}: \url{https://github.com/neipia271828/hivc-d-verification}
+\end{quote}
+
+The repository includes this paper (\texttt{PAPER.md} / \texttt{PAPER.tex}, with English versions \texttt{PAPER\_EN.md} / \texttt{PAPER\_EN.tex}), reproduction instructions (\texttt{README.md}), dependencies (\texttt{requirements.txt}), and the full unit-test suite. All randomness is seed-controlled, so the results are fully reproducible.
+
+\section*{Appendix: Reproduction}
+
+Clone the repository, install dependencies, and run.
+
+\begin{Verbatim}[frame=single,fontsize=\small]
+git clone https://github.com/neipia271828/hivc-d-verification.git
+cd hivc-d-verification
+pip install -r requirements.txt
+cd hivc_sim
+
+# Unit tests
+python -m pytest tests/ -v
+
+# Main experiment (all 600 trials)
+python main.py --trials 100
+
+# Hyperparameter grid search
+python grid_search.py --trials 30
+\end{Verbatim}
+
+Outputs: \texttt{results/raw/trials.csv} (per-trial raw data), \texttt{results/summary/stats.csv} (test statistics), \texttt{results/figures/} (figures), and \texttt{results/grid\_search/} (search results).
+
+\end{document}
