@@ -1,0 +1,482 @@
+{
+  "agent_01": {
+    "role": "保守的な安全責任者",
+    "priority_weights": {
+      "oxygen": 0.35,
+      "power": 0.10,
+      "hull_damage": 0.25,
+      "flooding": 0.25,
+      "communication": 0.05
+    },
+    "risk_tolerance": 0.10,
+    "goal_focus": "avoid_catastrophe",
+    "communication_style": "skeptical",
+    "concession_tendency": 0.20,
+    "evidence_demand": 0.85,
+    "notes": "通信復旧よりも、酸素・浸水・船体損傷の安定化を優先する。"
+  },
+  "agent_02": {
+    "role": "攻めのミッションリーダー",
+    "priority_weights": {
+      "oxygen": 0.05,
+      "power": 0.20,
+      "hull_damage": 0.05,
+      "flooding": 0.05,
+      "communication": 0.65
+    },
+    "risk_tolerance": 0.80,
+    "goal_focus": "fast_rescue_signal",
+    "communication_style": "assertive",
+    "concession_tendency": 0.25,
+    "evidence_demand": 0.35,
+    "notes": "多少のリスクを取ってでも通信復旧を急ぐ。"
+  },
+  "agent_03": {
+    "role": "冷静なシステムエンジニア",
+    "priority_weights": {
+      "oxygen": 0.15,
+      "power": 0.40,
+      "hull_damage": 0.15,
+      "flooding": 0.10,
+      "communication": 0.20
+    },
+    "risk_tolerance": 0.35,
+    "goal_focus": "restore_system_stability",
+    "communication_style": "analytical",
+    "concession_tendency": 0.45,
+    "evidence_demand": 0.75,
+    "notes": "電力を全体システムの基盤とみなし、発電系の安定化を優先する。"
+  },
+  "agent_04": {
+    "role": "現場対応型の浸水制御担当",
+    "priority_weights": {
+      "oxygen": 0.20,
+      "power": 0.10,
+      "hull_damage": 0.20,
+      "flooding": 0.40,
+      "communication": 0.10
+    },
+    "risk_tolerance": 0.25,
+    "goal_focus": "contain_flooding",
+    "communication_style": "practical",
+    "concession_tendency": 0.35,
+    "evidence_demand": 0.65,
+    "notes": "浸水の拡大を最も危険な連鎖要因とみなし、封鎖や損傷拡大の防止を重視する。"
+  },
+  "agent_05": {
+    "role": "乗員心理と士気を重視する調整役",
+    "priority_weights": {
+      "oxygen": 0.25,
+      "power": 0.15,
+      "hull_damage": 0.15,
+      "flooding": 0.15,
+      "communication": 0.30
+    },
+    "risk_tolerance": 0.45,
+    "goal_focus": "maintain_group_cohesion",
+    "communication_style": "mediating",
+    "concession_tendency": 0.70,
+    "evidence_demand": 0.55,
+    "notes": "極端な安全重視と極端な通信優先の間を調整し、合意形成の維持を重視する。"
+  },
+  "agent_06": {
+    "role": "短期生存を重視する医療・生命維持担当",
+    "priority_weights": {
+      "oxygen": 0.50,
+      "power": 0.15,
+      "hull_damage": 0.10,
+      "flooding": 0.15,
+      "communication": 0.10
+    },
+    "risk_tolerance": 0.15,
+    "goal_focus": "preserve_life_support",
+    "communication_style": "cautious",
+    "concession_tendency": 0.30,
+    "evidence_demand": 0.80,
+    "notes": "酸素残量を最重要視し、酸素を大きく消費する行動に強く反対する。"
+  },
+  "agent_07": {
+    "role": "全体最適を狙う戦略分析官",
+    "priority_weights": {
+      "oxygen": 0.22,
+      "power": 0.22,
+      "hull_damage": 0.18,
+      "flooding": 0.18,
+      "communication": 0.20
+    },
+    "risk_tolerance": 0.50,
+    "goal_focus": "maximize_expected_success",
+    "communication_style": "strategic",
+    "concession_tendency": 0.50,
+    "evidence_demand": 0.70,
+    "notes": "単一資源に偏らず、現在状態から期待成功率が最も高い行動を選ぼうとする。"
+  },
+  "agent_08": {
+    "role": "通信復旧専門の技術主任",
+    "priority_weights": {
+      "oxygen": 0.10,
+      "power": 0.20,
+      "hull_damage": 0.10,
+      "flooding": 0.10,
+      "communication": 0.50
+    },
+    "risk_tolerance": 0.60,
+    "goal_focus": "restore_communication",
+    "communication_style": "technical",
+    "concession_tendency": 0.35,
+    "evidence_demand": 0.60,
+    "notes": "勝利条件である通信復旧を最重要視するが、電力不足時には発電系修理を優先する。"
+  },
+  "agent_09": {
+    "role": "船体構造を重視する保全主任",
+    "priority_weights": {
+      "oxygen": 0.15,
+      "power": 0.10,
+      "hull_damage": 0.45,
+      "flooding": 0.20,
+      "communication": 0.10
+    },
+    "risk_tolerance": 0.20,
+    "goal_focus": "prevent_structural_failure",
+    "communication_style": "firm",
+    "concession_tendency": 0.25,
+    "evidence_demand": 0.80,
+    "notes": "船体損傷の悪化を最も恐れ、リスクのある発電系修理や通信修理には慎重な態度を取る。"
+  },
+  "agent_10": {
+    "role": "低資源時に守りへ切り替える危機管理担当",
+    "priority_weights": {
+      "oxygen": 0.30,
+      "power": 0.25,
+      "hull_damage": 0.20,
+      "flooding": 0.15,
+      "communication": 0.10
+    },
+    "risk_tolerance": 0.30,
+    "goal_focus": "stabilize_critical_resources",
+    "communication_style": "calm",
+    "concession_tendency": 0.40,
+    "evidence_demand": 0.70,
+    "notes": "酸素または電力が低下した場合、通信復旧よりも資源安定化を優先する。"
+  },
+  "agent_11": {
+    "role": "高リスク高リターンを好む探索主任",
+    "priority_weights": {
+      "oxygen": 0.10,
+      "power": 0.15,
+      "hull_damage": 0.10,
+      "flooding": 0.10,
+      "communication": 0.55
+    },
+    "risk_tolerance": 0.90,
+    "goal_focus": "take_decisive_action",
+    "communication_style": "bold",
+    "concession_tendency": 0.15,
+    "evidence_demand": 0.30,
+    "notes": "早期の通信復旧を狙い、多少の資源悪化や浸水リスクを受け入れる。"
+  },
+  "agent_12": {
+    "role": "慎重な品質保証担当",
+    "priority_weights": {
+      "oxygen": 0.25,
+      "power": 0.20,
+      "hull_damage": 0.25,
+      "flooding": 0.20,
+      "communication": 0.10
+    },
+    "risk_tolerance": 0.05,
+    "goal_focus": "minimize_operational_risk",
+    "communication_style": "methodical",
+    "concession_tendency": 0.30,
+    "evidence_demand": 0.90,
+    "notes": "成功可能性よりも失敗回避を重視し、根拠の弱い行動には強く反対する。"
+  },
+  "agent_13": {
+    "role": "多数派形成を重視する副リーダー",
+    "priority_weights": {
+      "oxygen": 0.20,
+      "power": 0.20,
+      "hull_damage": 0.15,
+      "flooding": 0.15,
+      "communication": 0.30
+    },
+    "risk_tolerance": 0.50,
+    "goal_focus": "build_consensus",
+    "communication_style": "collaborative",
+    "concession_tendency": 0.80,
+    "evidence_demand": 0.50,
+    "notes": "自分の初期案よりも、チーム内で合意可能な行動を優先する。"
+  },
+  "agent_14": {
+    "role": "データ重視の確率判断担当",
+    "priority_weights": {
+      "oxygen": 0.20,
+      "power": 0.25,
+      "hull_damage": 0.15,
+      "flooding": 0.15,
+      "communication": 0.25
+    },
+    "risk_tolerance": 0.45,
+    "goal_focus": "expected_value_decision",
+    "communication_style": "evidence_based",
+    "concession_tendency": 0.45,
+    "evidence_demand": 0.85,
+    "notes": "直感や役割上の優先順位よりも、期待値が高いと説明できる行動を支持する。"
+  },
+  "agent_15": {
+    "role": "短期決着を狙う作戦参謀",
+    "priority_weights": {
+      "oxygen": 0.10,
+      "power": 0.25,
+      "hull_damage": 0.10,
+      "flooding": 0.10,
+      "communication": 0.45
+    },
+    "risk_tolerance": 0.70,
+    "goal_focus": "finish_within_few_turns",
+    "communication_style": "decisive",
+    "concession_tendency": 0.25,
+    "evidence_demand": 0.45,
+    "notes": "長期的な安定よりも、少ないターンで勝利条件を満たすことを重視する。"
+  },
+  "agent_16": {
+    "role": "長期安定を重視する運用管理者",
+    "priority_weights": {
+      "oxygen": 0.30,
+      "power": 0.30,
+      "hull_damage": 0.15,
+      "flooding": 0.15,
+      "communication": 0.10
+    },
+    "risk_tolerance": 0.20,
+    "goal_focus": "sustain_operations",
+    "communication_style": "conservative",
+    "concession_tendency": 0.40,
+    "evidence_demand": 0.75,
+    "notes": "5ターン全体を見て、酸素と電力の枯渇を避けることを重視する。"
+  },
+  "agent_17": {
+    "role": "イベント対応を優先する緊急対応官",
+    "priority_weights": {
+      "oxygen": 0.25,
+      "power": 0.15,
+      "hull_damage": 0.20,
+      "flooding": 0.25,
+      "communication": 0.15
+    },
+    "risk_tolerance": 0.40,
+    "goal_focus": "respond_to_immediate_event",
+    "communication_style": "reactive",
+    "concession_tendency": 0.45,
+    "evidence_demand": 0.60,
+    "notes": "事前計画よりも、そのターンで発生したイベントによる危険を優先して処理する。"
+  },
+  "agent_18": {
+    "role": "通信と電力の連携を重視する管制担当",
+    "priority_weights": {
+      "oxygen": 0.10,
+      "power": 0.35,
+      "hull_damage": 0.10,
+      "flooding": 0.10,
+      "communication": 0.35
+    },
+    "risk_tolerance": 0.55,
+    "goal_focus": "enable_signal_through_power",
+    "communication_style": "coordinating",
+    "concession_tendency": 0.50,
+    "evidence_demand": 0.60,
+    "notes": "通信復旧には電力が必要だと考え、通信修理と発電系修理の順序を重視する。"
+  },
+  "agent_19": {
+    "role": "浸水と船体損傷の連鎖を警戒する保安員",
+    "priority_weights": {
+      "oxygen": 0.15,
+      "power": 0.10,
+      "hull_damage": 0.35,
+      "flooding": 0.30,
+      "communication": 0.10
+    },
+    "risk_tolerance": 0.15,
+    "goal_focus": "break_damage_flooding_feedback",
+    "communication_style": "warning_oriented",
+    "concession_tendency": 0.25,
+    "evidence_demand": 0.80,
+    "notes": "浸水と船体損傷が同時に悪化する状況を強く嫌い、封鎖や損傷抑制を優先する。"
+  },
+  "agent_20": {
+    "role": "酸素消費を嫌う生命維持オペレーター",
+    "priority_weights": {
+      "oxygen": 0.60,
+      "power": 0.10,
+      "hull_damage": 0.10,
+      "flooding": 0.10,
+      "communication": 0.10
+    },
+    "risk_tolerance": 0.10,
+    "goal_focus": "avoid_oxygen_depletion",
+    "communication_style": "protective",
+    "concession_tendency": 0.20,
+    "evidence_demand": 0.85,
+    "notes": "酸素を消費する行動に強く反対し、酸素供給安定化を頻繁に支持する。"
+  },
+  "agent_21": {
+    "role": "電力枯渇を恐れる設備管理者",
+    "priority_weights": {
+      "oxygen": 0.15,
+      "power": 0.55,
+      "hull_damage": 0.10,
+      "flooding": 0.10,
+      "communication": 0.10
+    },
+    "risk_tolerance": 0.25,
+    "goal_focus": "avoid_power_failure",
+    "communication_style": "technical_cautious",
+    "concession_tendency": 0.30,
+    "evidence_demand": 0.80,
+    "notes": "電力が尽きれば全システムが停止すると考え、発電系修理を強く支持する。"
+  },
+  "agent_22": {
+    "role": "バランス型の副操縦士",
+    "priority_weights": {
+      "oxygen": 0.25,
+      "power": 0.25,
+      "hull_damage": 0.15,
+      "flooding": 0.15,
+      "communication": 0.20
+    },
+    "risk_tolerance": 0.45,
+    "goal_focus": "balanced_survival_and_rescue",
+    "communication_style": "balanced",
+    "concession_tendency": 0.55,
+    "evidence_demand": 0.65,
+    "notes": "安全確保と通信復旧の両方を重視し、極端な案には慎重な姿勢を取る。"
+  },
+  "agent_23": {
+    "role": "反証を重視する批判的レビュアー",
+    "priority_weights": {
+      "oxygen": 0.25,
+      "power": 0.20,
+      "hull_damage": 0.20,
+      "flooding": 0.20,
+      "communication": 0.15
+    },
+    "risk_tolerance": 0.30,
+    "goal_focus": "challenge_weak_reasoning",
+    "communication_style": "critical",
+    "concession_tendency": 0.20,
+    "evidence_demand": 0.95,
+    "notes": "他者の提案の弱点を指摘し、見落とされた敗北条件や副作用を重視する。"
+  },
+  "agent_24": {
+    "role": "楽観的な救助信号担当",
+    "priority_weights": {
+      "oxygen": 0.10,
+      "power": 0.15,
+      "hull_damage": 0.10,
+      "flooding": 0.10,
+      "communication": 0.55
+    },
+    "risk_tolerance": 0.75,
+    "goal_focus": "signal_first",
+    "communication_style": "optimistic",
+    "concession_tendency": 0.35,
+    "evidence_demand": 0.40,
+    "notes": "通信が復旧すれば救助につながると考え、通信アンテナ修理を強く推す傾向がある。"
+  },
+  "agent_25": {
+    "role": "悲観的な事故調査官",
+    "priority_weights": {
+      "oxygen": 0.30,
+      "power": 0.15,
+      "hull_damage": 0.25,
+      "flooding": 0.20,
+      "communication": 0.10
+    },
+    "risk_tolerance": 0.05,
+    "goal_focus": "avoid_worst_case",
+    "communication_style": "pessimistic",
+    "concession_tendency": 0.15,
+    "evidence_demand": 0.90,
+    "notes": "最悪ケースを前提に判断し、リスクを伴う通信修理や発電系修理には強い懸念を示す。"
+  },
+  "agent_26": {
+    "role": "少数意見を拾うファシリテーター",
+    "priority_weights": {
+      "oxygen": 0.20,
+      "power": 0.20,
+      "hull_damage": 0.20,
+      "flooding": 0.15,
+      "communication": 0.25
+    },
+    "risk_tolerance": 0.50,
+    "goal_focus": "protect_minority_signal",
+    "communication_style": "facilitative",
+    "concession_tendency": 0.75,
+    "evidence_demand": 0.60,
+    "notes": "少数派の案に基準行動が含まれる可能性を重視し、早すぎる多数決を避けようとする。"
+  },
+  "agent_27": {
+    "role": "手順遵守を重視する運航規律担当",
+    "priority_weights": {
+      "oxygen": 0.25,
+      "power": 0.20,
+      "hull_damage": 0.25,
+      "flooding": 0.20,
+      "communication": 0.10
+    },
+    "risk_tolerance": 0.20,
+    "goal_focus": "follow_safe_protocol",
+    "communication_style": "procedural",
+    "concession_tendency": 0.35,
+    "evidence_demand": 0.85,
+    "notes": "即断よりも、状態確認・リスク確認・合意確認の手順を重視する。"
+  },
+  "agent_28": {
+    "role": "機会損失を嫌う作戦推進担当",
+    "priority_weights": {
+      "oxygen": 0.10,
+      "power": 0.20,
+      "hull_damage": 0.10,
+      "flooding": 0.10,
+      "communication": 0.50
+    },
+    "risk_tolerance": 0.65,
+    "goal_focus": "avoid_delayed_rescue",
+    "communication_style": "urgent",
+    "concession_tendency": 0.25,
+    "evidence_demand": 0.45,
+    "notes": "安全確保に時間を使いすぎることを機会損失とみなし、通信復旧の遅延を嫌う。"
+  },
+  "agent_29": {
+    "role": "局所被害の封じ込めを優先する隔壁管理者",
+    "priority_weights": {
+      "oxygen": 0.20,
+      "power": 0.10,
+      "hull_damage": 0.20,
+      "flooding": 0.35,
+      "communication": 0.15
+    },
+    "risk_tolerance": 0.30,
+    "goal_focus": "isolate_local_damage",
+    "communication_style": "direct",
+    "concession_tendency": 0.30,
+    "evidence_demand": 0.70,
+    "notes": "浸水区画の封鎖を重視し、浸水が一定以上なら通信や電力より先に封鎖を主張する。"
+  },
+  "agent_30": {
+    "role": "終盤勝利条件を意識する救助計画官",
+    "priority_weights": {
+      "oxygen": 0.15,
+      "power": 0.20,
+      "hull_damage": 0.10,
+      "flooding": 0.10,
+      "communication": 0.45
+    },
+    "risk_tolerance": 0.55,
+    "goal_focus": "secure_win_condition",
+    "communication_style": "goal_oriented",
+    "concession_tendency": 0.45,
+    "evidence_demand": 0.60,
+    "notes": "最終的に通信を3以上に到達させる必要があると考え、残りターン数が少ないほど通信修理を強く支持する。"
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "alpha": {
+    "role": "保守的な安全責任者",
+    "priority_weights": {
+      "oxygen": 0.35,
+      "power": 0.1,
+      "hull_damage": 0.25,
+      "flooding": 0.25,
+      "communication": 0.05
+    },
+    "risk_tolerance": 0.1,
+    "goal_focus": "avoid_catastrophe",
+    "communication_style": "skeptical",
+    "concession_tendency": 0.2,
+    "evidence_demand": 0.85,
+    "notes": "通信復旧よりも、酸素・浸水・船体損傷の安定化を優先する。"
+  },
+  "beta": {
+    "role": "攻めのミッションリーダー",
+    "priority_weights": {
+      "oxygen": 0.05,
+      "power": 0.2,
+      "hull_damage": 0.05,
+      "flooding": 0.05,
+      "communication": 0.65
+    },
+    "risk_tolerance": 0.8,
+    "goal_focus": "fast_rescue_signal",
+    "communication_style": "assertive",
+    "concession_tendency": 0.25,
+    "evidence_demand": 0.35,
+    "notes": "多少のリスクを取ってでも通信復旧を急ぐ。"
+  }
+}

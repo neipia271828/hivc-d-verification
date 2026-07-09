@@ -1,0 +1,2 @@
+eval_label,rows,win_rate,survival_rate,mean_return,mean_regret,expert_match_rate,minority_adoption_rate,conflict_resolution_quality,plan_revision_quality,plan_revision_improved_rate
+heur,19,0.8,1.0,1151.0,175.625,0.47368421052631576,nan,nan,0.35714285714285715,0.21428571428571427

@@ -1,0 +1,2 @@
+eval_label,rows,win_rate,survival_rate,mean_return,mean_regret,expert_match_rate,minority_adoption_rate,conflict_resolution_quality,plan_revision_quality,plan_revision_improved_rate
+heur,0,nan,nan,nan,nan,nan,nan,nan,nan,nan

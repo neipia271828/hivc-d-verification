@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HIVC-D Deep-Sea Game Visualizer</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #1a1d27; --panel2: #232733; --border: #2e3340;
+    --text: #e0e3eb; --muted: #8892a6; --accent: #5b9bf5; --accent2: #a78bfa;
+    --alpha: #5b9bf5; --beta: #f5915b; --good: #4ade80; --warn: #fbbf24; --bad: #f87171;
+    --shadow: 0 2px 8px rgba(0,0,0,0.3);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; font-size: 14px; line-height: 1.5; min-height: 100vh; }
+  .app { max-width: 1280px; margin: 0 auto; padding: 16px; }
+
+  /* Top bar */
+  .topbar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 12px 16px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 16px; }
+  .topbar h1 { font-size: 18px; font-weight: 600; white-space: nowrap; }
+  .topbar .mode-badge { font-size: 11px; padding: 3px 8px; border-radius: 12px; background: var(--accent); color: #fff; font-weight: 600; }
+  .topbar .mode-badge.live { background: var(--bad); animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+  .topbar .spacer { flex: 1; }
+  .btn { padding: 6px 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel2); color: var(--text); cursor: pointer; font-size: 13px; transition: all 0.15s; }
+  .btn:hover { border-color: var(--accent); background: #2a2f3d; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { background: #4a8ae0; }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* Layout */
+  .main { display: grid; grid-template-columns: 340px 1fr; gap: 16px; }
+  @media (max-width: 900px) { .main { grid-template-columns: 1fr; } }
+  .col-left { display: flex; flex-direction: column; gap: 16px; }
+  .col-right { display: flex; flex-direction: column; gap: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px; box-shadow: var(--shadow); }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); margin-bottom: 10px; }
+
+  /* State bars */
+  .resource { margin-bottom: 10px; }
+  .resource:last-child { margin-bottom: 0; }
+  .resource .label { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 3px; }
+  .resource .label .val { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .bar { height: 8px; border-radius: 4px; background: var(--panel2); overflow: hidden; }
+  .bar .fill { height: 100%; border-radius: 4px; transition: width 0.4s ease, background 0.3s; }
+  .fill.good { background: var(--good); }
+  .fill.warn { background: var(--warn); }
+  .fill.bad { background: var(--bad); }
+  .fill.info { background: var(--accent); }
+
+  /* Event badge */
+  .event-badge { display: inline-block; padding: 4px 12px; border-radius: 16px; font-size: 12px; font-weight: 600; margin-bottom: 8px; }
+  .event-none { background: #2a2f3d; color: var(--muted); }
+  .event-active { background: var(--warn); color: #1a1d27; }
+
+  /* Outcome */
+  .outcome { text-align: center; font-size: 16px; font-weight: 700; padding: 8px; border-radius: 8px; margin-top: 8px; }
+  .outcome.win { background: rgba(74,222,128,0.15); color: var(--good); }
+  .outcome.loss { background: rgba(248,113,113,0.15); color: var(--bad); }
+  .outcome.running { background: var(--panel2); color: var(--muted); }
+
+  /* Discussion */
+  .chat { max-height: 420px; overflow-y: auto; padding: 4px; }
+  .msg { display: flex; margin-bottom: 10px; animation: slideIn 0.3s ease; }
+  @keyframes slideIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  .msg.alpha { flex-direction: row; }
+  .msg.beta { flex-direction: row-reverse; }
+  .bubble { max-width: 80%; padding: 10px 14px; border-radius: 14px; position: relative; }
+  .msg.alpha .bubble { background: rgba(91,155,245,0.15); border: 1px solid rgba(91,155,245,0.3); border-bottom-left-radius: 4px; }
+  .msg.beta .bubble { background: rgba(245,145,91,0.15); border: 1px solid rgba(245,145,91,0.3); border-bottom-right-radius: 4px; }
+  .bubble .speaker { font-size: 11px; font-weight: 600; margin-bottom: 2px; }
+  .msg.alpha .speaker { color: var(--alpha); }
+  .msg.beta .speaker { color: var(--beta); }
+  .bubble .action-tag { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 700; margin-left: 4px; background: var(--panel2); }
+  .bubble .message { font-size: 13px; margin: 4px 0; }
+  .bubble .reason { font-size: 11px; color: var(--muted); font-style: italic; }
+  .bubble .ready-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-left: 6px; vertical-align: middle; }
+  .ready-dot.true { background: var(--good); }
+  .ready-dot.false { background: var(--muted); }
+  .avatar { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; flex-shrink: 0; margin: 0 8px; }
+  .avatar.alpha { background: rgba(91,155,245,0.25); color: var(--alpha); border: 2px solid var(--alpha); }
+  .avatar.beta { background: rgba(245,145,91,0.25); color: var(--beta); border: 2px solid var(--beta); }
+
+  /* Vote / decision panel */
+  .vote-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+  .vote-cell { text-align: center; padding: 8px; border-radius: 8px; background: var(--panel2); }
+  .vote-cell .who { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  .vote-cell .act { font-size: 22px; font-weight: 700; }
+  .vote-cell.alpha .act { color: var(--alpha); }
+  .vote-cell.beta .act { color: var(--beta); }
+  .vote-cell.group { background: rgba(167,139,250,0.15); border: 1px solid rgba(167,139,250,0.3); }
+  .vote-cell.group .act { color: var(--accent2); }
+  .decision-rule { text-align: center; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .group-reason { font-size: 12px; color: var(--text); background: var(--panel2); padding: 8px; border-radius: 6px; }
+
+  /* Eval panel */
+  .eval-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .eval-row:last-child { border-bottom: none; }
+  .eval-row .key { color: var(--muted); font-size: 12px; }
+  .eval-row .val { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .regret-gauge { position: relative; height: 10px; background: var(--panel2); border-radius: 5px; overflow: hidden; margin-top: 4px; }
+  .regret-gauge .fill { height: 100%; background: linear-gradient(90deg, var(--good), var(--warn), var(--bad)); transition: width 0.4s; }
+  .qbar { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+  .qbar .qlabel { width: 16px; font-weight: 700; font-size: 12px; text-align: center; }
+  .qbar .qtrack { flex: 1; height: 6px; background: var(--panel2); border-radius: 3px; overflow: hidden; }
+  .qbar .qfill { height: 100%; background: var(--accent); transition: width 0.4s; }
+  .qbar .qval { width: 50px; text-align: right; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--muted); }
+
+  /* Timeline */
+  .timeline-card { margin-top: 16px; }
+  .timeline-controls { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+  .timeline { display: flex; gap: 6px; flex-wrap: wrap; }
+  .turn-dot { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; cursor: pointer; border: 2px solid var(--border); background: var(--panel2); transition: all 0.15s; }
+  .turn-dot:hover { border-color: var(--accent); }
+  .turn-dot.active { border-color: var(--accent); background: rgba(91,155,245,0.2); }
+  .turn-dot.win { border-color: var(--good); color: var(--good); }
+  .turn-dot.loss { border-color: var(--bad); color: var(--bad); }
+
+  /* Condition selector */
+  .cond-bar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .cond-tab { padding: 6px 14px; border-radius: 8px; cursor: pointer; border: 1px solid var(--border); background: var(--panel2); font-size: 13px; transition: all 0.15s; }
+  .cond-tab:hover { border-color: var(--accent); }
+  .cond-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  /* Game selector */
+  .game-select { padding: 6px 10px; border-radius: 6px; background: var(--panel2); color: var(--text); border: 1px solid var(--border); font-size: 13px; }
+
+  /* Empty state */
+  .empty { text-align: center; padding: 60px 20px; color: var(--muted); }
+  .empty h3 { font-size: 16px; margin-bottom: 8px; }
+  .empty p { font-size: 13px; margin-bottom: 16px; }
+  .empty .opts { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 20px; }
+  .drop-zone { border: 2px dashed var(--border); border-radius: 10px; padding: 30px; text-align: center; cursor: pointer; transition: all 0.2s; }
+  .drop-zone:hover, .drop-zone.dragover { border-color: var(--accent); background: rgba(91,155,245,0.05); }
+  .drop-zone input[type=file] { display: none; }
+
+  .live-status { font-size: 12px; color: var(--muted); }
+  .live-status .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+  .live-status .dot.on { background: var(--good); }
+  .live-status .dot.off { background: var(--muted); }
+
+  .persona-info { font-size: 11px; color: var(--muted); margin-top: 6px; line-height: 1.4; }
+  .persona-info strong { color: var(--text); }
+
+  /* Live status bar */
+  .live-bar { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 16px; font-size: 13px; }
+  .live-bar .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .live-bar .dot.on { background: var(--good); box-shadow: 0 0 8px var(--good); animation: pulse 1.5s infinite; }
+  .live-bar .dot.off { background: var(--bad); }
+  .live-bar .dot.wait { background: var(--warn); animation: pulse 1.5s infinite; }
+  .live-bar .live-text { flex: 1; color: var(--text); }
+  .live-bar .live-meta { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .live-bar .btn-retry { padding: 4px 12px; font-size: 12px; }
+
+  /* Live waiting state */
+  .live-waiting { text-align: center; padding: 80px 20px; color: var(--muted); }
+  .live-waiting .spinner { width: 40px; height: 40px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; margin: 0 auto 20px; animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .live-waiting h3 { font-size: 16px; margin-bottom: 8px; color: var(--text); }
+  .live-waiting p { font-size: 13px; margin-bottom: 6px; }
+  .live-waiting code { background: var(--panel2); padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+
+  /* CSV toggle (collapsed by default for live-first UX) */
+  .csv-collapse { margin-top: 24px; }
+  .csv-collapse summary { cursor: pointer; font-size: 12px; color: var(--muted); user-select: none; padding: 8px; border: 1px dashed var(--border); border-radius: 8px; text-align: center; }
+  .csv-collapse summary:hover { border-color: var(--accent); }
+  .csv-collapse[open] summary { margin-bottom: 16px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <h1>🌊 HIVC-D Deep-Sea Game Visualizer</h1>
+    <span class="mode-badge live" id="modeBadge">LIVE</span>
+    <div class="spacer"></div>
+    <details style="position:relative;">
+      <summary class="btn" style="list-style:none;cursor:pointer;">☰ メニュー</summary>
+      <div style="position:absolute;right:0;top:100%;margin-top:6px;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px;display:flex;flex-direction:column;gap:6px;z-index:10;min-width:180px;">
+        <button class="btn" id="btnLoadCsv" style="text-align:left;">📄 CSVを読み込む</button>
+        <input type="file" id="fileInput" accept=".csv" style="display:none;">
+        <button class="btn" id="btnLiveMode" style="text-align:left;">🔴 ライブモード</button>
+      </div>
+    </details>
+  </div>
+
+  <div class="live-bar" id="liveBar">
+    <span class="dot wait" id="liveDot"></span>
+    <span class="live-text" id="liveText">ストリームに接続中...</span>
+    <span class="live-meta" id="liveMeta"></span>
+    <button class="btn btn-retry" id="btnRetry" style="display:none;">再接続</button>
+  </div>
+
+  <div id="emptyState" class="live-waiting">
+    <div class="spinner"></div>
+    <h3>ストリームを待っています</h3>
+    <p>実験スクリプトが <code>stream.jsonl</code> にレコードを追記すると、自動的に表示されます。</p>
+    <p style="margin-top:12px;font-size:11px;">接続先: <code id="liveUrlDisplay">--</code></p>
+    <details class="csv-collapse">
+      <summary>CSVファイルから再生（オプション）</summary>
+      <div class="opts" style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:16px;">
+        <div class="drop-zone" id="dropZone">
+          <p>📄 CSVファイルをドラッグ＆ドロップ<br>またはクリックして選択</p>
+          <p style="font-size:11px;color:var(--muted)">all_games.csv / {condition}_games.csv</p>
+          <input type="file" id="dropFileInput" accept=".csv">
+        </div>
+      </div>
+    </details>
+  </div>
+
+  <div id="vizContent" style="display:none;">
+    <div class="cond-bar" id="condBar"></div>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+      <label style="font-size:13px;color:var(--muted);">ゲーム:</label>
+      <select class="game-select" id="gameSelect"></select>
+    </div>
+
+    <div class="main">
+      <div class="col-left">
+        <div class="card">
+          <h2>施設状態</h2>
+          <div id="eventArea"></div>
+          <div id="stateBars"></div>
+          <div id="outcomeArea"></div>
+        </div>
+        <div class="card">
+          <h2>ペルソナ</h2>
+          <div id="personaArea"></div>
+        </div>
+        <div class="card">
+          <h2>評価（探索ベース）</h2>
+          <div id="evalArea"></div>
+        </div>
+      </div>
+      <div class="col-right">
+        <div class="card">
+          <h2>エージェント議論</h2>
+          <div class="chat" id="chatArea"></div>
+        </div>
+        <div class="card">
+          <h2>投票・合意</h2>
+          <div class="vote-grid" id="voteGrid"></div>
+          <div class="decision-rule" id="decisionRule"></div>
+          <div class="group-reason" id="groupReason"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card timeline-card">
+      <h2>タイムライン</h2>
+      <div class="timeline-controls">
+        <button class="btn" id="btnPrev">◀ 前ターン</button>
+        <button class="btn primary" id="btnPlay">▶ 自動再生</button>
+        <button class="btn" id="btnNext">次ターン ▶</button>
+        <span style="font-size:12px;color:var(--muted);margin-left:8px;" id="turnLabel"></span>
+      </div>
+      <div class="timeline" id="timeline"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ===== State =====
+let allRecords = [];      // parsed turn records
+let byCondition = {};     // condition -> [records]
+let byGame = {};          // "condition|seed" -> [records sorted by turn]
+let currentCondition = null;
+let currentGameKey = null;
+let currentTurnIdx = 0;
+let playTimer = null;
+let livePollTimer = null;
+let liveUrl = null;
+let liveSeenCount = 0;
+
+const ACTION_NAMES = {
+  A: '酸素安定化', B: '発電系修理', C: '通信修理', D: '浸水封鎖'
+};
+const EVENT_NAMES = {
+  none: '異常なし', pressure_spike: '外圧上昇', leak_surge: '浸水増加',
+  signal_window: '通信窓', crew_panic: '乗員動揺'
+};
+
+// ===== CSV parsing =====
+function parseCSV(text) {
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  if (lines.length < 2) return [];
+  const headers = parseCSVLine(lines[0]);
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const vals = parseCSVLine(lines[i]);
+    const row = {};
+    for (let j = 0; j < headers.length; j++) {
+      row[headers[j]] = vals[j] !== undefined ? vals[j] : '';
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
+function parseCSVLine(line) {
+  const result = [];
+  let cur = '', inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (inQ) {
+      if (c === '"' && line[i+1] === '"') { cur += '"'; i++; }
+      else if (c === '"') { inQ = false; }
+      else { cur += c; }
+    } else {
+      if (c === '"') { inQ = true; }
+      else if (c === ',') { result.push(cur); cur = ''; }
+      else { cur += c; }
+    }
+  }
+  result.push(cur);
+  return result;
+}
+
+function safeJSON(str, fallback) {
+  if (!str || str === '') return fallback;
+  try { return JSON.parse(str); } catch { return fallback; }
+}
+
+function normalizeRecord(row) {
+  return {
+    condition: row.condition || 'unknown',
+    seed: parseInt(row.seed || row.game_id || 0),
+    turn: parseInt(row.turn || 0),
+    event: row.event || 'none',
+    state_before: safeJSON(row.state_before, {}),
+    state_after: safeJSON(row.state_after, {}),
+    discussion_transcript: safeJSON(row.discussion_transcript, []),
+    alpha_vote: row.alpha_vote || '',
+    beta_vote: row.beta_vote || '',
+    group_action: row.group_action || row.action || '',
+    group_action_label: row.group_action_label || '',
+    group_reason: row.group_reason || '',
+    decision_rule: row.decision_rule || '',
+    best_action: row.best_action || '',
+    acceptable_actions: row.acceptable_actions || '',
+    regret: parseFloat(row.regret || 0),
+    q_values: safeJSON(row.q_values, {}),
+    outcome: row.outcome || 'running',
+    terminal_score: parseFloat(row.terminal_score || 0),
+    alpha_persona: row.alpha_persona || '',
+    beta_persona: row.beta_persona || '',
+    alpha_role_key: row.alpha_role_key || '',
+    beta_role_key: row.beta_role_key || '',
+    discussion_turns: parseInt(row.discussion_turns || 0),
+    individual_actions: row.individual_actions || '',
+  };
+}
+
+// ===== Data loading =====
+function loadRecords(records) {
+  allRecords = records;
+  byCondition = {};
+  byGame = {};
+  for (const r of records) {
+    if (!byCondition[r.condition]) byCondition[r.condition] = [];
+    byCondition[r.condition].push(r);
+    const gk = r.condition + '|' + r.seed;
+    if (!byGame[gk]) byGame[gk] = [];
+    byGame[gk].push(r);
+  }
+  for (const gk in byGame) {
+    byGame[gk].sort((a, b) => a.turn - b.turn);
+  }
+  const conds = Object.keys(byCondition).sort();
+  if (conds.length === 0) { alert('データがありません'); return; }
+  currentCondition = conds[0];
+  const gameKeys = Object.keys(byGame).filter(k => k.startsWith(currentCondition + '|')).sort((a,b) => {
+    const sa = parseInt(a.split('|')[1]), sb = parseInt(b.split('|')[1]);
+    return sa - sb;
+  });
+  currentGameKey = gameKeys[0];
+  currentTurnIdx = 0;
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('vizContent').style.display = 'block';
+  renderCondBar();
+  renderGameSelect();
+  render();
+}
+
+function handleCSVFile(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const records = parseCSV(e.target.result).map(normalizeRecord);
+    setMode('replay');
+    loadRecords(records);
+  };
+  reader.readAsText(file, 'UTF-8');
+}
+
+// ===== Rendering =====
+function renderCondBar() {
+  const bar = document.getElementById('condBar');
+  bar.innerHTML = '';
+  const conds = Object.keys(byCondition).sort();
+  for (const c of conds) {
+    const tab = document.createElement('div');
+    tab.className = 'cond-tab' + (c === currentCondition ? ' active' : '');
+    tab.textContent = c;
+    tab.onclick = () => {
+      currentCondition = c;
+      const gks = Object.keys(byGame).filter(k => k.startsWith(c + '|')).sort((a,b) => {
+        return parseInt(a.split('|')[1]) - parseInt(b.split('|')[1]);
+      });
+      currentGameKey = gks[0];
+      currentTurnIdx = 0;
+      renderCondBar();
+      renderGameSelect();
+      render();
+    };
+    bar.appendChild(tab);
+  }
+}
+
+function renderGameSelect() {
+  const sel = document.getElementById('gameSelect');
+  sel.innerHTML = '';
+  const gks = Object.keys(byGame).filter(k => k.startsWith(currentCondition + '|')).sort((a,b) => {
+    return parseInt(a.split('|')[1]) - parseInt(b.split('|')[1]);
+  });
+  for (const gk of gks) {
+    const seed = gk.split('|')[1];
+    const opt = document.createElement('option');
+    opt.value = gk;
+    opt.textContent = `seed=${seed}`;
+    sel.appendChild(opt);
+  }
+  sel.value = currentGameKey;
+  sel.onchange = () => {
+    currentGameKey = sel.value;
+    currentTurnIdx = 0;
+    render();
+  };
+}
+
+function getCurrentGame() {
+  return byGame[currentGameKey] || [];
+}
+
+function render() {
+  const game = getCurrentGame();
+  if (game.length === 0) return;
+  const r = game[currentTurnIdx];
+  if (!r) return;
+
+  // Event
+  const evArea = document.getElementById('eventArea');
+  const isEvent = r.event && r.event !== 'none';
+  evArea.innerHTML = `<span class="event-badge ${isEvent ? 'event-active' : 'event-none'}">${EVENT_NAMES[r.event] || r.event}</span>`;
+
+  // State bars (from state_before)
+  const st = r.state_before;
+  const bars = [
+    { key: 'oxygen', label: '酸素', val: st.oxygen, max: 12, danger: 'low' },
+    { key: 'power', label: '電力', val: st.power, max: 12, danger: 'low' },
+    { key: 'hull_damage', label: '船体損傷', val: st.hull_damage, max: 6, danger: 'high' },
+    { key: 'flooding', label: '浸水', val: st.flooding, max: 6, danger: 'high' },
+    { key: 'communication', label: '通信', val: st.communication, max: 4, danger: 'low', goodHigh: true },
+    { key: 'morale', label: '士気', val: st.morale, max: 100, danger: 'low', goodHigh: true },
+  ];
+  const stateBars = document.getElementById('stateBars');
+  stateBars.innerHTML = bars.map(b => {
+    const pct = Math.max(0, Math.min(100, (b.val / b.max) * 100));
+    let cls = 'good';
+    if (b.danger === 'low') {
+      if (b.goodHigh) { cls = pct > 60 ? 'good' : pct > 30 ? 'warn' : 'bad'; }
+      else { cls = pct > 50 ? 'good' : pct > 25 ? 'warn' : 'bad'; }
+    } else {
+      if (b.goodHigh) { cls = pct < 40 ? 'good' : pct < 70 ? 'warn' : 'bad'; }
+      else { cls = pct < 30 ? 'good' : pct < 60 ? 'warn' : 'bad'; }
+    }
+    return `<div class="resource"><div class="label"><span>${b.label}</span><span class="val">${b.val}</span></div><div class="bar"><div class="fill ${cls}" style="width:${pct}%"></div></div></div>`;
+  }).join('');
+
+  // Outcome
+  const outArea = document.getElementById('outcomeArea');
+  const outcome = r.outcome;
+  const outText = { win: '🏆 勝利', loss_oxygen: '💀 敗北（酸素）', loss_power: '💀 敗北（電力）', loss_hull: '💀 敗北（船体）', loss_flooding: '💀 敗北（浸水）', survived_timeout: '⏱ 生存（時間切れ）', running: '⏳ 進行中' };
+  const outCls = outcome === 'win' ? 'win' : outcome.startsWith('loss') ? 'loss' : 'running';
+  outArea.innerHTML = `<div class="outcome ${outCls}">${outText[outcome] || outcome}</div>`;
+
+  // Persona
+  const personaArea = document.getElementById('personaArea');
+  personaArea.innerHTML = `
+    <div class="persona-info"><strong style="color:var(--alpha)">α ${r.alpha_role_key || 'alpha'}</strong>: ${r.alpha_persona}</div>
+    <div class="persona-info"><strong style="color:var(--beta)">β ${r.beta_role_key || 'beta'}</strong>: ${r.beta_persona}</div>`;
+
+  // Eval
+  const evalArea = document.getElementById('evalArea');
+  const qvals = r.q_values;
+  const qEntries = Object.entries(qvals).sort((a,b) => b[1] - a[1]);
+  const qMax = Math.max(...qEntries.map(e => Math.abs(e[1])), 1);
+  const regretPct = Math.min(100, Math.abs(r.regret) / 5);
+  let regretCls = r.regret < 25 ? 'good' : r.regret < 100 ? 'warn' : 'bad';
+  const isBest = r.acceptable_actions.split(',').includes(r.group_action);
+  evalArea.innerHTML = `
+    <div class="eval-row"><span class="key">最適行動</span><span class="val" style="color:var(--good)">${r.best_action} ${ACTION_NAMES[r.best_action]||''}</span></div>
+    <div class="eval-row"><span class="key">許容行動</span><span class="val">${r.acceptable_actions}</span></div>
+    <div class="eval-row"><span class="key">合意一致</span><span class="val" style="color:${isBest?'var(--good)':'var(--bad)'}">${isBest ? '✓ 許容' : '✗ 乖離'}</span></div>
+    <div class="eval-row"><span class="key">regret</span><span class="val" style="color:var(--${regretCls})">${r.regret.toFixed(1)}</span></div>
+    <div class="regret-gauge"><div class="fill" style="width:${regretPct}%"></div></div>
+    <div style="margin-top:10px;"><div style="font-size:11px;color:var(--muted);margin-bottom:6px;">Q値</div>
+    ${qEntries.map(([a,v]) => {
+      const pct = Math.max(2, (Math.abs(v) / qMax) * 100);
+      const isBestQ = a === r.best_action;
+      return `<div class="qbar"><span class="qlabel" style="color:${isBestQ?'var(--good)':'var(--text)'}">${a}</span><div class="qtrack"><div class="qfill" style="width:${pct}%;background:${isBestQ?'var(--good)':'var(--accent)'}"></div></div><span class="qval">${v.toFixed(0)}</span></div>`;
+    }).join('')}
+    </div>
+    <div class="eval-row" style="margin-top:8px;"><span class="key">終端スコア</span><span class="val">${r.terminal_score.toFixed(0)}</span></div>
+  `;
+
+  // Chat
+  const chatArea = document.getElementById('chatArea');
+  const transcript = r.discussion_transcript || [];
+  if (transcript.length === 0) {
+    chatArea.innerHTML = '<div style="text-align:center;color:var(--muted);padding:20px;">議論なし（policy ロールアウト等）</div>';
+  } else {
+    chatArea.innerHTML = transcript.map(m => {
+      const isAlpha = m.speaker === 'alpha';
+      const initial = isAlpha ? 'α' : 'β';
+      const readyDot = `<span class="ready-dot ${m.ready}" title="${m.ready==='true'?'合意準備OK':'まだ合意不可'}"></span>`;
+      return `<div class="msg ${m.speaker}">
+        <div class="avatar ${m.speaker}">${initial}</div>
+        <div class="bubble">
+          <div class="speaker">${m.speaker}${readyDot}<span class="action-tag">${m.action} ${ACTION_NAMES[m.action]||''}</span></div>
+          <div class="message">${escapeHTML(m.message || '')}</div>
+          <div class="reason">${escapeHTML(m.reason || '')}</div>
+        </div>
+      </div>`;
+    }).join('');
+    chatArea.scrollTop = chatArea.scrollHeight;
+  }
+
+  // Votes
+  const voteGrid = document.getElementById('voteGrid');
+  voteGrid.innerHTML = `
+    <div class="vote-cell alpha"><div class="who">α の票</div><div class="act">${r.alpha_vote || '-'}</div></div>
+    <div class="vote-cell group"><div class="who">グループ行動</div><div class="act">${r.group_action || '-'}</div></div>
+    <div class="vote-cell beta"><div class="who">β の票</div><div class="act">${r.beta_vote || '-'}</div></div>
+  `;
+  document.getElementById('decisionRule').textContent = `判定ルール: ${r.decision_rule}`;
+  document.getElementById('groupReason').innerHTML = `<strong>グループ理由:</strong> ${escapeHTML(r.group_reason || '')}`;
+
+  // Timeline
+  renderTimeline();
+  document.getElementById('turnLabel').textContent = `ターン ${r.turn} / ${game.length - 1}`;
+}
+
+function renderTimeline() {
+  const game = getCurrentGame();
+  const tl = document.getElementById('timeline');
+  tl.innerHTML = '';
+  for (let i = 0; i < game.length; i++) {
+    const r = game[i];
+    const dot = document.createElement('div');
+    let cls = 'turn-dot';
+    if (i === currentTurnIdx) cls += ' active';
+    if (r.outcome === 'win') cls += ' win';
+    if (r.outcome.startsWith('loss')) cls += ' loss';
+    dot.className = cls;
+    dot.textContent = r.turn;
+    dot.title = `Turn ${r.turn}: ${r.outcome}, regret=${r.regret}`;
+    dot.onclick = () => { currentTurnIdx = i; render(); };
+    tl.appendChild(dot);
+  }
+}
+
+function escapeHTML(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ===== Controls =====
+function nextTurn() {
+  const game = getCurrentGame();
+  if (currentTurnIdx < game.length - 1) { currentTurnIdx++; render(); }
+  else { stopPlay(); }
+}
+function prevTurn() {
+  if (currentTurnIdx > 0) { currentTurnIdx--; render(); }
+}
+function togglePlay() {
+  if (playTimer) { stopPlay(); }
+  else {
+    const game = getCurrentGame();
+    if (currentTurnIdx >= game.length - 1) currentTurnIdx = 0;
+    document.getElementById('btnPlay').textContent = '⏸ 停止';
+    playTimer = setInterval(() => {
+      const g = getCurrentGame();
+      if (currentTurnIdx >= g.length - 1) { stopPlay(); return; }
+      nextTurn();
+    }, 1500);
+  }
+}
+function stopPlay() {
+  if (playTimer) { clearInterval(playTimer); playTimer = null; }
+  document.getElementById('btnPlay').textContent = '▶ 自動再生';
+}
+
+// ===== Live mode =====
+let liveErrorCount = 0;
+let liveLastUpdate = null;
+
+function setMode(mode) {
+  const badge = document.getElementById('modeBadge');
+  const liveBar = document.getElementById('liveBar');
+  stopLive();
+  stopPlay();
+  if (mode === 'live') {
+    badge.textContent = 'LIVE';
+    badge.className = 'mode-badge live';
+    liveBar.style.display = 'flex';
+    startLive();
+  } else {
+    badge.textContent = 'REPLAY';
+    badge.className = 'mode-badge';
+    liveBar.style.display = 'none';
+  }
+}
+
+function startLive() {
+  // 常にngrok経由（ケース2）で利用する前提。
+  // 現在のページのオリジン + /stream.jsonl を自動的に使用し、プロンプト入力を省略する。
+  liveUrl = window.location.origin + '/stream.jsonl';
+  const urlDisplay = document.getElementById('liveUrlDisplay');
+  if (urlDisplay) urlDisplay.textContent = liveUrl;
+  liveSeenCount = 0;
+  allRecords = [];
+  liveErrorCount = 0;
+  setLiveStatus('wait', 'ストリームに接続中...', '');
+  pollLive();
+  livePollTimer = setInterval(pollLive, 2000);
+}
+
+function stopLive() {
+  if (livePollTimer) { clearInterval(livePollTimer); livePollTimer = null; }
+}
+
+function setLiveStatus(state, text, meta) {
+  const dot = document.getElementById('liveDot');
+  const txt = document.getElementById('liveText');
+  const metaEl = document.getElementById('liveMeta');
+  const retryBtn = document.getElementById('btnRetry');
+  dot.className = 'dot ' + state;
+  txt.textContent = text;
+  metaEl.textContent = meta || '';
+  retryBtn.style.display = (state === 'off') ? 'inline-block' : 'none';
+}
+
+async function pollLive() {
+  try {
+    const resp = await fetch(liveUrl + '?t=' + Date.now(), {
+      cache: 'no-store',
+      headers: { 'ngrok-skip-browser-warning': 'true' }
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const text = await resp.text();
+    const lines = text.split(/\r?\n/).filter(l => l.trim());
+    liveErrorCount = 0;
+    liveLastUpdate = new Date();
+    const meta = `${lines.length} ターン | 更新 ${liveLastUpdate.toLocaleTimeString()}`;
+    if (lines.length === 0) {
+      setLiveStatus('wait', 'ストリーム接続済み・レコード待機中', meta);
+      return;
+    }
+    setLiveStatus('on', `ライブ受信中: ${lines.length} ターン`, meta);
+    if (lines.length > liveSeenCount) {
+      const newRecords = [];
+      for (let i = liveSeenCount; i < lines.length; i++) {
+        try {
+          const obj = JSON.parse(lines[i]);
+          newRecords.push(normalizeRecord(obj));
+        } catch {}
+      }
+      liveSeenCount = lines.length;
+      if (newRecords.length > 0) {
+        allRecords = allRecords.concat(newRecords);
+        // re-index
+        byCondition = {}; byGame = {};
+        for (const r of allRecords) {
+          if (!byCondition[r.condition]) byCondition[r.condition] = [];
+          byCondition[r.condition].push(r);
+          const gk = r.condition + '|' + r.seed;
+          if (!byGame[gk]) byGame[gk] = [];
+          byGame[gk].push(r);
+        }
+        for (const gk in byGame) byGame[gk].sort((a,b) => a.turn - b.turn);
+        // jump to latest game's latest turn
+        const conds = Object.keys(byCondition).sort();
+        currentCondition = conds[conds.length - 1];
+        const gks = Object.keys(byGame).filter(k => k.startsWith(currentCondition + '|')).sort((a,b) => parseInt(a.split('|')[1]) - parseInt(b.split('|')[1]));
+        currentGameKey = gks[gks.length - 1];
+        const game = byGame[currentGameKey];
+        currentTurnIdx = game.length - 1;
+        document.getElementById('emptyState').style.display = 'none';
+        document.getElementById('vizContent').style.display = 'block';
+        renderCondBar();
+        renderGameSelect();
+        render();
+      }
+    }
+  } catch (e) {
+    liveErrorCount++;
+    const meta = liveLastUpdate ? `最終受信 ${liveLastUpdate.toLocaleTimeString()}` : '';
+    if (liveErrorCount <= 3) {
+      setLiveStatus('wait', `接続リトライ中... (${liveErrorCount})`, meta);
+    } else {
+      setLiveStatus('off', '接続エラー: ' + e.message, meta);
+    }
+  }
+}
+
+// ===== Event wiring =====
+document.getElementById('btnLoadCsv').onclick = () => document.getElementById('fileInput').click();
+document.getElementById('fileInput').onchange = (e) => { if (e.target.files[0]) handleCSVFile(e.target.files[0]); };
+document.getElementById('btnLiveMode').onclick = () => setMode('live');
+document.getElementById('btnRetry').onclick = () => setMode('live');
+document.getElementById('btnPrev').onclick = prevTurn;
+document.getElementById('btnNext').onclick = nextTurn;
+document.getElementById('btnPlay').onclick = togglePlay;
+
+const dropZone = document.getElementById('dropZone');
+const dropFileInput = document.getElementById('dropFileInput');
+dropZone.onclick = () => dropFileInput.click();
+dropFileInput.onchange = (e) => { if (e.target.files[0]) handleCSVFile(e.target.files[0]); };
+dropZone.ondragover = (e) => { e.preventDefault(); dropZone.classList.add('dragover'); };
+dropZone.ondragleave = () => dropZone.classList.remove('dragover');
+dropZone.ondrop = (e) => {
+  e.preventDefault();
+  dropZone.classList.remove('dragover');
+  if (e.dataTransfer.files[0]) handleCSVFile(e.dataTransfer.files[0]);
+};
+
+// Keyboard
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (e.key === 'ArrowLeft') prevTurn();
+  if (e.key === 'ArrowRight') nextTurn();
+  if (e.key === ' ') { e.preventDefault(); togglePlay(); }
+});
+
+// ===== Auto-start live mode on page load =====
+// ページを開いた瞬間からライブモードでビジュアライズを開始する。
+setMode('live');
+</script>
+</body>
+</html>

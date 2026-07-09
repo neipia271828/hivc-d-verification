@@ -1,0 +1,2 @@
+policy,games_requested,games,win_rate,survival_rate,mean_return,mean_regret
+mcts,1,1.0,1.0,1.0,1295.0,117.08333333333333

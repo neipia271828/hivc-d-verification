@@ -1,0 +1,65 @@
+# HIVC-D 3条件バッチ実験の設定（REQUIREMENTS §7）
+#
+# 使い方:
+#   python3 scripts/qwen_two_agent_experiment.py --config configs/experiment.yaml
+#
+# CLI引数で個別項目を上書き可能:
+#   python3 scripts/qwen_two_agent_experiment.py --config configs/experiment.yaml --games 50
+#
+# 全条件共通のゲームルール・初期状態・行動一覧を与え、条件間で差をつけるのは
+# 合意形成手順の指示のみ（REQUIREMENTS §7）。
+
+# モデル
+model_path: ~/models/Qwen3-14B
+
+# 実験条件（control / consulting / hivc_d の全部または一部）
+conditions:
+  - control
+  - consulting
+  - hivc_d
+
+# 1条件あたりのゲーム数
+games: 30
+
+# 乱数シード
+seed: 42
+
+# LLM生成パラメータ
+max_new_tokens: 1024
+max_discussion_turns: 24       # 1ターンの議論発言上限
+discussion_token_budget: 16184  # 議論のトークン予算上限
+
+# 探索ベース評価（Q値推定）のロールアウト数（多いほど精度up・遅くなる）
+evaluator_rollouts: 24
+
+# 出力先
+output_dir: hivc_sim/results/turn_game/experiment
+
+# ライブ可視化用JSONLの出力パス。
+# null なら無効。パスを指定すると各ターン終了時にJSONLを追記し、
+# visualize_game.html のライブモードでリアルタイム表示できる。
+# 使い方:
+#   1. ここにパスを指定して実験を起動
+#   2. 別ターミナルで python3 scripts/live_server.py --file <同じパス> --port 8765
+#   3. ブラウザで http://localhost:8765/visualize を開き「ライブモード」ボタン
+live_jsonl: hivc_sim/results/turn_game/experiment/stream.jsonl
+# live_jsonl: hivc_sim/results/turn_game/experiment/stream.jsonl
+
+# ペルソナ指定（いずれか1つ。全て null ならデフォルトペルソナを使用）
+role_file: role.json          # role.json の agent_01/agent_02 を使う
+alpha_role_key: null          # role.json内の任意キー（例: agent_07）
+beta_role_key: null           # role.json内の任意キー（例: agent_24）
+personas_file: null           # {"alpha":..., "beta":...} 形式のJSON
+persona_params_file: null     # 構造化ペルソナパラメータJSON
+alpha_persona: null           # 自然文ペルソナ（role_file/personas_fileより優先）
+beta_persona: null            # 自然文ペルソナ（role_file/personas_fileより優先）
+
+# ランダムペルソナ: true にすると各ゲームごとに role_file から
+# 重複なしで2エージェントをランダム選択する（多様なペルソナ組み合わせで実験）。
+# false なら固定ペルソナ（role_file / alpha_role_key / beta_role_key 等）を使う。
+random_persona: false
+
+# ランダムペルソナの抽選シード。
+# null ならゲームごとの seed（seed + game_index）を使うため、ゲームごとに異なる組み合わせになる。
+# 固定値を指定すると全ゲームで同じ組み合わせになる（再現性用）。
+random_seed: null

@@ -13,6 +13,9 @@ venv/
 .vscode/
 .DS_Store
 
+# GPU server SSH config (contains private key path)
+configs/gpu_server.yaml
+
 # LaTeX build artifacts
 *.aux
 *.log

@@ -1,0 +1,34 @@
+{
+  "alpha": {
+    "role": "安全管理担当",
+    "priority_weights": {
+      "oxygen": 0.3,
+      "power": 0.1,
+      "hull_damage": 0.25,
+      "flooding": 0.25,
+      "communication": 0.1
+    },
+    "risk_tolerance": 0.2,
+    "goal_focus": "survival_first",
+    "communication_style": "cautious",
+    "concession_tendency": 0.35,
+    "evidence_demand": 0.7,
+    "notes": "短期的な勝利よりも施設崩壊の回避を重視する。"
+  },
+  "beta": {
+    "role": "通信・電力担当",
+    "priority_weights": {
+      "oxygen": 0.1,
+      "power": 0.25,
+      "hull_damage": 0.1,
+      "flooding": 0.1,
+      "communication": 0.45
+    },
+    "risk_tolerance": 0.55,
+    "goal_focus": "mission_first",
+    "communication_style": "goal_directed",
+    "concession_tendency": 0.45,
+    "evidence_demand": 0.5,
+    "notes": "勝利条件の達成速度を重視する。"
+  }
+}

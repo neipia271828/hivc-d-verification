@@ -1,0 +1,40 @@
+# 2エージェント対話スモークテストの設定（1ゲームのみ）
+#
+# 使い方:
+#   python3 scripts/qwen_two_agent_turn_game_smoke.py --config configs/smoke.yaml
+#
+# CLI引数で個別項目を上書き可能:
+#   python3 scripts/qwen_two_agent_turn_game_smoke.py --config configs/smoke.yaml --seed 100
+
+model_path: ~/models/Qwen3-14B
+
+seed: 42
+
+# LLM生成パラメータ
+max_new_tokens: 96
+max_discussion_turns: 6
+discussion_token_budget: 768
+
+# 探索ベース評価のロールアウト数（スモークなので少なめ）
+evaluator_rollouts: 24
+
+# 出力先
+output: hivc_sim/results/turn_game/qwen_two_agent_smoke.csv
+
+# ライブ可視化用JSONLの出力パス（null なら無効。パスを指定すると有効化）
+# 使い方: experiment.yaml の同項目のコメントを参照
+live_jsonl: null
+# live_jsonl: hivc_sim/results/turn_game/experiment/stream.jsonl
+
+# ペルソナ指定
+role_file: role.json
+alpha_role_key: null
+beta_role_key: null
+personas_file: null
+persona_params_file: null
+alpha_persona: null
+beta_persona: null
+
+# ランダムペルソナ（true なら role_file から重複なしで2エージェントをランダム選択）
+random_persona: false
+random_seed: null
