@@ -6,10 +6,12 @@
   ローカルMacは開発・編集用であり、実験本体はGPUサーバーで動かす。
 - ライブ可視化はGPUサーバー上の `live_server.py --ngrok` で配信し、
   ngrokの公開URL経由でブラウザからアクセスする（ケース2運用）。
-- `visualize_game.html` はページ読み込み時に自動でライブモードを開始し、
-  `window.location.origin + /stream.jsonl` をポーリングする。
-  URL入力プロンプトは出ない。ngrok無料プラン対応のため
+- `visualize_game.html` はページ読み込み時に `/api/files` から
+  ファイル一覧を自動取得し、ドロップダウンでファイルを選択する。
+  ファイルパスの手動入力は不要。ngrok無料プラン対応のため
   `ngrok-skip-browser-warning` ヘッダーを送信する。
+- ライブモードは HTTP Range リクエストで差分取得し、
+  指数バックオフ付きの無制限自動リトライで接続を維持する。
 
 ## Git運用ルール
 
@@ -35,10 +37,8 @@ git pull origin main
 ## ライブ可視化の起動手順（GPUサーバー側）
 
 ```bash
-# 実験 + サーバーを同時起動（ngrok経由）
-python3 scripts/live_server.py \
-  --file hivc_sim/results/turn_game/experiment/stream.jsonl \
-  --port 8765 --ngrok
+# サーバーを起動（--file 指定不要、結果ディレクトリを自動スキャン）
+python3 scripts/live_server.py --port 8765 --ngrok
 
 # 別ターミナルで実験を起動
 python3 scripts/qwen_two_agent_experiment.py \
@@ -46,5 +46,16 @@ python3 scripts/qwen_two_agent_experiment.py \
   --live-jsonl hivc_sim/results/turn_game/experiment/stream.jsonl
 ```
 
-ブラウザで表示された `https://<ngrok-url>/visualize` を開くだけで
-自動的にライブモードが開始される。
+ブラウザで表示された `https://<ngrok-url>/visualize` を開くと、
+ファイル一覧がドロップダウン表示され、最新のJSONLが自動選択される。
+ライブ/リプレイをトグルボタンで切り替え可能。
+
+### サーバーAPI エンドポイント
+
+| パス | 説明 |
+|------|------|
+| `/visualize` | ビジュアライザーHTML |
+| `/api/files` | データファイル一覧（JSONL/CSV、メタデータ付き） |
+| `/api/file?path=<rel>` | ファイル配信（Range リクエスト対応） |
+| `/api/status` | ヘルスチェック |
+| `/stream.jsonl` | 後方互換: デフォルトJSONL配信 |

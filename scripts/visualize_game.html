@@ -20,7 +20,6 @@
   .topbar h1 { font-size: 18px; font-weight: 600; white-space: nowrap; }
   .topbar .mode-badge { font-size: 11px; padding: 3px 8px; border-radius: 12px; background: var(--accent); color: #fff; font-weight: 600; }
   .topbar .mode-badge.live { background: var(--bad); animation: pulse 1.5s infinite; }
-  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
   .topbar .spacer { flex: 1; }
   .btn { padding: 6px 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel2); color: var(--text); cursor: pointer; font-size: 13px; transition: all 0.15s; }
   .btn:hover { border-color: var(--accent); background: #2a2f3d; }
@@ -134,72 +133,91 @@
   .drop-zone:hover, .drop-zone.dragover { border-color: var(--accent); background: rgba(91,155,245,0.05); }
   .drop-zone input[type=file] { display: none; }
 
-  .live-status { font-size: 12px; color: var(--muted); }
-  .live-status .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
-  .live-status .dot.on { background: var(--good); }
-  .live-status .dot.off { background: var(--muted); }
-
   .persona-info { font-size: 11px; color: var(--muted); margin-top: 6px; line-height: 1.4; }
   .persona-info strong { color: var(--text); }
 
-  /* Live status bar */
-  .live-bar { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 16px; font-size: 13px; }
-  .live-bar .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
-  .live-bar .dot.on { background: var(--good); box-shadow: 0 0 8px var(--good); animation: pulse 1.5s infinite; }
-  .live-bar .dot.off { background: var(--bad); }
-  .live-bar .dot.wait { background: var(--warn); animation: pulse 1.5s infinite; }
-  .live-bar .live-text { flex: 1; color: var(--text); }
-  .live-bar .live-meta { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
-  .live-bar .btn-retry { padding: 4px 12px; font-size: 12px; }
+  /* Connection status bar */
+  .conn-bar { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 16px; font-size: 13px; }
+  .conn-bar .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .conn-bar .dot.on { background: var(--good); box-shadow: 0 0 8px var(--good); animation: pulse 1.5s infinite; }
+  .conn-bar .dot.off { background: var(--bad); }
+  .conn-bar .dot.wait { background: var(--warn); animation: pulse 1.5s infinite; }
+  .conn-bar .dot.scan { background: var(--accent); animation: pulse 1.5s infinite; }
+  .conn-bar .conn-text { flex: 1; color: var(--text); }
+  .conn-bar .conn-meta { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
-  /* Live waiting state */
-  .live-waiting { text-align: center; padding: 80px 20px; color: var(--muted); }
-  .live-waiting .spinner { width: 40px; height: 40px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; margin: 0 auto 20px; animation: spin 1s linear infinite; }
+  /* File selector bar */
+  .file-bar { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 16px; font-size: 13px; flex-wrap: wrap; }
+  .file-bar label { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .file-bar select { padding: 6px 10px; border-radius: 6px; background: var(--panel2); color: var(--text); border: 1px solid var(--border); font-size: 13px; max-width: 400px; }
+  .file-bar .file-meta { font-size: 11px; color: var(--muted); }
+  .file-bar .mode-toggle { display: flex; gap: 0; border-radius: 6px; overflow: hidden; border: 1px solid var(--border); }
+  .file-bar .mode-toggle button { padding: 6px 14px; border: none; background: var(--panel2); color: var(--text); cursor: pointer; font-size: 12px; transition: all 0.15s; }
+  .file-bar .mode-toggle button.active { background: var(--accent); color: #fff; }
+  .file-bar .refresh-btn { padding: 4px 10px; font-size: 12px; }
+
+  /* Waiting state */
+  .waiting { text-align: center; padding: 80px 20px; color: var(--muted); }
+  .waiting .spinner { width: 40px; height: 40px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; margin: 0 auto 20px; animation: spin 1s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .live-waiting h3 { font-size: 16px; margin-bottom: 8px; color: var(--text); }
-  .live-waiting p { font-size: 13px; margin-bottom: 6px; }
-  .live-waiting code { background: var(--panel2); padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+  .waiting h3 { font-size: 16px; margin-bottom: 8px; color: var(--text); }
+  .waiting p { font-size: 13px; margin-bottom: 6px; }
+  .waiting code { background: var(--panel2); padding: 2px 6px; border-radius: 4px; font-size: 12px; }
 
-  /* CSV toggle (collapsed by default for live-first UX) */
+  /* No files state */
+  .no-files { text-align: center; padding: 60px 20px; color: var(--muted); }
+  .no-files h3 { font-size: 16px; margin-bottom: 8px; color: var(--text); }
+  .no-files p { font-size: 13px; margin-bottom: 6px; }
+
+  /* CSV upload fallback (collapsed) */
   .csv-collapse { margin-top: 24px; }
   .csv-collapse summary { cursor: pointer; font-size: 12px; color: var(--muted); user-select: none; padding: 8px; border: 1px dashed var(--border); border-radius: 8px; text-align: center; }
   .csv-collapse summary:hover { border-color: var(--accent); }
   .csv-collapse[open] summary { margin-bottom: 16px; }
+
+  /* Error detail */
+  .error-detail { font-size: 11px; color: var(--bad); margin-top: 4px; word-break: break-all; }
 </style>
 </head>
 <body>
 <div class="app">
   <div class="topbar">
-    <h1>🌊 HIVC-D Deep-Sea Game Visualizer</h1>
+    <h1>HIVC-D Deep-Sea Game Visualizer</h1>
     <span class="mode-badge live" id="modeBadge">LIVE</span>
     <div class="spacer"></div>
-    <details style="position:relative;">
-      <summary class="btn" style="list-style:none;cursor:pointer;">☰ メニュー</summary>
-      <div style="position:absolute;right:0;top:100%;margin-top:6px;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px;display:flex;flex-direction:column;gap:6px;z-index:10;min-width:180px;">
-        <button class="btn" id="btnLoadCsv" style="text-align:left;">📄 CSVを読み込む</button>
-        <input type="file" id="fileInput" accept=".csv" style="display:none;">
-        <button class="btn" id="btnLiveMode" style="text-align:left;">🔴 ライブモード</button>
-      </div>
-    </details>
+    <button class="btn" id="btnRefreshFiles" title="ファイル一覧を再取得">🔄 更新</button>
   </div>
 
-  <div class="live-bar" id="liveBar">
-    <span class="dot wait" id="liveDot"></span>
-    <span class="live-text" id="liveText">ストリームに接続中...</span>
-    <span class="live-meta" id="liveMeta"></span>
-    <button class="btn btn-retry" id="btnRetry" style="display:none;">再接続</button>
+  <!-- File selector bar -->
+  <div class="file-bar" id="fileBar">
+    <label>データファイル:</label>
+    <select id="fileSelect" disabled>
+      <option>読み込み中...</option>
+    </select>
+    <span class="file-meta" id="fileMeta"></span>
+    <div class="mode-toggle">
+      <button id="btnModeLive" class="active">🔴 ライブ</button>
+      <button id="btnModeReplay">▶ リプレイ</button>
+    </div>
   </div>
 
-  <div id="emptyState" class="live-waiting">
+  <!-- Connection status bar -->
+  <div class="conn-bar" id="connBar">
+    <span class="dot scan" id="connDot"></span>
+    <span class="conn-text" id="connText">サーバーに接続中...</span>
+    <span class="conn-meta" id="connMeta"></span>
+  </div>
+
+  <!-- Waiting / empty state -->
+  <div id="emptyState" class="waiting">
     <div class="spinner"></div>
-    <h3>ストリームを待っています</h3>
-    <p>実験スクリプトが <code>stream.jsonl</code> にレコードを追記すると、自動的に表示されます。</p>
-    <p style="margin-top:12px;font-size:11px;">接続先: <code id="liveUrlDisplay">--</code></p>
+    <h3 id="emptyTitle">初期化中...</h3>
+    <p id="emptyMsg">サーバーからファイル一覧を取得しています。</p>
     <details class="csv-collapse">
-      <summary>CSVファイルから再生（オプション）</summary>
+      <summary>CSVファイルをローカルから読み込む（フォールバック）</summary>
       <div class="opts" style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:16px;">
         <div class="drop-zone" id="dropZone">
-          <p>📄 CSVファイルをドラッグ＆ドロップ<br>またはクリックして選択</p>
+          <p>CSVファイルをドラッグ＆ドロップ<br>またはクリックして選択</p>
           <p style="font-size:11px;color:var(--muted)">all_games.csv / {condition}_games.csv</p>
           <input type="file" id="dropFileInput" accept=".csv">
         </div>
@@ -260,16 +278,29 @@
 
 <script>
 // ===== State =====
-let allRecords = [];      // parsed turn records
-let byCondition = {};     // condition -> [records]
-let byGame = {};          // "condition|seed" -> [records sorted by turn]
+let allRecords = [];
+let byCondition = {};
+let byGame = {};
 let currentCondition = null;
 let currentGameKey = null;
 let currentTurnIdx = 0;
 let playTimer = null;
+
+// File discovery
+let availableFiles = [];
+let currentFile = null;       // {path, type, ...}
+let currentMode = 'live';     // 'live' | 'replay'
+
+// Live polling state
 let livePollTimer = null;
-let liveUrl = null;
-let liveSeenCount = 0;
+let liveByteOffset = 0;       // HTTP Range で既読のバイト位置
+let liveErrorCount = 0;
+let liveLastError = '';
+let liveLastSuccess = null;
+let liveBackoff = 1000;       // current backoff in ms
+
+const MAX_BACKOFF = 30000;    // 最大30秒
+const BASE_BACKOFF = 1000;    // 初期1秒
 
 const ACTION_NAMES = {
   A: '酸素安定化', B: '発電系修理', C: '通信修理', D: '浸水封鎖'
@@ -278,6 +309,26 @@ const EVENT_NAMES = {
   none: '異常なし', pressure_spike: '外圧上昇', leak_surge: '浸水増加',
   signal_window: '通信窓', crew_panic: '乗員動揺'
 };
+
+// ===== Utility =====
+function apiBase() {
+  return window.location.origin;
+}
+
+function safeJSON(str, fallback) {
+  if (!str || str === '') return fallback;
+  try { return JSON.parse(str); } catch { return fallback; }
+}
+
+function escapeHTML(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
+  return (bytes/1024/1024).toFixed(1) + ' MB';
+}
 
 // ===== CSV parsing =====
 function parseCSV(text) {
@@ -315,12 +366,8 @@ function parseCSVLine(line) {
   return result;
 }
 
-function safeJSON(str, fallback) {
-  if (!str || str === '') return fallback;
-  try { return JSON.parse(str); } catch { return fallback; }
-}
-
 function normalizeRecord(row) {
+  // JSONL レコードも CSV 行も同じフィールド名を想定
   return {
     condition: row.condition || 'unknown',
     seed: parseInt(row.seed || row.game_id || 0),
@@ -350,12 +397,282 @@ function normalizeRecord(row) {
   };
 }
 
-// ===== Data loading =====
-function loadRecords(records) {
-  allRecords = records;
+// ===== File discovery =====
+async function fetchFileList() {
+  try {
+    const resp = await fetch(apiBase() + '/api/files?t=' + Date.now(), {
+      cache: 'no-store',
+      headers: { 'ngrok-skip-browser-warning': 'true' }
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    availableFiles = data.files || [];
+    return availableFiles;
+  } catch (e) {
+    liveLastError = e.message;
+    return null;
+  }
+}
+
+function renderFileSelect() {
+  const sel = document.getElementById('fileSelect');
+  const meta = document.getElementById('fileMeta');
+  sel.innerHTML = '';
+  sel.disabled = false;
+
+  if (availableFiles.length === 0) {
+    sel.innerHTML = '<option>（ファイルなし）</option>';
+    sel.disabled = true;
+    meta.textContent = '';
+    return;
+  }
+
+  for (const f of availableFiles) {
+    const opt = document.createElement('option');
+    opt.value = f.path;
+    const typeIcon = f.type === 'jsonl' ? '🔴' : '📄';
+    opt.textContent = `${typeIcon} ${f.path} (${formatSize(f.size)}, ${f.mtime_iso})`;
+    sel.appendChild(opt);
+  }
+
+  // localStorage から前回選択を復元
+  const saved = localStorage.getItem('viz_lastFile');
+  if (saved && availableFiles.some(f => f.path === saved)) {
+    sel.value = saved;
+  } else {
+    // デフォルト: モードに応じて選択
+    if (currentMode === 'live') {
+      const firstJsonl = availableFiles.find(f => f.type === 'jsonl');
+      if (firstJsonl) sel.value = firstJsonl.path;
+    } else {
+      const firstCsv = availableFiles.find(f => f.type === 'csv');
+      if (firstCsv) sel.value = firstCsv.path;
+    }
+  }
+
+  sel.onchange = () => {
+    const f = availableFiles.find(f => f.path === sel.value);
+    if (f) selectFile(f);
+  };
+
+  const current = availableFiles.find(f => f.path === sel.value);
+  if (current) {
+    meta.textContent = `${current.type.toUpperCase()} | ${formatSize(current.size)}`;
+  }
+}
+
+async function selectFile(file) {
+  currentFile = file;
+  localStorage.setItem('viz_lastFile', file.path);
+  const meta = document.getElementById('fileMeta');
+  meta.textContent = `${file.type.toUpperCase()} | ${formatSize(file.size)}`;
+
+  // ファイルタイプに応じてモードを自動切替
+  if (file.type === 'jsonl') {
+    setMode('live');
+  } else {
+    setMode('replay');
+  }
+}
+
+// ===== Mode switching =====
+function setMode(mode) {
+  currentMode = mode;
+  const badge = document.getElementById('modeBadge');
+  const btnLive = document.getElementById('btnModeLive');
+  const btnReplay = document.getElementById('btnModeReplay');
+
+  stopLive();
+  stopPlay();
+
+  if (mode === 'live') {
+    badge.textContent = 'LIVE';
+    badge.className = 'mode-badge live';
+    btnLive.classList.add('active');
+    btnReplay.classList.remove('active');
+    startLive();
+  } else {
+    badge.textContent = 'REPLAY';
+    badge.className = 'mode-badge';
+    btnLive.classList.remove('active');
+    btnReplay.classList.add('active');
+    loadReplayFile();
+  }
+}
+
+// ===== Live mode (robust polling with Range + exponential backoff) =====
+function startLive() {
+  if (!currentFile || currentFile.type !== 'jsonl') {
+    setConnStatus('wait', 'ライブ対象のJSONLファイルを選択してください', '');
+    showEmpty('ファイルを選択', '上のドロップダウンからJSONLファイルを選択するか、🔄更新ボタンでファイル一覧を再取得してください。');
+    return;
+  }
+  liveByteOffset = 0;
+  liveErrorCount = 0;
+  liveLastError = '';
+  liveBackoff = BASE_BACKOFF;
+  allRecords = [];
   byCondition = {};
   byGame = {};
-  for (const r of records) {
+  setConnStatus('wait', 'ストリームに接続中...', '');
+  showEmpty('ストリームを待っています', `実験スクリプトが <code>${currentFile.path}</code> にレコードを追記すると、自動的に表示されます。`);
+  pollLive(); // 即座に1回実行
+  scheduleNextPoll();
+}
+
+function scheduleNextPoll() {
+  if (livePollTimer) clearTimeout(livePollTimer);
+  livePollTimer = setTimeout(pollLive, liveBackoff);
+}
+
+function stopLive() {
+  if (livePollTimer) { clearTimeout(livePollTimer); livePollTimer = null; }
+}
+
+function setConnStatus(state, text, meta) {
+  const dot = document.getElementById('connDot');
+  const txt = document.getElementById('connText');
+  const metaEl = document.getElementById('connMeta');
+  dot.className = 'dot ' + state;
+  txt.textContent = text;
+  metaEl.textContent = meta || '';
+}
+
+async function pollLive() {
+  if (!currentFile || currentFile.type !== 'jsonl') {
+    scheduleNextPoll();
+    return;
+  }
+  // このポーリングで要求する開始バイト位置（Range の起点）
+  const reqStart = liveByteOffset;
+  try {
+    // Range ヘッダで既読以降のバイトのみ取得（効率化）
+    const headers = { 'ngrok-skip-browser-warning': 'true' };
+    if (reqStart > 0) {
+      headers['Range'] = `bytes=${reqStart}-`;
+    }
+    const resp = await fetch(apiBase() + '/api/file?path=' + encodeURIComponent(currentFile.path) + '&t=' + Date.now(), {
+      cache: 'no-store',
+      headers: headers,
+    });
+
+    if (resp.status === 416) {
+      // Range Not Satisfiable。2通りの意味がある:
+      //   (a) 新規データなし（offset == ファイルサイズ）… 正常な待機状態
+      //   (b) ファイルが縮小した（実験やり直し等）… 全リロードが必要
+      // Content-Range: bytes */<size> から実サイズを取得して判別する。
+      let fileSize = reqStart;
+      const cr = resp.headers.get('Content-Range');
+      if (cr) {
+        const mm = cr.match(/\/(\d+)/);
+        if (mm) fileSize = parseInt(mm[1]);
+      }
+      liveErrorCount = 0;
+      liveBackoff = BASE_BACKOFF;
+      if (fileSize < reqStart) {
+        // (b) 縮小 → オフセットとレコードをリセットして再取得
+        liveByteOffset = 0;
+        allRecords = [];
+        byCondition = {};
+        byGame = {};
+        setConnStatus('wait', 'ファイルがリセットされました。再読み込み中...', '');
+      } else if (allRecords.length > 0) {
+        // (a) 新規なし・受信済みデータあり
+        setConnStatus('on', `ライブ受信中: ${allRecords.length} ターン`, `更新なし | ${formatSize(fileSize)}`);
+      } else {
+        setConnStatus('wait', 'ストリーム接続済み・レコード待機中', `ファイルサイズ: ${formatSize(fileSize)}`);
+      }
+      scheduleNextPoll();
+      return;
+    }
+
+    if (!resp.ok && resp.status !== 206) throw new Error('HTTP ' + resp.status);
+
+    const text = await resp.text();
+
+    liveErrorCount = 0;
+    liveBackoff = BASE_BACKOFF;
+
+    // 完全な行（末尾に改行があるところまで）だけを消費する。
+    // 末尾の書きかけ行は次回に持ち越す（部分行によるレコード欠落を防ぐ）。
+    // オフセットは「消費したテキストの UTF-8 バイト長」で行境界に沿って前進させる
+    // （text.length は文字数でありバイト数ではないため、日本語データで破綻する）。
+    const lastNL = text.lastIndexOf('\n');
+    const consumed = lastNL === -1 ? '' : text.slice(0, lastNL + 1);
+    liveByteOffset = reqStart + new Blob([consumed]).size;
+
+    const lines = consumed.split(/\r?\n/).filter(l => l.trim());
+
+    if (lines.length === 0) {
+      if (allRecords.length === 0) {
+        setConnStatus('wait', 'ストリーム接続済み・レコード待機中', `ファイルサイズ: ${formatSize(liveByteOffset)}`);
+      }
+      scheduleNextPoll();
+      return;
+    }
+
+    // 新しいレコードを解析して追加
+    const newRecords = [];
+    for (const line of lines) {
+      try {
+        const obj = JSON.parse(line);
+        newRecords.push(normalizeRecord(obj));
+      } catch {}
+    }
+
+    if (newRecords.length > 0) {
+      allRecords = allRecords.concat(newRecords);
+      reindexRecords();
+      // 最新ゲームの最新ターンにジャンプ
+      jumpToLatest();
+      liveLastSuccess = new Date();
+      const meta = `${allRecords.length} ターン | 更新 ${liveLastSuccess.toLocaleTimeString()} | ${formatSize(liveByteOffset)}`;
+      setConnStatus('on', `ライブ受信中: ${allRecords.length} ターン`, meta);
+    }
+  } catch (e) {
+    liveErrorCount++;
+    liveLastError = e.message;
+    // 指数バックオフ
+    liveBackoff = Math.min(liveBackoff * 2, MAX_BACKOFF);
+    const meta = liveLastSuccess ? `最終受信 ${liveLastSuccess.toLocaleTimeString()}` : '';
+    if (liveErrorCount <= 2) {
+      setConnStatus('wait', `接続リトライ中... (${liveErrorCount})`, meta);
+    } else {
+      setConnStatus('off', `接続エラー（自動リトライ中）: ${e.message}`, `${meta} | 次回: ${(liveBackoff/1000).toFixed(0)}秒後`);
+    }
+  }
+  scheduleNextPoll();
+}
+
+// ===== Replay mode (fetch CSV from server) =====
+async function loadReplayFile() {
+  if (!currentFile) {
+    setConnStatus('wait', 'リプレイ対象のCSVファイルを選択してください', '');
+    showEmpty('ファイルを選択', '上のドロップダウンからCSVファイルを選択してください。');
+    return;
+  }
+  setConnStatus('wait', `読み込み中: ${currentFile.path}`, '');
+  try {
+    const resp = await fetch(apiBase() + '/api/file?path=' + encodeURIComponent(currentFile.path) + '&t=' + Date.now(), {
+      cache: 'no-store',
+      headers: { 'ngrok-skip-browser-warning': 'true' }
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const text = await resp.text();
+    const records = parseCSV(text).map(normalizeRecord);
+    setConnStatus('on', `リプレイ: ${currentFile.path}`, `${records.length} レコード`);
+    loadRecords(records);
+  } catch (e) {
+    setConnStatus('off', `読み込みエラー: ${e.message}`, '');
+    showEmpty('読み込み失敗', `サーバーからファイルを取得できませんでした: ${escapeHTML(e.message)}`);
+  }
+}
+
+// ===== Data loading & indexing =====
+function reindexRecords() {
+  byCondition = {};
+  byGame = {};
+  for (const r of allRecords) {
     if (!byCondition[r.condition]) byCondition[r.condition] = [];
     byCondition[r.condition].push(r);
     const gk = r.condition + '|' + r.seed;
@@ -365,8 +682,16 @@ function loadRecords(records) {
   for (const gk in byGame) {
     byGame[gk].sort((a, b) => a.turn - b.turn);
   }
+}
+
+function loadRecords(records) {
+  allRecords = records;
+  reindexRecords();
   const conds = Object.keys(byCondition).sort();
-  if (conds.length === 0) { alert('データがありません'); return; }
+  if (conds.length === 0) {
+    showEmpty('データなし', 'ファイルに有効なレコードが含まれていません。');
+    return;
+  }
   currentCondition = conds[0];
   const gameKeys = Object.keys(byGame).filter(k => k.startsWith(currentCondition + '|')).sort((a,b) => {
     const sa = parseInt(a.split('|')[1]), sb = parseInt(b.split('|')[1]);
@@ -374,8 +699,22 @@ function loadRecords(records) {
   });
   currentGameKey = gameKeys[0];
   currentTurnIdx = 0;
-  document.getElementById('emptyState').style.display = 'none';
-  document.getElementById('vizContent').style.display = 'block';
+  hideEmpty();
+  renderCondBar();
+  renderGameSelect();
+  render();
+}
+
+function jumpToLatest() {
+  const conds = Object.keys(byCondition).sort();
+  if (conds.length === 0) return;
+  currentCondition = conds[conds.length - 1];
+  const gks = Object.keys(byGame).filter(k => k.startsWith(currentCondition + '|')).sort((a,b) => parseInt(a.split('|')[1]) - parseInt(b.split('|')[1]));
+  if (gks.length === 0) return;
+  currentGameKey = gks[gks.length - 1];
+  const game = byGame[currentGameKey];
+  currentTurnIdx = game.length - 1;
+  hideEmpty();
   renderCondBar();
   renderGameSelect();
   render();
@@ -385,10 +724,23 @@ function handleCSVFile(file) {
   const reader = new FileReader();
   reader.onload = (e) => {
     const records = parseCSV(e.target.result).map(normalizeRecord);
-    setMode('replay');
+    setConnStatus('on', `ローカルCSV: ${file.name}`, `${records.length} レコード`);
     loadRecords(records);
   };
   reader.readAsText(file, 'UTF-8');
+}
+
+// ===== UI helpers =====
+function showEmpty(title, msg) {
+  document.getElementById('emptyState').style.display = 'block';
+  document.getElementById('vizContent').style.display = 'none';
+  document.getElementById('emptyTitle').textContent = title;
+  document.getElementById('emptyMsg').innerHTML = msg;
+}
+
+function hideEmpty() {
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('vizContent').style.display = 'block';
 }
 
 // ===== Rendering =====
@@ -568,10 +920,6 @@ function renderTimeline() {
   }
 }
 
-function escapeHTML(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
 // ===== Controls =====
 function nextTurn() {
   const game = getCurrentGame();
@@ -599,124 +947,30 @@ function stopPlay() {
   document.getElementById('btnPlay').textContent = '▶ 自動再生';
 }
 
-// ===== Live mode =====
-let liveErrorCount = 0;
-let liveLastUpdate = null;
-
-function setMode(mode) {
-  const badge = document.getElementById('modeBadge');
-  const liveBar = document.getElementById('liveBar');
-  stopLive();
-  stopPlay();
-  if (mode === 'live') {
-    badge.textContent = 'LIVE';
-    badge.className = 'mode-badge live';
-    liveBar.style.display = 'flex';
-    startLive();
-  } else {
-    badge.textContent = 'REPLAY';
-    badge.className = 'mode-badge';
-    liveBar.style.display = 'none';
-  }
-}
-
-function startLive() {
-  // 常にngrok経由（ケース2）で利用する前提。
-  // 現在のページのオリジン + /stream.jsonl を自動的に使用し、プロンプト入力を省略する。
-  liveUrl = window.location.origin + '/stream.jsonl';
-  const urlDisplay = document.getElementById('liveUrlDisplay');
-  if (urlDisplay) urlDisplay.textContent = liveUrl;
-  liveSeenCount = 0;
-  allRecords = [];
-  liveErrorCount = 0;
-  setLiveStatus('wait', 'ストリームに接続中...', '');
-  pollLive();
-  livePollTimer = setInterval(pollLive, 2000);
-}
-
-function stopLive() {
-  if (livePollTimer) { clearInterval(livePollTimer); livePollTimer = null; }
-}
-
-function setLiveStatus(state, text, meta) {
-  const dot = document.getElementById('liveDot');
-  const txt = document.getElementById('liveText');
-  const metaEl = document.getElementById('liveMeta');
-  const retryBtn = document.getElementById('btnRetry');
-  dot.className = 'dot ' + state;
-  txt.textContent = text;
-  metaEl.textContent = meta || '';
-  retryBtn.style.display = (state === 'off') ? 'inline-block' : 'none';
-}
-
-async function pollLive() {
-  try {
-    const resp = await fetch(liveUrl + '?t=' + Date.now(), {
-      cache: 'no-store',
-      headers: { 'ngrok-skip-browser-warning': 'true' }
-    });
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    const text = await resp.text();
-    const lines = text.split(/\r?\n/).filter(l => l.trim());
-    liveErrorCount = 0;
-    liveLastUpdate = new Date();
-    const meta = `${lines.length} ターン | 更新 ${liveLastUpdate.toLocaleTimeString()}`;
-    if (lines.length === 0) {
-      setLiveStatus('wait', 'ストリーム接続済み・レコード待機中', meta);
-      return;
-    }
-    setLiveStatus('on', `ライブ受信中: ${lines.length} ターン`, meta);
-    if (lines.length > liveSeenCount) {
-      const newRecords = [];
-      for (let i = liveSeenCount; i < lines.length; i++) {
-        try {
-          const obj = JSON.parse(lines[i]);
-          newRecords.push(normalizeRecord(obj));
-        } catch {}
-      }
-      liveSeenCount = lines.length;
-      if (newRecords.length > 0) {
-        allRecords = allRecords.concat(newRecords);
-        // re-index
-        byCondition = {}; byGame = {};
-        for (const r of allRecords) {
-          if (!byCondition[r.condition]) byCondition[r.condition] = [];
-          byCondition[r.condition].push(r);
-          const gk = r.condition + '|' + r.seed;
-          if (!byGame[gk]) byGame[gk] = [];
-          byGame[gk].push(r);
-        }
-        for (const gk in byGame) byGame[gk].sort((a,b) => a.turn - b.turn);
-        // jump to latest game's latest turn
-        const conds = Object.keys(byCondition).sort();
-        currentCondition = conds[conds.length - 1];
-        const gks = Object.keys(byGame).filter(k => k.startsWith(currentCondition + '|')).sort((a,b) => parseInt(a.split('|')[1]) - parseInt(b.split('|')[1]));
-        currentGameKey = gks[gks.length - 1];
-        const game = byGame[currentGameKey];
-        currentTurnIdx = game.length - 1;
-        document.getElementById('emptyState').style.display = 'none';
-        document.getElementById('vizContent').style.display = 'block';
-        renderCondBar();
-        renderGameSelect();
-        render();
-      }
-    }
-  } catch (e) {
-    liveErrorCount++;
-    const meta = liveLastUpdate ? `最終受信 ${liveLastUpdate.toLocaleTimeString()}` : '';
-    if (liveErrorCount <= 3) {
-      setLiveStatus('wait', `接続リトライ中... (${liveErrorCount})`, meta);
-    } else {
-      setLiveStatus('off', '接続エラー: ' + e.message, meta);
-    }
-  }
-}
-
 // ===== Event wiring =====
-document.getElementById('btnLoadCsv').onclick = () => document.getElementById('fileInput').click();
-document.getElementById('fileInput').onchange = (e) => { if (e.target.files[0]) handleCSVFile(e.target.files[0]); };
-document.getElementById('btnLiveMode').onclick = () => setMode('live');
-document.getElementById('btnRetry').onclick = () => setMode('live');
+document.getElementById('btnModeLive').onclick = () => {
+  // ライブモードに切り替え: 最新のJSONLを自動選択
+  const jsonlFile = availableFiles.find(f => f.type === 'jsonl');
+  if (jsonlFile) {
+    document.getElementById('fileSelect').value = jsonlFile.path;
+    currentFile = jsonlFile;
+    localStorage.setItem('viz_lastFile', jsonlFile.path);
+  }
+  setMode('live');
+};
+document.getElementById('btnModeReplay').onclick = () => {
+  // リプレイモードに切り替え: 最新のCSVを自動選択
+  const csvFile = availableFiles.find(f => f.type === 'csv');
+  if (csvFile) {
+    document.getElementById('fileSelect').value = csvFile.path;
+    currentFile = csvFile;
+    localStorage.setItem('viz_lastFile', csvFile.path);
+  }
+  setMode('replay');
+};
+
+document.getElementById('btnRefreshFiles').onclick = () => init();
+
 document.getElementById('btnPrev').onclick = prevTurn;
 document.getElementById('btnNext').onclick = nextTurn;
 document.getElementById('btnPlay').onclick = togglePlay;
@@ -741,9 +995,46 @@ document.addEventListener('keydown', (e) => {
   if (e.key === ' ') { e.preventDefault(); togglePlay(); }
 });
 
-// ===== Auto-start live mode on page load =====
-// ページを開いた瞬間からライブモードでビジュアライズを開始する。
-setMode('live');
+// ===== Initialization =====
+async function init() {
+  setConnStatus('scan', 'サーバーからファイル一覧を取得中...', '');
+  showEmpty('初期化中', 'サーバーからファイル一覧を取得しています。');
+
+  const files = await fetchFileList();
+  if (files === null) {
+    setConnStatus('off', `サーバーに接続できません: ${liveLastError}`, '');
+    showEmpty('サーバー接続エラー',
+      `サーバー (<code>${apiBase()}</code>) に接続できませんでした。<br>` +
+      `<span class="error-detail">${escapeHTML(liveLastError)}</span><br><br>` +
+      `サーバーが起動しているか確認してください: <code>python3 scripts/live_server.py</code>`);
+    // 5秒後に自動リトライ
+    setTimeout(() => { if (availableFiles.length === 0) init(); }, 5000);
+    return;
+  }
+
+  renderFileSelect();
+
+  if (availableFiles.length === 0) {
+    setConnStatus('wait', 'データファイルが見つかりません', '');
+    showEmpty('ファイルなし',
+      '結果ディレクトリに .jsonl または .csv ファイルがありません。<br>' +
+      '実験スクリプトを実行してデータを生成するか、🔄更新ボタンで再スキャンしてください。<br><br>' +
+      'または下の折りたたみからCSVをローカル読み込みできます。');
+    return;
+  }
+
+  // 選択されているファイルを取得
+  const sel = document.getElementById('fileSelect');
+  const selected = availableFiles.find(f => f.path === sel.value);
+  if (selected) {
+    await selectFile(selected);
+  } else {
+    setConnStatus('wait', 'ファイルを選択してください', '');
+  }
+}
+
+// ===== Auto-start on page load =====
+init();
 </script>
 </body>
 </html>
