@@ -1,24 +1,24 @@
 """REQUIREMENTS §7 の3条件（control / consulting / hivc_d）バッチ実験用 共有モジュール。
 
-qwen_two_agent_turn_game_smoke.py が持つ LLM 呼び出し・プロンプト構築・議論ループ
-を再利用しつつ、条件ごとに「合意形成手順の指示」だけを差し替える。条件間で差を
-つけるのはこの手順知識のみで、ゲームルール・初期状態・行動一覧・過去プレイ統計は
-全条件共通（REQUIREMENTS §7）。
-
-Q 値・best_action・acceptable_actions は議論中のエージェントには見せず、行動後の
-評価にのみ使う（REQUIREMENTS §7.1）。
+REQUIREMENTS §7.1 のマルチエージェント議論・意思決定機会を実装する。
 """
 from __future__ import annotations
 
 import argparse
 import json
 import re
+import sys
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+# hivc_sim/turn_game.py を import テストでも解決できるよう、リポジトリルートから hivc_sim を sys.path に追加
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_HIVC_SIM_PATH = _REPO_ROOT / "hivc_sim"
+if str(_HIVC_SIM_PATH) not in sys.path:
+    sys.path.insert(0, str(_HIVC_SIM_PATH))
 
 from turn_game import (
     ACTION_LABELS,
@@ -96,6 +96,23 @@ DEFAULT_PERSONA_PARAMS: dict[str, dict[str, object]] = {
         "evidence_demand": 0.50,
         "notes": "勝利条件の達成速度を重視する。",
     },
+}
+
+
+class SpeechAct(str, Enum):
+    EVIDENCE = "evidence"
+    QUESTION_OBJECTION = "question_objection"
+    TRADEOFF = "tradeoff"
+    CONCESSION_INTEGRATION = "concession_integration"
+    INFORMATION_REQUEST = "information_request"
+
+
+SPEECH_ACT_LABELS: dict[SpeechAct, str] = {
+    SpeechAct.EVIDENCE: "根拠提示（状態・リスク・制約）",
+    SpeechAct.QUESTION_OBJECTION: "質問・反論",
+    SpeechAct.TRADEOFF: "トレードオフ比較",
+    SpeechAct.CONCESSION_INTEGRATION: "譲歩案・統合案",
+    SpeechAct.INFORMATION_REQUEST: "情報要請・要約",
 }
 
 
@@ -243,6 +260,56 @@ def action_list() -> str:
     return "\n".join([f"{action.value}. {ACTION_LABELS[action]}" for action in ALL_ACTIONS])
 
 
+def schedule_decision_opportunities(seed: int, turn: int, schedule_seed: int = 0, max_opportunities: int = 3) -> int:
+    """ゲームseed、ターン、固定スケジュールseedから決定論的に意思決定機会数を返す。"""
+    return ((seed + turn * 31 + schedule_seed * 37) % max_opportunities) + 1
+
+
+def priority_agent(seed: int, turn: int) -> str:
+    """フォールバック優先エージェントを返す。"""
+    return "alpha" if (seed + turn) % 2 == 0 else "beta"
+
+
+def format_transcript_text(transcript: list[dict[str, Any]]) -> str:
+    """会話トランスクリプトをプロンプト用テキストに整形する。"""
+    if not transcript:
+        return "まだ議論はありません。"
+    lines: list[str] = []
+    for item in transcript:
+        speaker = item.get("speaker", "unknown")
+        parts: list[str] = [f"{speaker}:"]
+        speech_act = item.get("speech_act")
+        if speech_act:
+            parts.append(f"[{speech_act}]")
+        message = item.get("message", "")
+        if message:
+            parts.append(message)
+        extras: list[str] = []
+        if item.get("action"):
+            extras.append(f"action={item['action']}")
+        if item.get("reason"):
+            extras.append(f"reason={item['reason']}")
+        if "ready" in item:
+            extras.append(f"ready={item['ready']}")
+        if extras:
+            parts.append(f"({' | '.join(extras)})")
+        lines.append(" ".join(parts))
+    return "\n".join(lines)
+
+
+def _normalize_speech_act(value: Any) -> SpeechAct | None:
+    if value is None:
+        return None
+    key = str(value).strip().lower()
+    for act in SpeechAct:
+        if act.value == key:
+            return act
+    for act, label in SPEECH_ACT_LABELS.items():
+        if label.lower() == key:
+            return act
+    return None
+
+
 def extract_json_action(response: str) -> tuple[Action | None, str, str, bool]:
     text = response.strip()
     json_match = re.search(r"\{.*?\}", text, flags=re.DOTALL)
@@ -261,6 +328,27 @@ def extract_json_action(response: str) -> tuple[Action | None, str, str, bool]:
     if letter_match:
         return Action(letter_match.group(1)), text[:160], text[:160], False
     return None, text[:160], text[:160], False
+
+
+def extract_json_discussion(response: str) -> tuple[SpeechAct | None, str, Action | None, str]:
+    """自由議論用JSONをパースする。"""
+    text = response.strip()
+    json_match = re.search(r"\{.*?\}", text, flags=re.DOTALL)
+    if json_match:
+        try:
+            payload = json.loads(json_match.group(0))
+            speech_act = _normalize_speech_act(payload.get("speech_act"))
+            message = str(payload.get("message", "")).strip()
+            reason = str(payload.get("reason", "")).strip()
+            action: Action | None = None
+            if "action" in payload:
+                action_text = str(payload["action"]).strip().upper()
+                if action_text in {action.value for action in ALL_ACTIONS}:
+                    action = Action(action_text)
+            return speech_act, message, action, reason
+        except json.JSONDecodeError:
+            pass
+    return None, text[:160], None, ""
 
 
 def format_persona(agent_name: str, persona: str, persona_params: dict[str, object] | None) -> str:
@@ -291,26 +379,19 @@ def _procedure_block(condition: str) -> str:
     return f"{text}\n\n" if text else ""
 
 
+def _speech_act_guide() -> str:
+    return "\n".join([f"- {act.value}: {label}" for act, label in SPEECH_ACT_LABELS.items()])
+
+
 def discussion_prompt(
     agent_name: str,
     persona: str,
     persona_params: dict[str, object] | None,
     state,
-    transcript: list[dict[str, str]],
+    transcript: list[dict[str, Any]],
     max_discussion_turns: int,
     condition: str = "control",
 ) -> str:
-    if transcript:
-        transcript_text = "\n".join(
-            [
-                f"{item['speaker']}: action={item['action']} ready={item['ready']} "
-                f"reason={item['reason']} message={item['message']}"
-                for item in transcript
-            ]
-        )
-    else:
-        transcript_text = "まだ議論はありません。"
-
     return f"""あなたは深海研究施設トラブルの意思決定エージェントです。
 あなたのペルソナ設定:
 {format_persona(agent_name, persona, persona_params)}
@@ -331,35 +412,41 @@ def discussion_prompt(
 {action_list()}
 
 {_procedure_block(condition)}これまでの議論:
-{transcript_text}
+{format_transcript_text(transcript)}
 
-議論は最大 {max_discussion_turns} 発言までです。
-相手と合意できるなら ready を true にしてください。
-まだ説得・修正が必要なら ready を false にしてください。
-次の発言として、提案する行動を1つ出してください。
+自由議論の発言目的は以下のいずれかを speech_act として選んでください:
+{_speech_act_guide()}
+
+この自由議論フェーズでは最大 {max_discussion_turns} 発言までです。
+行動案を述べたい場合は action（A-D）と reason を含めてください。
+ready は不要です。
 必ず次のJSONだけを返してください。説明文やMarkdownは不要です。
-{{"action":"A","reason":"短い理由","message":"相手への短い発言","ready":false}}
+{{"speech_act":"evidence","message":"相手への短い発言","action":"A","reason":"短い理由"}}
 """
 
 
-def forced_vote_prompt(
+def decision_opportunity_prompt(
     agent_name: str,
     persona: str,
     persona_params: dict[str, object] | None,
     state,
-    transcript: list[dict[str, str]],
-    condition: str = "control",
+    transcript: list[dict[str, Any]],
+    condition: str,
+    opportunity_index: int,
+    opportunity_count: int,
 ) -> str:
-    transcript_text = "\n".join(
-        [
-            f"{item['speaker']}: action={item['action']} ready={item['ready']} "
-            f"reason={item['reason']} message={item['message']}"
-            for item in transcript
-        ]
-    )
     return f"""あなたは深海研究施設トラブルの意思決定エージェントです。
 あなたのペルソナ設定:
 {format_persona(agent_name, persona, persona_params)}
+
+勝利条件:
+- communication >= 3
+
+敗北条件:
+- oxygen <= 0
+- power <= 0
+- hull_damage >= 5
+- flooding >= 5
 
 現在状態:
 {format_state(state)}
@@ -367,22 +454,27 @@ def forced_vote_prompt(
 選択可能な行動:
 {action_list()}
 
-{_procedure_block(condition)}ここまでの議論:
-{transcript_text}
+{_procedure_block(condition)}これまでの議論:
+{format_transcript_text(transcript)}
 
-議論予算を使い切りました。最終票を1つだけ出してください。
+これは第 {opportunity_index} / {opportunity_count} 回の意思決定機会です。
+各エージェントは独立に最終案を一つだけ出してください。
+出力には action（A-D）、短い reason、そして合意意思を表す ready（true/false）を含めてください。
+全員が同じ action かつ ready=true なら合意成立です。
 必ず次のJSONだけを返してください。説明文やMarkdownは不要です。
-{{"action":"A","reason":"最終判断の短い理由","message":"最終票","ready":true}}
+{{"action":"A","reason":"短い理由","ready":true}}
 """
 
 
 def run_prompt(model, tokenizer, prompt: str, max_new_tokens: int, enable_thinking: bool = False, thinking_budget: int | None = None) -> tuple[str, str]:
     """モデルにプロンプトを送り、(thinking_content, response_text) を返す。
 
-    enable_thinking=True の場合、モデルは <think>...</think> 内に思考を出力する。
+    enable_thinking=True の場合、モデルは  <think>... </think> 内に思考を出力する。
     thinking_content はその内部テキスト、response_text は思考以降の最終応答。
     enable_thinking=False の場合、thinking_content は空文字。
     """
+    import torch
+
     messages = [{"role": "user", "content": prompt}]
     template_kwargs: dict[str, Any] = {
         "tokenize": False,
@@ -401,7 +493,7 @@ def run_prompt(model, tokenizer, prompt: str, max_new_tokens: int, enable_thinki
         )
     full = tokenizer.decode(output[0][inputs.input_ids.shape[1] :], skip_special_tokens=True)
 
-    # <think>...</think> ブロックを抽出（Qwen3 thinkingモード）
+    #  <think>... </think> ブロックを抽出（Qwen3 thinkingモード）
     think_match = re.search(r"<think>(.*?)</think>", full, flags=re.DOTALL)
     if think_match:
         thinking_content = think_match.group(1).strip()
@@ -413,34 +505,10 @@ def run_prompt(model, tokenizer, prompt: str, max_new_tokens: int, enable_thinki
     return thinking_content, response_text
 
 
-def get_action(model, tokenizer, prompt: str, max_new_tokens: int, fallback: Action, enable_thinking: bool = False, thinking_budget: int | None = None) -> tuple[Action, str, str, bool, str, str]:
-    """(action, reason, message, ready, raw_response, thinking) を返す。"""
-    thinking, raw = run_prompt(model, tokenizer, prompt, max_new_tokens, enable_thinking=enable_thinking, thinking_budget=thinking_budget)
-    action, reason, message, ready = extract_json_action(raw)
-    if action is None:
-        return fallback, f"invalid_response_fallback: {reason}", message, False, raw, thinking
-    return action, reason, message, ready, raw, thinking
-
-
-def find_discussion_consensus(transcript: list[dict[str, str]]) -> Action | None:
-    ready_by_speaker = {item["speaker"]: item for item in transcript if item["ready"] == "true"}
-    if "alpha" in ready_by_speaker and "beta" in ready_by_speaker:
-        alpha_ready = Action(ready_by_speaker["alpha"]["action"])
-        beta_ready = Action(ready_by_speaker["beta"]["action"])
-        if alpha_ready == beta_ready:
-            return alpha_ready
-    return None
-
-
-def decide_group_action(turn: int, alpha_vote: Action, beta_vote: Action) -> tuple[Action, str]:
-    if alpha_vote == beta_vote:
-        return alpha_vote, "forced_vote_agreement"
-    if turn % 2 == 0:
-        return alpha_vote, "split_vote_alpha_priority"
-    return beta_vote, "split_vote_beta_priority"
-
-
 def load_model(model_path: str):
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
     quantization_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
@@ -454,6 +522,40 @@ def load_model(model_path: str):
         quantization_config=quantization_config,
     )
     return model, tokenizer
+
+
+def get_action(model, tokenizer, prompt: str, max_new_tokens: int, fallback: Action, enable_thinking: bool = False, thinking_budget: int | None = None) -> tuple[Action, str, str, bool, str, str]:
+    """(action, reason, message, ready, raw_response, thinking) を返す。"""
+    thinking, raw = run_prompt(model, tokenizer, prompt, max_new_tokens, enable_thinking=enable_thinking, thinking_budget=thinking_budget)
+    action, reason, message, ready = extract_json_action(raw)
+    if action is None:
+        return fallback, f"invalid_response_fallback: {reason}", message, False, raw, thinking
+    return action, reason, message, ready, raw, thinking
+
+
+def get_discussion_message(
+    model,
+    tokenizer,
+    prompt: str,
+    max_new_tokens: int,
+    fallback_action: Action | None = None,
+    enable_thinking: bool = False,
+    thinking_budget: int | None = None,
+) -> tuple[SpeechAct, str, Action | None, str, str, str]:
+    """自由議論用の (speech_act, message, action, reason, raw, thinking) を返す。"""
+    thinking, raw = run_prompt(model, tokenizer, prompt, max_new_tokens, enable_thinking=enable_thinking, thinking_budget=thinking_budget)
+    speech_act, message, action, reason = extract_json_discussion(raw)
+    if speech_act is None and action is None and not message:
+        # JSON 解析ができなかった場合のみフォールバック行動を使用する
+        if fallback_action is not None:
+            action = fallback_action
+            reason = "[fallback_action]"
+        speech_act = SpeechAct.INFORMATION_REQUEST
+    elif speech_act is None:
+        speech_act = SpeechAct.INFORMATION_REQUEST
+    if not message:
+        message = raw[:160].strip()
+    return speech_act, message, action, reason, raw, thinking
 
 
 def run_one_game(
@@ -471,16 +573,21 @@ def run_one_game(
     live_jsonl_path: str | None = None,
     enable_thinking: bool = False,
     thinking_budget: int | None = None,
+    decision_schedule_seed: int = 0,
+    max_decision_opportunities: int = 3,
+    **kwargs: Any,
 ) -> list[dict[str, object]]:
-    """1 ゲームを進行し、REQUIREMENTS §6 のターン別記録項目を含む行リストを返す。
+    """1 ゲームを進行し、REQUIREMENTS §6 / §7.1 のターン別記録項目を含む行リストを返す。
 
     個人選択・個人理由・グループ理由・対立度を各行に記録する。
     live_jsonl_path を指定すると、各ターン終了時にその行を JSON 1 行として追記する
     （visualize_game.html のライブモード用ストリーム）。
     """
+    _ = kwargs
     state = initial_state(seed)
     rng = np.random.default_rng(seed)
     rows: list[dict[str, object]] = []
+    speakers = ["alpha", "beta"]
 
     while not state.done:
         q_values = estimate_q_values(state, n_rollouts=evaluator_rollouts, seed=seed + state.turn * 1000)
@@ -488,88 +595,181 @@ def run_one_game(
         allowed = acceptable_actions(q_values)
         fallback = optimal
 
-        transcript: list[dict[str, str]] = []
-        token_budget_used = 0
-        speakers = ["alpha", "beta"]
+        opportunity_count = schedule_decision_opportunities(seed, state.turn, decision_schedule_seed, max_decision_opportunities)
+        per_opportunity_message_budget = max(1, max_discussion_turns // max_decision_opportunities)
+        per_opportunity_token_budget = max(1, discussion_token_budget // max_decision_opportunities)
 
-        for discussion_index in range(max_discussion_turns):
-            speaker = speakers[discussion_index % len(speakers)]
-            action, reason, message, ready, raw, thinking = get_action(
-                model,
-                tokenizer,
-                discussion_prompt(
+        transcript: list[dict[str, Any]] = []
+        token_budget_used = 0
+        total_free_messages = 0
+        decision_history: list[dict[str, Any]] = []
+        group_action: Action | None = None
+        decision_rule: str | None = None
+        group_reason = ""
+        fallback_used = False
+        fallback_priority_agent: str | None = None
+        final_attempt_index = 0
+
+        alpha_vote: Action = fallback
+        alpha_vote_reason = ""
+        alpha_vote_message = ""
+        alpha_vote_ready = False
+        alpha_vote_raw = ""
+        alpha_vote_thinking = ""
+        beta_vote: Action = fallback
+        beta_vote_reason = ""
+        beta_vote_message = ""
+        beta_vote_ready = False
+        beta_vote_raw = ""
+        beta_vote_thinking = ""
+
+        for opp_idx in range(1, opportunity_count + 1):
+            # 自由議論フェーズ
+            opportunity_message_limit = per_opportunity_message_budget
+            if opp_idx == 1:
+                opportunity_message_limit = max(2, opportunity_message_limit)
+            opportunity_token_used = 0
+            messages_this_opportunity = 0
+
+            while messages_this_opportunity < opportunity_message_limit:
+                if opportunity_token_used >= per_opportunity_token_budget:
+                    break
+                speaker = speakers[total_free_messages % 2]
+                prompt = discussion_prompt(
                     speaker,
                     personas[speaker],
                     persona_params[speaker],
                     state,
                     transcript,
-                    max_discussion_turns,
+                    opportunity_message_limit,
                     condition,
+                )
+                speech_act, message, action, reason, raw, thinking = get_discussion_message(
+                    model,
+                    tokenizer,
+                    prompt,
+                    max_new_tokens,
+                    fallback_action=fallback,
+                    enable_thinking=enable_thinking,
+                    thinking_budget=thinking_budget,
+                )
+                token_count = 0
+                if tokenizer is not None:
+                    token_count = len(tokenizer.encode(raw, add_special_tokens=False))
+                token_budget_used += token_count
+                opportunity_token_used += token_count
+                transcript.append(
+                    {
+                        "speaker": speaker,
+                        "speech_act": speech_act.value if speech_act else None,
+                        "message": message,
+                        "action": action.value if action else "",
+                        "reason": reason,
+                        "raw": raw,
+                        "thinking": thinking,
+                    }
+                )
+                total_free_messages += 1
+                messages_this_opportunity += 1
+
+            # 意思決定機会
+            alpha_vote, alpha_vote_reason, alpha_vote_message, alpha_vote_ready, alpha_vote_raw, alpha_vote_thinking = get_action(
+                model,
+                tokenizer,
+                decision_opportunity_prompt(
+                    "alpha",
+                    personas["alpha"],
+                    persona_params["alpha"],
+                    state,
+                    transcript,
+                    condition,
+                    opp_idx,
+                    opportunity_count,
                 ),
                 max_new_tokens,
                 fallback,
                 enable_thinking=enable_thinking,
                 thinking_budget=thinking_budget,
             )
-            token_budget_used += len(tokenizer.encode(raw, add_special_tokens=False))
+            beta_vote, beta_vote_reason, beta_vote_message, beta_vote_ready, beta_vote_raw, beta_vote_thinking = get_action(
+                model,
+                tokenizer,
+                decision_opportunity_prompt(
+                    "beta",
+                    personas["beta"],
+                    persona_params["beta"],
+                    state,
+                    transcript,
+                    condition,
+                    opp_idx,
+                    opportunity_count,
+                ),
+                max_new_tokens,
+                fallback,
+                enable_thinking=enable_thinking,
+                thinking_budget=thinking_budget,
+            )
+
+            # 投票は全エージェントが出し終わってからトランスクリプトへ追加
             transcript.append(
                 {
-                    "speaker": speaker,
-                    "action": action.value,
-                    "reason": reason,
-                    "message": message,
-                    "ready": str(ready).lower(),
-                    "raw": raw,
-                    "thinking": thinking,
+                    "speaker": "alpha",
+                    "action": alpha_vote.value,
+                    "reason": alpha_vote_reason,
+                    "message": alpha_vote_message,
+                    "ready": str(alpha_vote_ready).lower(),
+                    "raw": alpha_vote_raw,
+                    "thinking": alpha_vote_thinking,
                 }
             )
-            if find_discussion_consensus(transcript) is not None:
-                break
-            if token_budget_used >= discussion_token_budget:
+            transcript.append(
+                {
+                    "speaker": "beta",
+                    "action": beta_vote.value,
+                    "reason": beta_vote_reason,
+                    "message": beta_vote_message,
+                    "ready": str(beta_vote_ready).lower(),
+                    "raw": beta_vote_raw,
+                    "thinking": beta_vote_thinking,
+                }
+            )
+
+            consensus = (alpha_vote == beta_vote) and alpha_vote_ready and beta_vote_ready
+            decision_history.append(
+                {
+                    "opportunity_index": opp_idx,
+                    "opportunity_count": opportunity_count,
+                    "alpha_vote": alpha_vote.value,
+                    "alpha_reason": alpha_vote_reason,
+                    "alpha_ready": alpha_vote_ready,
+                    "beta_vote": beta_vote.value,
+                    "beta_reason": beta_vote_reason,
+                    "beta_ready": beta_vote_ready,
+                    "consensus": consensus,
+                }
+            )
+
+            final_attempt_index = opp_idx
+            if consensus:
+                group_action = alpha_vote
+                decision_rule = "consensus"
+                group_reason = (
+                    f"consensus on action {alpha_vote.value}: "
+                    f"alpha reason={alpha_vote_reason}; beta reason={beta_vote_reason}"
+                )
                 break
 
-        consensus_action = find_discussion_consensus(transcript)
-        if consensus_action is not None:
-            alpha_vote = consensus_action
-            beta_vote = consensus_action
-            alpha_vote_reason = "discussion_consensus"
-            beta_vote_reason = "discussion_consensus"
-            alpha_vote_msg = ""
-            beta_vote_msg = ""
-            alpha_vote_ready = True
-            beta_vote_ready = True
-            alpha_vote_raw = ""
-            beta_vote_raw = ""
-            alpha_vote_thinking = ""
-            beta_vote_thinking = ""
-            group_action = consensus_action
-            decision_rule = "free_discussion_consensus"
-            group_reason = "discussion_consensus"
-        else:
-            alpha_vote, alpha_vote_reason, alpha_vote_msg, alpha_vote_ready, alpha_vote_raw, alpha_vote_thinking = get_action(
-                model,
-                tokenizer,
-                forced_vote_prompt(
-                    "alpha", personas["alpha"], persona_params["alpha"], state, transcript, condition
-                ),
-                max_new_tokens,
-                fallback,
-                enable_thinking=enable_thinking,
-                thinking_budget=thinking_budget,
-            )
-            beta_vote, beta_vote_reason, beta_vote_msg, beta_vote_ready, beta_vote_raw, beta_vote_thinking = get_action(
-                model,
-                tokenizer,
-                forced_vote_prompt(
-                    "beta", personas["beta"], persona_params["beta"], state, transcript, condition
-                ),
-                max_new_tokens,
-                fallback,
-                enable_thinking=enable_thinking,
-                thinking_budget=thinking_budget,
-            )
-            group_action, decision_rule = decide_group_action(state.turn, alpha_vote, beta_vote)
-            group_reason = decision_rule
+        if group_action is None:
+            priority = priority_agent(seed, state.turn)
+            fallback_priority_agent = priority
+            fallback_used = True
+            decision_rule = "fallback_priority"
+            if priority == "alpha":
+                group_action = alpha_vote
+                group_reason = f"fallback priority agent alpha: {alpha_vote_reason}"
+            else:
+                group_action = beta_vote
+                group_reason = f"fallback priority agent beta: {beta_vote_reason}"
 
         result = step(state, group_action, rng)
         regret = q_values[optimal] - q_values[group_action]
@@ -594,18 +794,18 @@ def run_one_game(
             "state_before": json.dumps(state.as_dict(), ensure_ascii=False, sort_keys=True),
             "individual_actions": individual_actions,
             "individual_reasons": individual_reasons,
-            "discussion_turns": len(transcript),
+            "discussion_turns": total_free_messages,
             "discussion_token_budget_used": token_budget_used,
             "discussion_transcript": json.dumps(transcript, ensure_ascii=False),
             "alpha_vote": alpha_vote.value,
             "alpha_vote_reason": alpha_vote_reason,
-            "alpha_vote_message": alpha_vote_msg,
+            "alpha_vote_message": alpha_vote_message,
             "alpha_vote_ready": str(alpha_vote_ready).lower(),
             "alpha_vote_raw": alpha_vote_raw,
             "alpha_vote_thinking": alpha_vote_thinking,
             "beta_vote": beta_vote.value,
             "beta_vote_reason": beta_vote_reason,
-            "beta_vote_message": beta_vote_msg,
+            "beta_vote_message": beta_vote_message,
             "beta_vote_ready": str(beta_vote_ready).lower(),
             "beta_vote_raw": beta_vote_raw,
             "beta_vote_thinking": beta_vote_thinking,
@@ -620,11 +820,19 @@ def run_one_game(
             "state_after": json.dumps(result.state_after.as_dict(), ensure_ascii=False, sort_keys=True),
             "outcome": result.outcome,
             "terminal_score": terminal_score(result.state_after),
+            "decision_opportunity_count": opportunity_count,
+            "decision_attempts": final_attempt_index,
+            "decision_attempt_index": final_attempt_index,
+            "free_discussion_message_count": total_free_messages,
+            "decision_history": json.dumps(decision_history, ensure_ascii=False),
+            "fallback_used": fallback_used,
+            "fallback_priority_agent": fallback_priority_agent,
         }
         rows.append(row)
         print(
             f"[{condition} seed={seed}] turn={row['turn']} event={row['event']} "
-            f"disc={row['discussion_turns']} alpha={row['alpha_vote']} beta={row['beta_vote']} "
+            f"disc={row['discussion_turns']} opp={row['decision_attempt_index']}/{row['decision_opportunity_count']} "
+            f"alpha={row['alpha_vote']} beta={row['beta_vote']} "
             f"group={row['group_action']} rule={row['decision_rule']} "
             f"best={row['best_action']} regret={row['regret']} outcome={row['outcome']}"
         )

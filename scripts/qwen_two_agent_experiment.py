@@ -63,6 +63,8 @@ ARG_TYPES: dict[str, type] = {
     "random_seed": int,
     "enable_thinking": bool,
     "thinking_budget": int,
+    "decision_schedule_seed": int,
+    "max_decision_opportunities": int,
 }
 
 # CLI引数未指定時の既定値（configなし実行時のフォールバック）
@@ -88,6 +90,8 @@ CLI_DEFAULTS: dict[str, object] = {
     "random_seed": None,
     "enable_thinking": False,
     "thinking_budget": None,
+    "decision_schedule_seed": 0,
+    "max_decision_opportunities": 3,
 }
 
 
@@ -130,6 +134,10 @@ def main() -> None:
 
     # config → CLI の順で優先される設定dictを構築
     cfg = merge_config_and_cli(args.config, cli_overrides, CLI_DEFAULTS, ARG_TYPES)
+
+    # YAML 内の ~/... はシェルを経由しないため自動展開されない。
+    # ローカルモデルを指定する設定でも Transformers に正しい絶対パスを渡す。
+    cfg["model_path"] = str(Path(str(cfg["model_path"])).expanduser())
 
     # conditions の "all" 処理
     conditions = cfg["conditions"]
@@ -199,6 +207,8 @@ def main() -> None:
                 live_jsonl_path=live_jsonl_path,
                 enable_thinking=cfg["enable_thinking"],
                 thinking_budget=cfg["thinking_budget"],
+                decision_schedule_seed=cfg["decision_schedule_seed"],
+                max_decision_opportunities=cfg["max_decision_opportunities"],
             )
             cond_rows.extend(rows)
             all_rows.extend(rows)

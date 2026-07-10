@@ -49,10 +49,10 @@ from turn_game_metrics import compute_summary_metrics  # noqa: E402
 Policy = Callable
 
 
-def _run_policy_games(policy: Policy, games: int, seed: int, evaluator_rollouts: int) -> list[dict]:
+def _run_policy_games(policy: Policy, games: int, seed: int, evaluator_rollouts: int, evaluator_policy: str = "mcts") -> list[dict]:
     rows: list[dict] = []
     for i in range(games):
-        rows.extend(play_policy_game(policy, seed=seed + i, evaluator_rollouts=evaluator_rollouts))
+        rows.extend(play_policy_game(policy, seed=seed + i, evaluator_rollouts=evaluator_rollouts, evaluator_policy=evaluator_policy))
     return rows
 
 
@@ -80,11 +80,11 @@ def _event_changes_best(rows: list[dict]) -> bool:
     return len(set(distributions)) > 1
 
 
-def evaluate_weights(games: int, seed: int, evaluator_rollouts: int) -> dict:
+def evaluate_weights(games: int, seed: int, evaluator_rollouts: int, evaluator_policy: str = "mcts") -> dict:
     """現行の SCORE_WEIGHTS で §8 チェックを実施し、レポート dict を返す。"""
     results: dict[str, dict] = {}
     for name, policy in (("random", random_policy), ("heuristic", heuristic_policy), ("mcts", mcts_policy)):
-        rows = _run_policy_games(policy, games, seed, evaluator_rollouts)
+        rows = _run_policy_games(policy, games, seed, evaluator_rollouts, evaluator_policy)
         results[name] = {
             "rows": rows,
             "summary": compute_summary_metrics(rows),
@@ -120,7 +120,7 @@ def evaluate_weights(games: int, seed: int, evaluator_rollouts: int) -> dict:
     }
 
 
-def tune_weights(games: int, seed: int, evaluator_rollouts: int, base_win: float = 1000.0) -> dict:
+def tune_weights(games: int, seed: int, evaluator_rollouts: int, evaluator_policy: str = "mcts", base_win: float = 1000.0) -> dict:
     """§5.2: win/loss 倍率を探索して §8 制約を満たす重みを探す。
 
     win と loss の比率を保ちつつ、win 重みを大きくして「勝利が資源温存より常に優先」
@@ -134,7 +134,7 @@ def tune_weights(games: int, seed: int, evaluator_rollouts: int, base_win: float
     for win in win_candidates:
         for ratio in loss_ratios:
             set_score_weights({"win": win, "loss": win * ratio})
-            report = evaluate_weights(games, seed, evaluator_rollouts)
+            report = evaluate_weights(games, seed, evaluator_rollouts, evaluator_policy)
             if best_report is None or (
                 sum(report["checks"].values()) > sum(best_report["checks"].values())
                 or (sum(report["checks"].values()) == sum(best_report["checks"].values())
@@ -146,7 +146,7 @@ def tune_weights(games: int, seed: int, evaluator_rollouts: int, base_win: float
     # 全候補で all_pass にならなければ、最もチェック数の多いものを返す
     if best_report is not None:
         best_report["all_pass"] = all(best_report["checks"].values())
-    return best_report or evaluate_weights(games, seed, evaluator_rollouts)
+    return best_report or evaluate_weights(games, seed, evaluator_rollouts, evaluator_policy)
 
 
 def main() -> None:
@@ -154,15 +154,17 @@ def main() -> None:
     parser.add_argument("--games", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--evaluator-rollouts", type=int, default=80)
+    parser.add_argument("--evaluator-policy", choices=["heuristic", "mcts"], default="mcts",
+                        help="探索ベース評価に使う方策。MCTS を使うと best_action カバレッジが向上。")
     parser.add_argument("--tune", action="store_true", help="§5.2 重み調整を実行する。")
     parser.add_argument("--output", default=None, help="JSON レポート出力先。")
     args = parser.parse_args()
 
     if args.tune:
         print("=== §5.2 weight tuning ===")
-        report = tune_weights(args.games, args.seed, args.evaluator_rollouts)
+        report = tune_weights(args.games, args.seed, args.evaluator_rollouts, args.evaluator_policy)
     else:
-        report = evaluate_weights(args.games, args.seed, args.evaluator_rollouts)
+        report = evaluate_weights(args.games, args.seed, args.evaluator_rollouts, args.evaluator_policy)
 
     print("\n=== §8 validation report ===")
     print(f"weights: {report['weights']}")

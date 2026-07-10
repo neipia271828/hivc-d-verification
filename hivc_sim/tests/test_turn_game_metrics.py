@@ -8,9 +8,12 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from turn_game_metrics import (  # noqa: E402
+    agreement_rate_by_opportunity,
     conflict_level,
     compute_summary_metrics,
+    discussion_diversity,
     expert_match_rate,
+    fallback_rate,
     minority_adoption_rate,
     plan_revision_quality,
     conflict_resolution_quality,
@@ -102,3 +105,48 @@ def test_compute_summary_metrics_full() -> None:
     assert summary["minority_adoption_rate"] == 0.0
     assert "plan_revision_quality" in summary
     assert "conflict_resolution_quality" in summary
+    assert "agreement_rate_by_opportunity" in summary
+    assert "fallback_rate" in summary
+    assert "discussion_diversity" in summary
+
+
+def test_agreement_rate_by_opportunity() -> None:
+    rows = [
+        {
+            "decision_history": [
+                {"opportunity_index": 0, "consensus": True},
+                {"opportunity_index": 1, "consensus": False},
+            ]
+        },
+        {"decision_history": [{"opportunity_index": 0, "consensus": True}]},
+    ]
+    # 3 attempts, 2 consensus
+    assert agreement_rate_by_opportunity(rows) == 2 / 3
+
+
+def test_fallback_rate() -> None:
+    rows = [
+        {"fallback_used": "true"},
+        {"fallback_used": "false"},
+        {"fallback_used": "false"},
+    ]
+    assert fallback_rate(rows) == 1 / 3
+
+
+def test_discussion_diversity() -> None:
+    rows = [
+        {
+            "discussion_transcript": [
+                {"phase": "free", "speech_act": "evidence"},
+                {"phase": "free", "speech_act": "question_objection"},
+                {"phase": "decision", "action": "A"},
+            ]
+        },
+        {
+            "discussion_transcript": [
+                {"phase": "free", "speech_act": "evidence"},
+            ]
+        },
+    ]
+    # distinct free speech acts: evidence, question_objection -> 2
+    assert discussion_diversity(rows) == 2.0

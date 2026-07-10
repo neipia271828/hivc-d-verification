@@ -23,9 +23,19 @@ plan_revision_quality の定義:
 conflict_resolution_quality の定義:
     conflict_level が閾値（既定 0.5、2 体では不一致=1.0）以上のターンの regret
     平均。低いほど「対立が解決されて良い行動に落ちた」ことを示す。
+
+agreement_rate_by_opportunity の定義:
+    decision_history 中で全員合意に至った意思決定機会の割合。
+
+fallback_rate の定義:
+    fallback_used が true となるターンの割合。
+
+discussion_diversity の定義:
+    自由議論中の発言行為（speech_act）の種類数。
 """
 from __future__ import annotations
 
+import json
 from typing import Iterable
 
 import numpy as np
@@ -46,6 +56,23 @@ def _parse_action_set(value) -> set[str]:
     if isinstance(value, (set, list, tuple)):
         return {str(v).strip().upper() for v in value if str(v).strip()}
     return {str(v).strip().upper() for v in str(value).split(",") if v.strip()}
+
+
+def _parse_json(value, default=None):
+    if isinstance(value, (list, dict)):
+        return value
+    if not isinstance(value, str):
+        return default
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return default
+
+
+def _to_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() == "true"
 
 
 def conflict_level(individual_actions: Iterable[str]) -> float:
@@ -205,6 +232,61 @@ def terminal_metrics(rows: list[dict]) -> dict[str, float]:
     return {"win_rate": win, "survival_rate": survival, "mean_return": ret}
 
 
+def agreement_rate_by_opportunity(rows: list[dict]) -> float:
+    """decision_history 中で consensus=true となった意思決定機会の割合。"""
+    total = 0
+    agreed = 0
+    for row in rows:
+        history = _parse_json(row.get("decision_history"))
+        if not isinstance(history, list) or not history:
+            continue
+        for attempt in history:
+            if not isinstance(attempt, dict):
+                continue
+            total += 1
+            if _to_bool(attempt.get("consensus")):
+                agreed += 1
+    if total == 0:
+        return float("nan")
+    return agreed / total
+
+
+def fallback_rate(rows: list[dict]) -> float:
+    """fallback_used が true となるターンの割合。"""
+    total = 0
+    fallback = 0
+    for row in rows:
+        value = row.get("fallback_used")
+        if value is None or value == "":
+            continue
+        total += 1
+        if _to_bool(value):
+            fallback += 1
+    if total == 0:
+        return float("nan")
+    return fallback / total
+
+
+def discussion_diversity(rows: list[dict]) -> float:
+    """自由議論中に使用された speech_act の種類数（最大5）。"""
+    acts: set[str] = set()
+    for row in rows:
+        transcript = _parse_json(row.get("discussion_transcript"))
+        if not isinstance(transcript, list):
+            continue
+        for item in transcript:
+            if not isinstance(item, dict):
+                continue
+            if item.get("phase", "free") != "free":
+                continue
+            speech_act = item.get("speech_act")
+            if speech_act:
+                acts.add(str(speech_act).strip().lower())
+    if not acts:
+        return float("nan")
+    return float(len(acts))
+
+
 def compute_summary_metrics(rows: list[dict], threshold: float = CONFLICT_THRESHOLD) -> dict[str, float]:
     """REQUIREMENTS §6 の主要評価指標を全て計算して返す。"""
     enriched = [enrich_turn_row(dict(row)) for row in rows]
@@ -214,4 +296,7 @@ def compute_summary_metrics(rows: list[dict], threshold: float = CONFLICT_THRESH
     summary["minority_adoption_rate"] = minority_adoption_rate(enriched)
     summary["conflict_resolution_quality"] = conflict_resolution_quality(enriched, threshold)
     summary.update(plan_revision_quality(enriched))
+    summary["agreement_rate_by_opportunity"] = agreement_rate_by_opportunity(enriched)
+    summary["fallback_rate"] = fallback_rate(enriched)
+    summary["discussion_diversity"] = discussion_diversity(enriched)
     return summary

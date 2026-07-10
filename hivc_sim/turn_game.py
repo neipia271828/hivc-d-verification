@@ -390,12 +390,16 @@ def play_policy_game(
     policy: Policy,
     seed: int,
     evaluator_rollouts: int = 120,
+    evaluator_policy: str = "heuristic",
 ) -> list[dict[str, object]]:
     rng = np.random.default_rng(seed)
     state = initial_state(seed)
     rows: list[dict[str, object]] = []
     while not state.done:
-        q_values = estimate_q_values(state, n_rollouts=evaluator_rollouts, policy=heuristic_policy, seed=seed + state.turn * 1000)
+        if evaluator_policy == "mcts":
+            q_values = mcts_q_values(state, seed=seed + state.turn * 1000, simulations=evaluator_rollouts)
+        else:
+            q_values = estimate_q_values(state, n_rollouts=evaluator_rollouts, policy=heuristic_policy, seed=seed + state.turn * 1000)
         allowed = acceptable_actions(q_values)
         selected = policy(state, rng)
         result = step(state, selected, rng)

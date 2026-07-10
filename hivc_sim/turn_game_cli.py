@@ -34,6 +34,8 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--policy", choices=sorted(POLICIES), default="heuristic")
     parser.add_argument("--evaluator-rollouts", type=int, default=120)
+    parser.add_argument("--evaluator-policy", choices=["heuristic", "mcts"], default="heuristic",
+                        help="探索ベース評価に使う方策。")
     args = parser.parse_args()
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -47,6 +49,7 @@ def main() -> None:
                 policy=policy,
                 seed=game_seed,
                 evaluator_rollouts=args.evaluator_rollouts,
+                evaluator_policy=args.evaluator_policy,
             )
         )
 
