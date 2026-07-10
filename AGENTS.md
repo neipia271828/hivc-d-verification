@@ -34,6 +34,46 @@ cd /path/to/hivc-d-verification
 git pull origin main
 ```
 
+> **注意**: GPUサーバー上の `projects/hivc-d-verification` は git 管理されて
+> いない場合がある（`.git` が無い ＝ `git pull` 不可）。その場合は下記の
+> `deploy_viz_to_gpu.sh` で可視化コードを scp 配備する。
+
+## 可視化コードのGPU配備（git不可な環境向け）
+
+`scripts/deploy_viz_to_gpu.sh` が「バックアップ → scp転送 → 旧サーバー/ngrok
+停止 → 新版で再起動 → 検証」を1コマンドで実行する（Macから実行）。
+
+```bash
+# 転送＋再起動＋ローカル検証
+scripts/deploy_viz_to_gpu.sh
+
+# 公開URLでも検証（/api/status と /visualize の新版マーカーを確認）
+PUBLIC_URL=https://<ngrok-url> scripts/deploy_viz_to_gpu.sh
+
+# 転送のみ（サーバー無停止）
+scripts/deploy_viz_to_gpu.sh --no-restart
+
+# ヘルプ / 全オプション
+scripts/deploy_viz_to_gpu.sh --help
+```
+
+接続情報・対象ファイルは環境変数で上書きできる（デフォルトは現行GPU設定）:
+
+| 変数 | 既定値 | 説明 |
+|------|--------|------|
+| `SSH_USER` / `SSH_HOST` / `SSH_PORT` | `student222` / `172.16.51.202` / `2222` | 接続先 |
+| `SSH_KEY` | `~/.ssh/id_ed25519_kmc_gpu` | 秘密鍵 |
+| `REMOTE_REPO` | `projects/hivc-d-verification` | GPU上のリポジトリ（`$HOME` 相対） |
+| `PORT` | `8765` | live_server のポート |
+| `LIVE_JSONL` | `hivc_sim/results/turn_game/experiment/stream.jsonl` | `--file` で固定するJSONL |
+| `FILES` | `scripts/live_server.py scripts/visualize_game.html` | 転送するファイル |
+| `PUBLIC_URL` | （未設定） | 指定時、ngrok公開URL経由でも検証 |
+
+内部的にリモート処理は `ssh ... bash -s`（stdin実行）で行う。これはリモート
+シェルのコマンドラインを `bash -s` のみにして、`pkill -f "scripts/live_server.py"`
+が自セッションにマッチして落ちる事故（exit 255）を防ぐため。上書き前に
+GPU側 `/tmp/<name>.bak.<timestamp>` へ必ずバックアップする。
+
 ## ライブ可視化の起動手順（GPUサーバー側）
 
 ```bash

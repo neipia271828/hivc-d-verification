@@ -59,9 +59,20 @@
   .outcome.running { background: var(--panel2); color: var(--muted); }
 
   /* Discussion */
-  .chat { max-height: 420px; overflow-y: auto; padding: 4px; }
-  .msg { display: flex; margin-bottom: 10px; animation: slideIn 0.3s ease; }
+  .chat { position: relative; max-height: 560px; overflow-y: auto; padding: 4px; scroll-behavior: smooth; }
+  .msg { display: flex; margin-bottom: 10px; }
+  .msg.new { animation: slideIn 0.3s ease; }
   @keyframes slideIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  /* Turn separator inside the flowing conversation feed */
+  .turn-sep { display: flex; align-items: center; gap: 8px; margin: 16px 2px 8px; color: var(--muted); font-size: 11px; }
+  .turn-sep:first-child { margin-top: 4px; }
+  .turn-sep::before, .turn-sep::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+  .turn-sep .tn { font-weight: 700; color: var(--text); white-space: nowrap; }
+  .turn-sep .ev { color: var(--warn); white-space: nowrap; }
+  .turn-sep .act { color: var(--accent2); white-space: nowrap; }
+  .turn-sep.active .tn { color: var(--accent); }
+  .turn-sep.active::before, .turn-sep.active::after { background: var(--accent); opacity: 0.5; }
+  .turn-result { text-align: center; font-size: 11px; color: var(--muted); margin: 2px 0 2px; }
   .msg.alpha { flex-direction: row; }
   .msg.beta { flex-direction: row-reverse; }
   .bubble { max-width: 80%; padding: 10px 14px; border-radius: 14px; position: relative; }
@@ -74,6 +85,14 @@
   .bubble .message { font-size: 13px; margin: 4px 0; }
   .bubble .reason { font-size: 11px; color: var(--muted); font-style: italic; }
   .bubble .ready-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-left: 6px; vertical-align: middle; }
+  /* Thinking process (Qwen3 thinking mode) */
+  .bubble .thinking-block { margin-top: 6px; }
+  .bubble .thinking-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--accent2); cursor: pointer; user-select: none; padding: 2px 8px; border-radius: 6px; background: rgba(167,139,250,0.1); border: 1px solid rgba(167,139,250,0.2); transition: all 0.15s; }
+  .bubble .thinking-toggle:hover { background: rgba(167,139,250,0.2); }
+  .bubble .thinking-toggle .arrow { display: inline-block; transition: transform 0.2s; font-size: 9px; }
+  .bubble .thinking-toggle.open .arrow { transform: rotate(90deg); }
+  .bubble .thinking-content { display: none; margin-top: 6px; padding: 8px 10px; background: rgba(167,139,250,0.06); border: 1px solid rgba(167,139,250,0.15); border-radius: 6px; font-size: 11px; color: var(--muted); white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow-y: auto; line-height: 1.5; }
+  .bubble .thinking-content.show { display: block; }
   .ready-dot.true { background: var(--good); }
   .ready-dot.false { background: var(--muted); }
   .avatar { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; flex-shrink: 0; margin: 0 8px; }
@@ -91,6 +110,13 @@
   .vote-cell.group .act { color: var(--accent2); }
   .decision-rule { text-align: center; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
   .group-reason { font-size: 12px; color: var(--text); background: var(--panel2); padding: 8px; border-radius: 6px; }
+  /* Vote thinking */
+  .vote-thinking { margin-top: 10px; }
+  .vote-thinking .vt-title { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .vote-thinking .vt-row { margin-bottom: 8px; }
+  .vote-thinking .vt-label { font-size: 11px; font-weight: 600; margin-bottom: 2px; }
+  .vote-thinking .vt-label.alpha { color: var(--alpha); }
+  .vote-thinking .vt-label.beta { color: var(--beta); }
 
   /* Eval panel */
   .eval-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); }
@@ -259,6 +285,7 @@
           <div class="vote-grid" id="voteGrid"></div>
           <div class="decision-rule" id="decisionRule"></div>
           <div class="group-reason" id="groupReason"></div>
+          <div class="vote-thinking" id="voteThinking" style="display:none;"></div>
         </div>
       </div>
     </div>
@@ -394,6 +421,8 @@ function normalizeRecord(row) {
     beta_role_key: row.beta_role_key || '',
     discussion_turns: parseInt(row.discussion_turns || 0),
     individual_actions: row.individual_actions || '',
+    alpha_vote_thinking: row.alpha_vote_thinking || '',
+    beta_vote_thinking: row.beta_vote_thinking || '',
   };
 }
 
@@ -792,6 +821,58 @@ function getCurrentGame() {
   return byGame[currentGameKey] || [];
 }
 
+// 1つの発言バブルを描画する（累積フィードで再利用）
+function renderBubble(m, isNew) {
+  const initial = m.speaker === 'alpha' ? 'α' : 'β';
+  const readyDot = `<span class="ready-dot ${m.ready}" title="${m.ready==='true'?'合意準備OK':'まだ合意不可'}"></span>`;
+  const thinking = m.thinking || '';
+  const thinkingBlock = thinking
+    ? `<div class="thinking-block">
+         <div class="thinking-toggle" onclick="toggleThinking(this)">
+           <span class="arrow">▶</span> 思考プロセス (${thinking.length}文字)
+         </div>
+         <div class="thinking-content">${escapeHTML(thinking)}</div>
+       </div>`
+    : '';
+  return `<div class="msg ${m.speaker}${isNew ? ' new' : ''}">
+    <div class="avatar ${m.speaker}">${initial}</div>
+    <div class="bubble">
+      <div class="speaker">${m.speaker}${readyDot}<span class="action-tag">${m.action} ${ACTION_NAMES[m.action]||''}</span></div>
+      <div class="message">${escapeHTML(m.message || '')}</div>
+      <div class="reason">${escapeHTML(m.reason || '')}</div>
+      ${thinkingBlock}
+    </div>
+  </div>`;
+}
+
+// 思考プロセスの折りたたみ切替
+function toggleThinking(el) {
+  const content = el.nextElementSibling;
+  const isOpen = el.classList.contains('open');
+  if (isOpen) {
+    el.classList.remove('open');
+    content.classList.remove('show');
+  } else {
+    el.classList.add('open');
+    content.classList.add('show');
+  }
+}
+
+// 投票パネル用の thinking トグルHTMLを生成
+function renderThinkingToggle(id, text) {
+  return `<div class="thinking-block">
+    <div class="thinking-toggle" onclick="toggleThinking(this)">
+      <span class="arrow">▶</span> 思考を表示 (${text.length}文字)
+    </div>
+    <div class="thinking-content">${escapeHTML(text)}</div>
+  </div>`;
+}
+
+const OUTCOME_SHORT = {
+  win: '🏆 勝利', loss_oxygen: '💀 敗北（酸素）', loss_power: '💀 敗北（電力）',
+  loss_hull: '💀 敗北（船体）', loss_flooding: '💀 敗北（浸水）', survived_timeout: '⏱ 生存（時間切れ）',
+};
+
 function render() {
   const game = getCurrentGame();
   if (game.length === 0) return;
@@ -864,25 +945,35 @@ function render() {
     <div class="eval-row" style="margin-top:8px;"><span class="key">終端スコア</span><span class="val">${r.terminal_score.toFixed(0)}</span></div>
   `;
 
-  // Chat
+  // Chat — 累積フィード（ターン0〜現在ターンまでの議論を連続表示する）
   const chatArea = document.getElementById('chatArea');
-  const transcript = r.discussion_transcript || [];
-  if (transcript.length === 0) {
-    chatArea.innerHTML = '<div style="text-align:center;color:var(--muted);padding:20px;">議論なし（policy ロールアウト等）</div>';
+  let chatHTML = '';
+  const upto = Math.min(currentTurnIdx, game.length - 1);
+  for (let t = 0; t <= upto; t++) {
+    const tr = game[t];
+    const isActive = (t === upto);
+    const ev = (tr.event && tr.event !== 'none')
+      ? `<span class="ev">${EVENT_NAMES[tr.event] || tr.event}</span>` : '';
+    const actLabel = tr.group_action
+      ? `採用 ${tr.group_action}${ACTION_NAMES[tr.group_action] ? ' ' + ACTION_NAMES[tr.group_action] : ''}`
+      : '';
+    chatHTML += `<div class="turn-sep${isActive ? ' active' : ''}"><span class="tn">ターン ${tr.turn}</span>${ev}<span class="act">${actLabel}</span></div>`;
+    const transcript = tr.discussion_transcript || [];
+    if (transcript.length === 0) {
+      chatHTML += '<div style="text-align:center;color:var(--muted);padding:6px;font-size:12px;">議論なし（policy ロールアウト等）</div>';
+    } else {
+      chatHTML += transcript.map(m => renderBubble(m, isActive)).join('');
+    }
+    if (tr.outcome && tr.outcome !== 'running') {
+      chatHTML += `<div class="turn-result">— ${OUTCOME_SHORT[tr.outcome] || tr.outcome} —</div>`;
+    }
+  }
+  chatArea.innerHTML = chatHTML || '<div style="text-align:center;color:var(--muted);padding:20px;">議論なし</div>';
+  // 現在ターンの区切りが見えるようスクロール（フィードの一番下＝最新へ）
+  const activeSep = chatArea.querySelector('.turn-sep.active');
+  if (activeSep) {
+    chatArea.scrollTop = Math.max(0, activeSep.offsetTop - 8);
   } else {
-    chatArea.innerHTML = transcript.map(m => {
-      const isAlpha = m.speaker === 'alpha';
-      const initial = isAlpha ? 'α' : 'β';
-      const readyDot = `<span class="ready-dot ${m.ready}" title="${m.ready==='true'?'合意準備OK':'まだ合意不可'}"></span>`;
-      return `<div class="msg ${m.speaker}">
-        <div class="avatar ${m.speaker}">${initial}</div>
-        <div class="bubble">
-          <div class="speaker">${m.speaker}${readyDot}<span class="action-tag">${m.action} ${ACTION_NAMES[m.action]||''}</span></div>
-          <div class="message">${escapeHTML(m.message || '')}</div>
-          <div class="reason">${escapeHTML(m.reason || '')}</div>
-        </div>
-      </div>`;
-    }).join('');
     chatArea.scrollTop = chatArea.scrollHeight;
   }
 
@@ -895,6 +986,25 @@ function render() {
   `;
   document.getElementById('decisionRule').textContent = `判定ルール: ${r.decision_rule}`;
   document.getElementById('groupReason').innerHTML = `<strong>グループ理由:</strong> ${escapeHTML(r.group_reason || '')}`;
+
+  // Vote thinking (forced vote 時の思考プロセス)
+  const voteThinking = document.getElementById('voteThinking');
+  const aThink = r.alpha_vote_thinking || '';
+  const bThink = r.beta_vote_thinking || '';
+  if (aThink || bThink) {
+    let vtHTML = '<div class="vt-title">最終投票時の思考プロセス</div>';
+    if (aThink) {
+      vtHTML += `<div class="vt-row"><div class="vt-label alpha">α の思考</div>${renderThinkingToggle('alpha-vt', aThink)}</div>`;
+    }
+    if (bThink) {
+      vtHTML += `<div class="vt-row"><div class="vt-label beta">β の思考</div>${renderThinkingToggle('beta-vt', bThink)}</div>`;
+    }
+    voteThinking.innerHTML = vtHTML;
+    voteThinking.style.display = 'block';
+  } else {
+    voteThinking.innerHTML = '';
+    voteThinking.style.display = 'none';
+  }
 
   // Timeline
   renderTimeline();

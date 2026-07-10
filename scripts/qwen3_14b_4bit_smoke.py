@@ -14,6 +14,8 @@ def main() -> None:
         default="日本語で一文だけ返答してください。GPU環境は使えていますか?",
     )
     parser.add_argument("--max-new-tokens", type=int, default=32)
+    parser.add_argument("--enable-thinking", action="store_true", default=False,
+                        help="Qwen3 thinkingモードを有効化")
     args = parser.parse_args()
 
     quantization_config = BitsAndBytesConfig(
@@ -44,7 +46,7 @@ def main() -> None:
         messages,
         tokenize=False,
         add_generation_prompt=True,
-        enable_thinking=False,
+        enable_thinking=args.enable_thinking,
     )
     inputs = tokenizer([text], return_tensors="pt").to(model.device)
     with torch.no_grad():

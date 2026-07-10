@@ -61,6 +61,8 @@ ARG_TYPES: dict[str, type] = {
     "beta_persona": str,
     "random_persona": bool,
     "random_seed": int,
+    "enable_thinking": bool,
+    "thinking_budget": int,
 }
 
 # CLI引数未指定時の既定値（configなし実行時のフォールバック）
@@ -84,6 +86,8 @@ CLI_DEFAULTS: dict[str, object] = {
     "beta_persona": None,
     "random_persona": False,
     "random_seed": None,
+    "enable_thinking": False,
+    "thinking_budget": None,
 }
 
 
@@ -105,6 +109,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--live-jsonl", default=None,
                         help="各ターン終了時にJSONLを追記するパス（visualize_game.html ライブモード用）")
+    parser.add_argument("--enable-thinking", default=None, type=str,
+                        help="Qwen3 thinkingモードを有効化 (true/false)。config未指定時は false。")
+    parser.add_argument("--thinking-budget", default=None, type=int,
+                        help="thinkingモードの推論トークン上限（Qwen3 thinking_budget）。未指定時は制限なし。")
     add_persona_args(parser)
     return parser
 
@@ -159,6 +167,10 @@ def main() -> None:
     print(f"Loading model: {cfg['model_path']}")
     model, tokenizer = load_model(cfg["model_path"])
 
+    thinking_mode = cfg["enable_thinking"]
+    thinking_budget = cfg["thinking_budget"]
+    print(f"Thinking mode: {thinking_mode}" + (f" (budget={thinking_budget})" if thinking_budget is not None else ""))
+
     all_rows: list[dict[str, object]] = []
     summary_rows: list[dict[str, object]] = []
 
@@ -185,6 +197,8 @@ def main() -> None:
                 discussion_token_budget=cfg["discussion_token_budget"],
                 evaluator_rollouts=cfg["evaluator_rollouts"],
                 live_jsonl_path=live_jsonl_path,
+                enable_thinking=cfg["enable_thinking"],
+                thinking_budget=cfg["thinking_budget"],
             )
             cond_rows.extend(rows)
             all_rows.extend(rows)

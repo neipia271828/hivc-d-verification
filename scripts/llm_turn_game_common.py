@@ -376,14 +376,22 @@ def forced_vote_prompt(
 """
 
 
-def run_prompt(model, tokenizer, prompt: str, max_new_tokens: int) -> str:
+def run_prompt(model, tokenizer, prompt: str, max_new_tokens: int, enable_thinking: bool = False, thinking_budget: int | None = None) -> tuple[str, str]:
+    """モデルにプロンプトを送り、(thinking_content, response_text) を返す。
+
+    enable_thinking=True の場合、モデルは <think>...</think> 内に思考を出力する。
+    thinking_content はその内部テキスト、response_text は思考以降の最終応答。
+    enable_thinking=False の場合、thinking_content は空文字。
+    """
     messages = [{"role": "user", "content": prompt}]
-    text = tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True,
-        enable_thinking=False,
-    )
+    template_kwargs: dict[str, Any] = {
+        "tokenize": False,
+        "add_generation_prompt": True,
+        "enable_thinking": enable_thinking,
+    }
+    if thinking_budget is not None:
+        template_kwargs["thinking_budget"] = thinking_budget
+    text = tokenizer.apply_chat_template(messages, **template_kwargs)
     inputs = tokenizer([text], return_tensors="pt").to(model.device)
     with torch.no_grad():
         output = model.generate(
@@ -391,15 +399,27 @@ def run_prompt(model, tokenizer, prompt: str, max_new_tokens: int) -> str:
             max_new_tokens=max_new_tokens,
             do_sample=False,
         )
-    return tokenizer.decode(output[0][inputs.input_ids.shape[1] :], skip_special_tokens=True).strip()
+    full = tokenizer.decode(output[0][inputs.input_ids.shape[1] :], skip_special_tokens=True)
+
+    # <think>...</think> ブロックを抽出（Qwen3 thinkingモード）
+    think_match = re.search(r"<think>(.*?)</think>", full, flags=re.DOTALL)
+    if think_match:
+        thinking_content = think_match.group(1).strip()
+        response_text = full[think_match.end():].strip()
+    else:
+        thinking_content = ""
+        response_text = full.strip()
+
+    return thinking_content, response_text
 
 
-def get_action(model, tokenizer, prompt: str, max_new_tokens: int, fallback: Action) -> tuple[Action, str, str, bool, str]:
-    raw = run_prompt(model, tokenizer, prompt, max_new_tokens)
+def get_action(model, tokenizer, prompt: str, max_new_tokens: int, fallback: Action, enable_thinking: bool = False, thinking_budget: int | None = None) -> tuple[Action, str, str, bool, str, str]:
+    """(action, reason, message, ready, raw_response, thinking) を返す。"""
+    thinking, raw = run_prompt(model, tokenizer, prompt, max_new_tokens, enable_thinking=enable_thinking, thinking_budget=thinking_budget)
     action, reason, message, ready = extract_json_action(raw)
     if action is None:
-        return fallback, f"invalid_response_fallback: {reason}", message, False, raw
-    return action, reason, message, ready, raw
+        return fallback, f"invalid_response_fallback: {reason}", message, False, raw, thinking
+    return action, reason, message, ready, raw, thinking
 
 
 def find_discussion_consensus(transcript: list[dict[str, str]]) -> Action | None:
@@ -449,6 +469,8 @@ def run_one_game(
     discussion_token_budget: int = 768,
     evaluator_rollouts: int = 24,
     live_jsonl_path: str | None = None,
+    enable_thinking: bool = False,
+    thinking_budget: int | None = None,
 ) -> list[dict[str, object]]:
     """1 ゲームを進行し、REQUIREMENTS §6 のターン別記録項目を含む行リストを返す。
 
@@ -472,7 +494,7 @@ def run_one_game(
 
         for discussion_index in range(max_discussion_turns):
             speaker = speakers[discussion_index % len(speakers)]
-            action, reason, message, ready, raw = get_action(
+            action, reason, message, ready, raw, thinking = get_action(
                 model,
                 tokenizer,
                 discussion_prompt(
@@ -486,6 +508,8 @@ def run_one_game(
                 ),
                 max_new_tokens,
                 fallback,
+                enable_thinking=enable_thinking,
+                thinking_budget=thinking_budget,
             )
             token_budget_used += len(tokenizer.encode(raw, add_special_tokens=False))
             transcript.append(
@@ -496,6 +520,7 @@ def run_one_game(
                     "message": message,
                     "ready": str(ready).lower(),
                     "raw": raw,
+                    "thinking": thinking,
                 }
             )
             if find_discussion_consensus(transcript) is not None:
@@ -515,11 +540,13 @@ def run_one_game(
             beta_vote_ready = True
             alpha_vote_raw = ""
             beta_vote_raw = ""
+            alpha_vote_thinking = ""
+            beta_vote_thinking = ""
             group_action = consensus_action
             decision_rule = "free_discussion_consensus"
             group_reason = "discussion_consensus"
         else:
-            alpha_vote, alpha_vote_reason, alpha_vote_msg, alpha_vote_ready, alpha_vote_raw = get_action(
+            alpha_vote, alpha_vote_reason, alpha_vote_msg, alpha_vote_ready, alpha_vote_raw, alpha_vote_thinking = get_action(
                 model,
                 tokenizer,
                 forced_vote_prompt(
@@ -527,8 +554,10 @@ def run_one_game(
                 ),
                 max_new_tokens,
                 fallback,
+                enable_thinking=enable_thinking,
+                thinking_budget=thinking_budget,
             )
-            beta_vote, beta_vote_reason, beta_vote_msg, beta_vote_ready, beta_vote_raw = get_action(
+            beta_vote, beta_vote_reason, beta_vote_msg, beta_vote_ready, beta_vote_raw, beta_vote_thinking = get_action(
                 model,
                 tokenizer,
                 forced_vote_prompt(
@@ -536,6 +565,8 @@ def run_one_game(
                 ),
                 max_new_tokens,
                 fallback,
+                enable_thinking=enable_thinking,
+                thinking_budget=thinking_budget,
             )
             group_action, decision_rule = decide_group_action(state.turn, alpha_vote, beta_vote)
             group_reason = decision_rule
@@ -571,11 +602,13 @@ def run_one_game(
             "alpha_vote_message": alpha_vote_msg,
             "alpha_vote_ready": str(alpha_vote_ready).lower(),
             "alpha_vote_raw": alpha_vote_raw,
+            "alpha_vote_thinking": alpha_vote_thinking,
             "beta_vote": beta_vote.value,
             "beta_vote_reason": beta_vote_reason,
             "beta_vote_message": beta_vote_msg,
             "beta_vote_ready": str(beta_vote_ready).lower(),
             "beta_vote_raw": beta_vote_raw,
+            "beta_vote_thinking": beta_vote_thinking,
             "group_action": group_action.value,
             "group_action_label": ACTION_LABELS[group_action],
             "group_reason": group_reason,

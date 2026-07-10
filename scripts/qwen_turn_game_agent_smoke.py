@@ -89,14 +89,15 @@ def extract_action(response: str) -> tuple[Action | None, str]:
     return None, text
 
 
-def generate_action(model, tokenizer, state, max_new_tokens: int) -> tuple[Action | None, str, str]:
+def generate_action(model, tokenizer, state, max_new_tokens: int, enable_thinking: bool = False) -> tuple[Action | None, str, str, str]:
+    """(action, reason, response_text, thinking) を返す。"""
     prompt = build_prompt(state)
     messages = [{"role": "user", "content": prompt}]
     text = tokenizer.apply_chat_template(
         messages,
         tokenize=False,
         add_generation_prompt=True,
-        enable_thinking=False,
+        enable_thinking=enable_thinking,
     )
     inputs = tokenizer([text], return_tensors="pt").to(model.device)
     with torch.no_grad():
@@ -105,20 +106,29 @@ def generate_action(model, tokenizer, state, max_new_tokens: int) -> tuple[Actio
             max_new_tokens=max_new_tokens,
             do_sample=False,
         )
-    response = tokenizer.decode(output[0][inputs.input_ids.shape[1] :], skip_special_tokens=True)
+    full = tokenizer.decode(output[0][inputs.input_ids.shape[1] :], skip_special_tokens=True)
+    think_match = re.search(r"⁠\*\*(.*?)\*\*", full, flags=re.DOTALL)
+    if think_match:
+        thinking = think_match.group(1).strip()
+        response = full[think_match.end():].strip()
+    else:
+        thinking = ""
+        response = full.strip()
     action, reason = extract_action(response)
-    return action, reason, response.strip()
+    return action, reason, response, thinking
 
 
 AGENT_ARG_TYPES: dict[str, type] = {
     "model_path": str, "seed": int, "max_new_tokens": int,
     "evaluator_rollouts": int, "output": str,
+    "enable_thinking": bool,
 }
 
 AGENT_DEFAULTS: dict[str, object] = {
     "model_path": "/home/student222/models/Qwen3-14B",
     "seed": 42, "max_new_tokens": 96, "evaluator_rollouts": 24,
     "output": "hivc_sim/results/turn_game/qwen_agent_smoke.csv",
+    "enable_thinking": False,
 }
 
 
@@ -131,6 +141,8 @@ def main() -> None:
     parser.add_argument("--max-new-tokens", type=int, default=None)
     parser.add_argument("--evaluator-rollouts", type=int, default=None)
     parser.add_argument("--output", default=None)
+    parser.add_argument("--enable-thinking", default=None, type=str,
+                        help="Qwen3 thinkingモード (true/false)。config未指定時は false。")
     args = parser.parse_args()
 
     cli_overrides: dict[str, object] = {}
@@ -164,7 +176,7 @@ def main() -> None:
         optimal = best_action(q_values)
         allowed = acceptable_actions(q_values)
 
-        action, reason, raw_response = generate_action(model, tokenizer, state, cfg["max_new_tokens"])
+        action, reason, raw_response, thinking = generate_action(model, tokenizer, state, cfg["max_new_tokens"], enable_thinking=cfg["enable_thinking"])
         if action is None:
             action = optimal
             reason = f"invalid_response_fallback: {reason[:120]}"
@@ -179,6 +191,7 @@ def main() -> None:
             "event": state.current_event.value,
             "state_before": json.dumps(state.as_dict(), ensure_ascii=False, sort_keys=True),
             "raw_response": raw_response,
+            "thinking": thinking,
             "action": action.value,
             "action_label": ACTION_LABELS[action],
             "reason": reason,

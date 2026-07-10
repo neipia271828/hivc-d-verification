@@ -29,6 +29,15 @@ max_new_tokens: 1024
 max_discussion_turns: 24       # 1ターンの議論発言上限
 discussion_token_budget: 16184  # 議論のトークン予算上限
 
+# Qwen3 thinkingモード（推論時の内部思考を有効化）
+# false: thinking無効（従来通り、最終応答のみ生成）
+# true:  thinking有効（モデルが内部推論を行ってから応答）
+#   ※ thinking有効時は max_new_tokens を大きめに設定すること（思考分も消費するため）
+enable_thinking: false
+# thinkingモード時の推論トークン上限（Qwen3 thinking_budget）。
+# null なら制限なし。数値を指定すると思考をそのトークン数に抑える。
+thinking_budget: null
+
 # 探索ベース評価（Q値推定）のロールアウト数（多いほど精度up・遅くなる）
 evaluator_rollouts: 24
 

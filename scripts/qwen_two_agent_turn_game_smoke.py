@@ -111,13 +111,14 @@ def extract_json_action(response: str) -> tuple[Action | None, str, str, bool]:
     return None, text[:160], text[:160], False
 
 
-def run_prompt(model, tokenizer, prompt: str, max_new_tokens: int) -> str:
+def run_prompt(model, tokenizer, prompt: str, max_new_tokens: int, enable_thinking: bool = False) -> tuple[str, str]:
+    """(thinking_content, response_text) を返す。"""
     messages = [{"role": "user", "content": prompt}]
     text = tokenizer.apply_chat_template(
         messages,
         tokenize=False,
         add_generation_prompt=True,
-        enable_thinking=False,
+        enable_thinking=enable_thinking,
     )
     inputs = tokenizer([text], return_tensors="pt").to(model.device)
     with torch.no_grad():
@@ -126,7 +127,15 @@ def run_prompt(model, tokenizer, prompt: str, max_new_tokens: int) -> str:
             max_new_tokens=max_new_tokens,
             do_sample=False,
         )
-    return tokenizer.decode(output[0][inputs.input_ids.shape[1] :], skip_special_tokens=True).strip()
+    full = tokenizer.decode(output[0][inputs.input_ids.shape[1] :], skip_special_tokens=True)
+    think_match = re.search(r"⁠\*\*(.*?)\*\*", full, flags=re.DOTALL)
+    if think_match:
+        thinking_content = think_match.group(1).strip()
+        response_text = full[think_match.end():].strip()
+    else:
+        thinking_content = ""
+        response_text = full.strip()
+    return thinking_content, response_text
 
 
 def format_persona(agent_name: str, persona: str, persona_params: dict[str, object] | None) -> str:
@@ -237,12 +246,13 @@ def forced_vote_prompt(
 """
 
 
-def get_action(model, tokenizer, prompt: str, max_new_tokens: int, fallback: Action) -> tuple[Action, str, str, bool, str]:
-    raw = run_prompt(model, tokenizer, prompt, max_new_tokens)
+def get_action(model, tokenizer, prompt: str, max_new_tokens: int, fallback: Action, enable_thinking: bool = False) -> tuple[Action, str, str, bool, str, str]:
+    """(action, reason, message, ready, raw_response, thinking) を返す。"""
+    thinking, raw = run_prompt(model, tokenizer, prompt, max_new_tokens, enable_thinking=enable_thinking)
     action, reason, message, ready = extract_json_action(raw)
     if action is None:
-        return fallback, f"invalid_response_fallback: {reason}", message, False, raw
-    return action, reason, message, ready, raw
+        return fallback, f"invalid_response_fallback: {reason}", message, False, raw, thinking
+    return action, reason, message, ready, raw, thinking
 
 
 def find_discussion_consensus(transcript: list[dict[str, str]]) -> Action | None:
@@ -378,6 +388,7 @@ SMOKE_ARG_TYPES: dict[str, type] = {
     "role_file": str, "alpha_role_key": str, "beta_role_key": str,
     "persona_params_file": str,
     "random_persona": bool, "random_seed": int,
+    "enable_thinking": bool,
 }
 
 SMOKE_DEFAULTS: dict[str, object] = {
@@ -390,6 +401,7 @@ SMOKE_DEFAULTS: dict[str, object] = {
     "role_file": None, "alpha_role_key": None, "beta_role_key": None,
     "persona_params_file": None,
     "random_persona": False, "random_seed": None,
+    "enable_thinking": False,
 }
 
 
@@ -417,6 +429,8 @@ def main() -> None:
     parser.add_argument("--output", default=None)
     parser.add_argument("--live-jsonl", default=None,
                         help="各ターン終了時にJSONLを追記するパス（visualize_game.html ライブモード用）")
+    parser.add_argument("--enable-thinking", default=None, type=str,
+                        help="Qwen3 thinkingモード (true/false)。config未指定時は false。")
     args = parser.parse_args()
 
     cli_overrides: dict[str, object] = {}
@@ -471,7 +485,7 @@ def main() -> None:
 
         for discussion_index in range(cfg["max_discussion_turns"]):
             speaker = speakers[discussion_index % len(speakers)]
-            action, reason, message, ready, raw = get_action(
+            action, reason, message, ready, raw, thinking = get_action(
                 model,
                 tokenizer,
                 discussion_prompt(
@@ -484,6 +498,7 @@ def main() -> None:
                 ),
                 cfg["max_new_tokens"],
                 fallback,
+                enable_thinking=cfg["enable_thinking"],
             )
             token_budget_used += len(tokenizer.encode(raw, add_special_tokens=False))
             transcript.append(
@@ -494,6 +509,7 @@ def main() -> None:
                     "message": message,
                     "ready": str(ready).lower(),
                     "raw": raw,
+                    "thinking": thinking,
                 }
             )
 
@@ -514,22 +530,26 @@ def main() -> None:
             beta_vote_ready = True
             alpha_vote_raw = ""
             beta_vote_raw = ""
+            alpha_vote_thinking = ""
+            beta_vote_thinking = ""
             group_action = consensus_action
             decision_rule = "free_discussion_consensus"
         else:
-            alpha_vote, alpha_vote_reason, alpha_vote_msg, alpha_vote_ready, alpha_vote_raw = get_action(
+            alpha_vote, alpha_vote_reason, alpha_vote_msg, alpha_vote_ready, alpha_vote_raw, alpha_vote_thinking = get_action(
                 model,
                 tokenizer,
                 forced_vote_prompt("alpha", personas["alpha"], persona_params["alpha"], state, transcript),
                 cfg["max_new_tokens"],
                 fallback,
+                enable_thinking=cfg["enable_thinking"],
             )
-            beta_vote, beta_vote_reason, beta_vote_msg, beta_vote_ready, beta_vote_raw = get_action(
+            beta_vote, beta_vote_reason, beta_vote_msg, beta_vote_ready, beta_vote_raw, beta_vote_thinking = get_action(
                 model,
                 tokenizer,
                 forced_vote_prompt("beta", personas["beta"], persona_params["beta"], state, transcript),
                 cfg["max_new_tokens"],
                 fallback,
+                enable_thinking=cfg["enable_thinking"],
             )
             group_action, decision_rule = decide_group_action(state.turn, alpha_vote, beta_vote)
 
@@ -556,11 +576,13 @@ def main() -> None:
             "alpha_vote_message": alpha_vote_msg,
             "alpha_vote_ready": str(alpha_vote_ready).lower(),
             "alpha_vote_raw": alpha_vote_raw,
+            "alpha_vote_thinking": alpha_vote_thinking,
             "beta_vote": beta_vote.value,
             "beta_vote_reason": beta_vote_reason,
             "beta_vote_message": beta_vote_msg,
             "beta_vote_ready": str(beta_vote_ready).lower(),
             "beta_vote_raw": beta_vote_raw,
+            "beta_vote_thinking": beta_vote_thinking,
             "group_action": group_action.value,
             "group_action_label": ACTION_LABELS[group_action],
             "decision_rule": decision_rule,
