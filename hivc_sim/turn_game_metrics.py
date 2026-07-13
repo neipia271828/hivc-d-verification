@@ -36,6 +36,7 @@ discussion_diversity の定義:
 from __future__ import annotations
 
 import json
+import re
 from typing import Iterable
 
 import numpy as np
@@ -75,6 +76,27 @@ def _to_bool(value) -> bool:
     return str(value).lower() == "true"
 
 
+def _game_key(row: dict) -> tuple[object, object]:
+    """ゲーム識別子を (condition, seed_or_game_id) のタプルで返す。
+
+    `condition` が存在し、かつ None でなければキーに含める。
+    `seed` があればそれを優先し、なければ `game_id`、どちらもなければ
+    後方互換の既定値を返す。
+    """
+    condition = row.get("condition")
+    if condition is not None:
+        if "seed" in row and row["seed"] is not None:
+            return (condition, row["seed"])
+        if "game_id" in row and row["game_id"] is not None:
+            return (condition, row["game_id"])
+        return (condition, "default")
+    if "seed" in row and row["seed"] is not None:
+        return (None, row["seed"])
+    if "game_id" in row and row["game_id"] is not None:
+        return (None, row["game_id"])
+    return (None, "default")
+
+
 def conflict_level(individual_actions: Iterable[str]) -> float:
     """個人選択の分裂度。1 - max_share。"""
     actions = [str(a).strip().upper() for a in individual_actions if str(a).strip()]
@@ -88,13 +110,14 @@ def conflict_level(individual_actions: Iterable[str]) -> float:
 
 
 def enrich_turn_row(row: dict) -> dict:
-    """ターン行に conflict_level と group_reason（欠損時）を補う。"""
+    """ターン行に conflict_level、group_reason、cross_role_evidence_used を補う。"""
     individual = _collect_individual_votes(row)
     if individual:
         row.setdefault("conflict_level", conflict_level(individual))
     else:
         row.setdefault("conflict_level", float("nan"))
     row.setdefault("group_reason", row.get("decision_rule", ""))
+    row.setdefault("cross_role_evidence_used", _cross_role_evidence_used(row))
     return row
 
 
@@ -161,27 +184,32 @@ def minority_adoption_rate(rows: list[dict]) -> float:
 def plan_revision_quality(rows: list[dict]) -> dict[str, float]:
     """イベント発生ターンで regret が改善した割合。
 
-    rows は turn 昇順を前提とする。イベントは current_event / event 列。
+    rows はゲーム識別子ごとに turn 昇順で処理する。イベントは current_event / event 列。
     regret は "regret" 列（数値）。
     """
-    ordered = sorted(rows, key=lambda r: _safe_float(r.get("turn"), 0.0))
-    prev_regret: float | None = None
+    groups: dict[tuple[object, object], list[dict]] = {}
+    for row in rows:
+        key = _game_key(row)
+        groups.setdefault(key, []).append(row)
     eligible = 0
     not_worse = 0
     improved = 0
-    for row in ordered:
-        event = str(row.get("event", row.get("current_event", "none")))
-        regret = _safe_float(row.get("regret"))
-        if event and event.lower() not in ("none", "", "nan"):
-            if prev_regret is not None and not np.isnan(regret) and not np.isnan(prev_regret):
-                eligible += 1
-                delta = regret - prev_regret
-                if delta <= 0:
-                    not_worse += 1
-                if delta < 0:
-                    improved += 1
-        if not np.isnan(regret):
-            prev_regret = regret
+    for group in groups.values():
+        ordered = sorted(group, key=lambda r: _safe_float(r.get("turn"), 0.0))
+        prev_regret: float | None = None
+        for row in ordered:
+            event = str(row.get("event", row.get("current_event", "none")))
+            regret = _safe_float(row.get("regret"))
+            if event and event.lower() not in ("none", "", "nan"):
+                if prev_regret is not None and not np.isnan(regret) and not np.isnan(prev_regret):
+                    eligible += 1
+                    delta = regret - prev_regret
+                    if delta <= 0:
+                        not_worse += 1
+                    if delta < 0:
+                        improved += 1
+            if not np.isnan(regret):
+                prev_regret = regret
     if eligible == 0:
         return {"plan_revision_quality": float("nan"), "plan_revision_improved_rate": float("nan")}
     return {
@@ -215,15 +243,15 @@ def terminal_metrics(rows: list[dict]) -> dict[str, float]:
     """ゲーム終端行から win/survival/return を集計。"""
     if not rows:
         return {"win_rate": float("nan"), "survival_rate": float("nan"), "mean_return": float("nan")}
-    # seed ごとの最終ターン行を終端とみなす
-    by_seed: dict[object, dict] = {}
+    # ゲーム識別子ごとの最終ターン行を終端とみなす
+    by_game: dict[tuple[object, object], dict] = {}
     for row in rows:
-        seed = row.get("seed", row.get("game_id", 0))
+        key = _game_key(row)
         turn = _safe_float(row.get("turn"), 0.0)
-        prev = by_seed.get(seed)
+        prev = by_game.get(key)
         if prev is None or turn >= _safe_float(prev.get("turn"), 0.0):
-            by_seed[seed] = row
-    terminal = list(by_seed.values())
+            by_game[key] = row
+    terminal = list(by_game.values())
     win = float(np.mean([str(r.get("outcome", "")).lower() == "win" for r in terminal]))
     survival = float(
         np.mean([not str(r.get("outcome", "")).lower().startswith("loss_") for r in terminal])
@@ -287,6 +315,177 @@ def discussion_diversity(rows: list[dict]) -> float:
     return float(len(acts))
 
 
+def route_choice_accuracy(rows: list[dict]) -> float:
+    """planned_route が optimal_route と一致したターンの割合。"""
+    total = 0
+    correct = 0
+    for row in rows:
+        planned = str(row.get("planned_route", "")).strip().lower()
+        optimal = str(row.get("optimal_route", "")).strip().lower()
+        if planned in ("comms", "escape") and optimal in ("comms", "escape"):
+            total += 1
+            if planned == optimal:
+                correct += 1
+    if total == 0:
+        return float("nan")
+    return correct / total
+
+
+def route_switch_quality(rows: list[dict]) -> float:
+    """イベント発生ターンで、最適経路が変化した場合に適切に切り替えられた割合。
+
+    rows はゲーム識別子ごとに turn 昇順で処理する。
+    """
+    groups: dict[tuple[object, object], list[dict]] = {}
+    for row in rows:
+        key = _game_key(row)
+        groups.setdefault(key, []).append(row)
+    eligible = 0
+    good = 0
+    for group in groups.values():
+        ordered = sorted(group, key=lambda r: _safe_float(r.get("turn"), 0.0))
+        prev_planned: str | None = None
+        for row in ordered:
+            event = str(row.get("event", row.get("current_event", "none")))
+            planned = str(row.get("planned_route", "")).strip().lower()
+            optimal = str(row.get("optimal_route", "")).strip().lower()
+            if event and event.lower() not in ("none", "", "nan"):
+                # 最適経路が前ターンの計画と異なるイベントターンを評価対象とする
+                if (
+                    prev_planned is not None
+                    and optimal in ("comms", "escape")
+                    and prev_planned != optimal
+                ):
+                    eligible += 1
+                    if planned == optimal:
+                        good += 1
+            if planned in ("comms", "escape"):
+                prev_planned = planned
+    if eligible == 0:
+        return float("nan")
+    return good / eligible
+
+
+def premature_launch_rate(rows: list[dict]) -> float:
+    """行動 F を選んだターンのうち、発進条件未達だった割合。"""
+    total = 0
+    premature = 0
+    for row in rows:
+        action = str(row.get("group_action", row.get("action", ""))).strip().upper()
+        if action == "F":
+            total += 1
+            if _to_bool(row.get("premature", False)):
+                premature += 1
+    if total == 0:
+        return float("nan")
+    return premature / total
+
+
+def rescue_wait_failure_rate(rows: list[dict]) -> float:
+    """通信救助要請後（rescue_eta 非 None）に敗北したゲームの割合。"""
+    by_game: dict[tuple[object, object], dict] = {}
+    for row in rows:
+        key = _game_key(row)
+        turn = _safe_float(row.get("turn"), 0.0)
+        prev = by_game.get(key)
+        if prev is None or turn >= _safe_float(prev.get("turn"), 0.0):
+            by_game[key] = row
+    rescue_sent = 0
+    failed = 0
+    for row in by_game.values():
+        state_before = _parse_json(row.get("state_before"))
+        state_after = _parse_json(row.get("state_after"))
+        rescue_eta = None
+        if isinstance(state_before, dict):
+            rescue_eta = state_before.get("rescue_eta")
+        if rescue_eta is None and isinstance(state_after, dict):
+            rescue_eta = state_after.get("rescue_eta")
+        if rescue_eta is not None:
+            rescue_sent += 1
+            outcome = str(row.get("outcome", "")).lower()
+            if outcome.startswith("loss_"):
+                failed += 1
+    if rescue_sent == 0:
+        return float("nan")
+    return failed / rescue_sent
+
+
+def _extract_terms(text: str) -> set[str]:
+    """日本語2文字以上、英数字3文字以上のトークンを抽出する。"""
+    lowered = text.lower()
+    # 日本語（漢字・ひらがな・カタカナ）2文字以上
+    ja = re.findall(r"[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]{2,}", lowered)
+    # 英数字3文字以上
+    en = re.findall(r"[a-z0-9_]{3,}", lowered)
+    return set(ja) | set(en)
+
+
+def _cross_role_evidence_used(row: dict) -> bool:
+    """発言者ごとに相手役割の診断情報（自分の evidence には含まれない語）を参照したか。"""
+    evidence = _parse_json(row.get("role_specific_evidence"))
+    if not isinstance(evidence, dict):
+        return False
+
+    alpha_text = str(evidence.get("alpha", "")).lower()
+    beta_text = str(evidence.get("beta", "")).lower()
+    alpha_terms = _extract_terms(alpha_text)
+    beta_terms = _extract_terms(beta_text)
+
+    # alpha には beta 用語のうち alpha 用語に含まれないものが新規情報
+    alpha_new_info = beta_terms - alpha_terms
+    beta_new_info = alpha_terms - beta_terms
+
+    speaker_texts = []
+    transcript = _parse_json(row.get("discussion_transcript"))
+    if isinstance(transcript, list):
+        for item in transcript:
+            if not isinstance(item, dict):
+                continue
+            speaker = str(item.get("speaker", "")).strip().lower()
+            parts = []
+            for key in ("message", "reason", "thinking"):
+                value = item.get(key)
+                if isinstance(value, str):
+                    parts.append(value)
+            if speaker and parts:
+                speaker_texts.append((speaker, " ".join(parts).lower()))
+
+    for key in ("alpha_vote_reason", "beta_vote_reason"):
+        value = row.get(key)
+        if isinstance(value, str):
+            speaker = "alpha" if key == "alpha_vote_reason" else "beta"
+            speaker_texts.append((speaker, value.lower()))
+
+    for speaker, text in speaker_texts:
+        if speaker == "alpha":
+            terms = alpha_new_info
+        elif speaker == "beta":
+            terms = beta_new_info
+        else:
+            continue
+        if any(term in text for term in terms):
+            return True
+    return False
+
+
+def cross_role_evidence_use(rows: list[dict]) -> float:
+    """group_reason または個人理由・発言に相手役割の診断情報が反映されたターン割合。"""
+    total = 0
+    used = 0
+    for row in rows:
+        if row.get("role_specific_evidence") is None:
+            continue
+        evidence = _parse_json(row.get("role_specific_evidence"))
+        if not isinstance(evidence, dict):
+            continue
+        total += 1
+        if _cross_role_evidence_used(row):
+            used += 1
+    if total == 0:
+        return float("nan")
+    return used / total
+
+
 def compute_summary_metrics(rows: list[dict], threshold: float = CONFLICT_THRESHOLD) -> dict[str, float]:
     """REQUIREMENTS §6 の主要評価指標を全て計算して返す。"""
     enriched = [enrich_turn_row(dict(row)) for row in rows]
@@ -299,4 +498,9 @@ def compute_summary_metrics(rows: list[dict], threshold: float = CONFLICT_THRESH
     summary["agreement_rate_by_opportunity"] = agreement_rate_by_opportunity(enriched)
     summary["fallback_rate"] = fallback_rate(enriched)
     summary["discussion_diversity"] = discussion_diversity(enriched)
+    summary["route_choice_accuracy"] = route_choice_accuracy(enriched)
+    summary["route_switch_quality"] = route_switch_quality(enriched)
+    summary["premature_launch_rate"] = premature_launch_rate(enriched)
+    summary["rescue_wait_failure_rate"] = rescue_wait_failure_rate(enriched)
+    summary["cross_role_evidence_use"] = cross_role_evidence_use(enriched)
     return summary

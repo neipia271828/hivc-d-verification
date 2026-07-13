@@ -16,6 +16,7 @@ from turn_game_metrics import (  # noqa: E402
     fallback_rate,
     minority_adoption_rate,
     plan_revision_quality,
+    route_switch_quality,
     conflict_resolution_quality,
 )
 
@@ -69,6 +70,102 @@ def test_plan_revision_quality_improves() -> None:
     # 2 event turns: turn1 (100->50 improved), turn3 (50->80 worse)
     assert result["plan_revision_quality"] == 0.5
     assert result["plan_revision_improved_rate"] == 0.5
+
+
+def test_plan_revision_quality_cross_game_boundary_is_nan() -> None:
+    # 別ゲームの turn 0 同士を混在させても、前ターンを参照しない
+    rows = [
+        {"seed": 1, "turn": 0, "event": "none", "regret": 100.0},
+        {"seed": 2, "turn": 0, "event": "leak_surge", "regret": 80.0},
+    ]
+    result = plan_revision_quality(rows)
+    assert np.isnan(result["plan_revision_quality"])
+    assert np.isnan(result["plan_revision_improved_rate"])
+
+
+def test_plan_revision_quality_condition_boundary_is_nan() -> None:
+    # 同一 seed でも condition が異なれば前ターン扱いしない
+    rows = [
+        {"seed": 1, "condition": "control", "turn": 0, "event": "none", "regret": 100.0},
+        {"seed": 1, "condition": "hivc_d", "turn": 0, "event": "leak_surge", "regret": 80.0},
+    ]
+    result = plan_revision_quality(rows)
+    assert np.isnan(result["plan_revision_quality"])
+    assert np.isnan(result["plan_revision_improved_rate"])
+
+
+def test_plan_revision_quality_interleaved_games() -> None:
+    rows = [
+        {"seed": 1, "turn": 0, "event": "none", "regret": 100.0},
+        {"seed": 2, "turn": 0, "event": "none", "regret": 50.0},
+        {"seed": 1, "turn": 1, "event": "leak_surge", "regret": 80.0},
+        {"seed": 2, "turn": 1, "event": "pressure_spike", "regret": 40.0},
+    ]
+    result = plan_revision_quality(rows)
+    # 各ゲーム内で turn1 が前ターンより改善している
+    assert result["plan_revision_quality"] == 1.0
+    assert result["plan_revision_improved_rate"] == 1.0
+
+
+def test_plan_revision_quality_game_order_independent() -> None:
+    rows_game_order = [
+        {"seed": 1, "turn": 0, "event": "none", "regret": 100.0},
+        {"seed": 1, "turn": 1, "event": "leak_surge", "regret": 80.0},
+        {"seed": 2, "turn": 0, "event": "none", "regret": 50.0},
+        {"seed": 2, "turn": 1, "event": "pressure_spike", "regret": 40.0},
+    ]
+    rows_interleaved = [
+        {"seed": 1, "turn": 0, "event": "none", "regret": 100.0},
+        {"seed": 2, "turn": 0, "event": "none", "regret": 50.0},
+        {"seed": 1, "turn": 1, "event": "leak_surge", "regret": 80.0},
+        {"seed": 2, "turn": 1, "event": "pressure_spike", "regret": 40.0},
+    ]
+    assert plan_revision_quality(rows_game_order) == plan_revision_quality(rows_interleaved)
+
+
+def test_route_switch_quality_cross_game_boundary_turn0_is_nan() -> None:
+    # 別 seed の turn 0 行を混在させても、ゲーム境界だけで分母が増えない
+    rows = [
+        {"seed": 1, "turn": 0, "event": "none", "planned_route": "escape", "optimal_route": "comms"},
+        {"seed": 2, "turn": 0, "event": "leak_surge", "planned_route": "escape", "optimal_route": "comms"},
+    ]
+    assert np.isnan(route_switch_quality(rows))
+
+
+def test_route_switch_quality_condition_boundary_turn0_is_nan() -> None:
+    # 同一 seed でも condition が異なれば前ターン扱いしない
+    rows = [
+        {"seed": 1, "condition": "control", "turn": 0, "event": "none", "planned_route": "escape", "optimal_route": "comms"},
+        {"seed": 1, "condition": "hivc_d", "turn": 0, "event": "leak_surge", "planned_route": "escape", "optimal_route": "comms"},
+    ]
+    assert np.isnan(route_switch_quality(rows))
+
+
+def test_route_switch_quality_interleaved_games() -> None:
+    rows = [
+        {"seed": 1, "turn": 0, "event": "none", "planned_route": "escape", "optimal_route": "comms"},
+        {"seed": 2, "turn": 0, "event": "none", "planned_route": "escape", "optimal_route": "comms"},
+        {"seed": 1, "turn": 1, "event": "leak_surge", "planned_route": "comms", "optimal_route": "comms"},
+        {"seed": 2, "turn": 1, "event": "pressure_spike", "planned_route": "comms", "optimal_route": "comms"},
+    ]
+    # 各ゲームで turn0 -> turn1 に optimal が escape から comms へ変化し、planned も切り替わっている
+    assert route_switch_quality(rows) == 1.0
+
+
+def test_route_switch_quality_game_order_independent() -> None:
+    rows_game_order = [
+        {"seed": 1, "turn": 0, "event": "none", "planned_route": "escape", "optimal_route": "comms"},
+        {"seed": 1, "turn": 1, "event": "leak_surge", "planned_route": "comms", "optimal_route": "comms"},
+        {"seed": 2, "turn": 0, "event": "none", "planned_route": "escape", "optimal_route": "comms"},
+        {"seed": 2, "turn": 1, "event": "pressure_spike", "planned_route": "comms", "optimal_route": "comms"},
+    ]
+    rows_interleaved = [
+        {"seed": 1, "turn": 0, "event": "none", "planned_route": "escape", "optimal_route": "comms"},
+        {"seed": 2, "turn": 0, "event": "none", "planned_route": "escape", "optimal_route": "comms"},
+        {"seed": 1, "turn": 1, "event": "leak_surge", "planned_route": "comms", "optimal_route": "comms"},
+        {"seed": 2, "turn": 1, "event": "pressure_spike", "planned_route": "comms", "optimal_route": "comms"},
+    ]
+    assert route_switch_quality(rows_game_order) == route_switch_quality(rows_interleaved)
 
 
 def test_conflict_resolution_quality() -> None:

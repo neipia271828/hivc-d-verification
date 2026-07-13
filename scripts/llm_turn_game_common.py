@@ -29,6 +29,9 @@ from turn_game import (
     best_action,
     estimate_q_values,
     initial_state,
+    optimal_route,
+    role_specific_evidence,
+    route_of_action,
     step,
     terminal_score,
 )
@@ -241,16 +244,32 @@ def add_persona_args(parser: argparse.ArgumentParser) -> None:
                         help="random_persona の抽選シード（未指定時はゲーム seed を使用）。")
 
 
-def format_state(state) -> str:
+def format_state(state, agent_name: str | None = None) -> str:
+    rescue = "未送信" if state.rescue_eta is None else f"救助到着まであと{state.rescue_eta}ターン"
+
+    def _v(value, hidden: bool) -> str:
+        return "不明（パートナーに問い合わせ）" if hidden else str(value)
+
+    # alpha: 安全管理。船体・浸水は可視、通信・艇健全性は不可視。
+    # beta: 通信・脱出艇。通信・艇状態は可視、船体・浸水は不可視。
+    hide = {
+        "alpha": {"communication": True, "pod_integrity": True, "pod_readiness": True},
+        "beta": {"hull_damage": True, "flooding": True},
+    }.get(agent_name, {})
+
     return "\n".join(
         [
             f"turn: {state.turn}",
+            f"scenario: {state.scenario_id}",
             f"event: {EVENT_LABELS[state.current_event]} ({state.current_event.value})",
             f"oxygen: {state.oxygen}",
             f"power: {state.power}",
-            f"hull_damage: {state.hull_damage}",
-            f"flooding: {state.flooding}",
-            f"communication: {state.communication}",
+            f"hull_damage: {_v(state.hull_damage, hide.get('hull_damage', False))}",
+            f"flooding: {_v(state.flooding, hide.get('flooding', False))}",
+            f"communication: {_v(state.communication, hide.get('communication', False))}",
+            f"pod_readiness: {_v(state.pod_readiness, hide.get('pod_readiness', False))}",
+            f"pod_integrity: {_v(state.pod_integrity, hide.get('pod_integrity', False))}",
+            f"rescue_eta: {rescue}",
             f"morale: {state.morale}",
         ]
     )
@@ -324,7 +343,7 @@ def extract_json_action(response: str) -> tuple[Action | None, str, str, bool]:
                 return Action(action_text), reason, message, ready
         except json.JSONDecodeError:
             pass
-    letter_match = re.search(r"\b([ABCD])\b", text.upper())
+    letter_match = re.search(r"\b([ABCDEF])\b", text.upper())
     if letter_match:
         return Action(letter_match.group(1)), text[:160], text[:160], False
     return None, text[:160], text[:160], False
@@ -383,6 +402,24 @@ def _speech_act_guide() -> str:
     return "\n".join([f"- {act.value}: {label}" for act, label in SPEECH_ACT_LABELS.items()])
 
 
+def _win_loss_block() -> str:
+    return (
+        "勝利条件:\n"
+        "- 通信救助: communication >= 3 となり、救助到着（rescue_eta=0）まで生存する\n"
+        "- 自力脱出: 行動 F で pod_readiness >= 2, pod_integrity >= 2, oxygen >= 3, power >= 2, flooding <= 3\n\n"
+        "敗北条件:\n"
+        "- oxygen <= 0\n"
+        "- power <= 0\n"
+        "- hull_damage >= 5\n"
+        "- flooding >= 5\n"
+        "- 行動 F を未達条件で実行すると重大損傷または敗北"
+    )
+
+
+def _role_evidence(agent_name: str, state) -> str:
+    return role_specific_evidence(agent_name, state)
+
+
 def discussion_prompt(
     agent_name: str,
     persona: str,
@@ -396,17 +433,13 @@ def discussion_prompt(
 あなたのペルソナ設定:
 {format_persona(agent_name, persona, persona_params)}
 
-勝利条件:
-- communication >= 3
+{_win_loss_block()}
 
-敗北条件:
-- oxygen <= 0
-- power <= 0
-- hull_damage >= 5
-- flooding >= 5
+現在状態（あなたの担当分野のみ可視）:
+{format_state(state, agent_name)}
 
-現在状態:
-{format_state(state)}
+あなたの役割固有情報:
+{_role_evidence(agent_name, state)}
 
 選択可能な行動:
 {action_list()}
@@ -418,7 +451,7 @@ def discussion_prompt(
 {_speech_act_guide()}
 
 この自由議論フェーズでは最大 {max_discussion_turns} 発言までです。
-行動案を述べたい場合は action（A-D）と reason を含めてください。
+行動案を述べたい場合は action（A-F）と reason を含めてください。
 ready は不要です。
 必ず次のJSONだけを返してください。説明文やMarkdownは不要です。
 {{"speech_act":"evidence","message":"相手への短い発言","action":"A","reason":"短い理由"}}
@@ -439,17 +472,13 @@ def decision_opportunity_prompt(
 あなたのペルソナ設定:
 {format_persona(agent_name, persona, persona_params)}
 
-勝利条件:
-- communication >= 3
+{_win_loss_block()}
 
-敗北条件:
-- oxygen <= 0
-- power <= 0
-- hull_damage >= 5
-- flooding >= 5
+現在状態（あなたの担当分野のみ可視）:
+{format_state(state, agent_name)}
 
-現在状態:
-{format_state(state)}
+あなたの役割固有情報:
+{_role_evidence(agent_name, state)}
 
 選択可能な行動:
 {action_list()}
@@ -459,7 +488,7 @@ def decision_opportunity_prompt(
 
 これは第 {opportunity_index} / {opportunity_count} 回の意思決定機会です。
 各エージェントは独立に最終案を一つだけ出してください。
-出力には action（A-D）、短い reason、そして合意意思を表す ready（true/false）を含めてください。
+出力には action（A-F）、短い reason、そして合意意思を表す ready（true/false）を含めてください。
 全員が同じ action かつ ready=true なら合意成立です。
 必ず次のJSONだけを返してください。説明文やMarkdownは不要です。
 {{"action":"A","reason":"短い理由","ready":true}}
@@ -575,6 +604,7 @@ def run_one_game(
     thinking_budget: int | None = None,
     decision_schedule_seed: int = 0,
     max_decision_opportunities: int = 3,
+    scenario_id: str | None = None,
     **kwargs: Any,
 ) -> list[dict[str, object]]:
     """1 ゲームを進行し、REQUIREMENTS §6 / §7.1 のターン別記録項目を含む行リストを返す。
@@ -584,10 +614,11 @@ def run_one_game(
     （visualize_game.html のライブモード用ストリーム）。
     """
     _ = kwargs
-    state = initial_state(seed)
+    state = initial_state(seed, scenario_id)
     rng = np.random.default_rng(seed)
     rows: list[dict[str, object]] = []
     speakers = ["alpha", "beta"]
+    planned_route = "undecided"
 
     while not state.done:
         q_values = estimate_q_values(state, n_rollouts=evaluator_rollouts, seed=seed + state.turn * 1000)
@@ -774,15 +805,29 @@ def run_one_game(
         result = step(state, group_action, rng)
         regret = q_values[optimal] - q_values[group_action]
 
+        optimal_route_value = optimal_route(state, seed=seed + state.turn * 1000, n_rollouts=20)
+        route = route_of_action(group_action)
+        prev_route = planned_route
+        if route in ("comms", "escape"):
+            planned_route = route
+        elif planned_route == "undecided":
+            planned_route = optimal_route_value
+        route_switch = (prev_route in ("comms", "escape") and planned_route in ("comms", "escape") and prev_route != planned_route)
+
         individual_actions = f"{alpha_vote.value},{beta_vote.value}"
         individual_reasons = json.dumps(
             {"alpha": alpha_vote_reason, "beta": beta_vote_reason}, ensure_ascii=False
         )
+        role_evidence = {
+            "alpha": role_specific_evidence("alpha", state),
+            "beta": role_specific_evidence("beta", state),
+        }
 
         row: dict[str, object] = {
             "game_id": seed,
             "seed": seed,
             "condition": condition,
+            "scenario_id": state.scenario_id,
             "turn": state.turn,
             "event": state.current_event.value,
             "alpha_role_key": role_keys["alpha"],
@@ -827,6 +872,13 @@ def run_one_game(
             "decision_history": json.dumps(decision_history, ensure_ascii=False),
             "fallback_used": fallback_used,
             "fallback_priority_agent": fallback_priority_agent,
+            "planned_route": planned_route,
+            "optimal_route": optimal_route_value,
+            "route_switch": route_switch,
+            "premature": result.premature,
+            "role_specific_evidence": json.dumps(role_evidence, ensure_ascii=False),
+            "alpha_evidence": role_evidence["alpha"],
+            "beta_evidence": role_evidence["beta"],
         }
         rows.append(row)
         print(

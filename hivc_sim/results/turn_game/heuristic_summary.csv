@@ -1,2 +1,2 @@
-policy,games_requested,games,win_rate,survival_rate,mean_return,mean_regret,expert_match_rate,minority_adoption_rate,conflict_resolution_quality,plan_revision_quality,plan_revision_improved_rate
-heuristic,5,5.0,0.8,1.0,1151.0,175.625,0.47368421052631576,nan,nan,0.35714285714285715,0.21428571428571427
+policy,games_requested,games,win_rate,survival_rate,mean_return,mean_regret,expert_match_rate,minority_adoption_rate,conflict_resolution_quality,plan_revision_quality,plan_revision_improved_rate,agreement_rate_by_opportunity,fallback_rate,discussion_diversity,route_choice_accuracy,route_switch_quality,premature_launch_rate,rescue_wait_failure_rate,cross_role_evidence_use
+heuristic,100,100.0,0.09,0.69,368.1,195.50989819004525,0.3778280542986425,nan,nan,0.6356877323420075,0.550185873605948,nan,nan,nan,0.43989071038251365,0.1188118811881188,0.0,0.5,nan

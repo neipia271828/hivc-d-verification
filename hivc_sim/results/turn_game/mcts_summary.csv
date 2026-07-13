@@ -1,2 +1,2 @@
-policy,games_requested,games,win_rate,survival_rate,mean_return,mean_regret
-mcts,1,1.0,1.0,1.0,1295.0,117.08333333333333
+policy,games_requested,games,win_rate,survival_rate,mean_return,mean_regret,expert_match_rate,minority_adoption_rate,conflict_resolution_quality,plan_revision_quality,plan_revision_improved_rate,agreement_rate_by_opportunity,fallback_rate,discussion_diversity,route_choice_accuracy,route_switch_quality,premature_launch_rate,rescue_wait_failure_rate,cross_role_evidence_use
+mcts,100,100.0,0.44,0.69,758.85,34.3108137510879,0.6370757180156658,nan,nan,0.6902654867256637,0.41150442477876104,nan,nan,nan,0.6861538461538461,0.3090909090909091,0.35294117647058826,0.0,nan

@@ -36,6 +36,8 @@ def main() -> None:
     parser.add_argument("--evaluator-rollouts", type=int, default=120)
     parser.add_argument("--evaluator-policy", choices=["heuristic", "mcts"], default="heuristic",
                         help="探索ベース評価に使う方策。")
+    parser.add_argument("--scenario", type=str, default=None,
+                        help="使用するシナリオID（未指定時は seed から決定）。")
     args = parser.parse_args()
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -50,6 +52,7 @@ def main() -> None:
                 seed=game_seed,
                 evaluator_rollouts=args.evaluator_rollouts,
                 evaluator_policy=args.evaluator_policy,
+                scenario_id=args.scenario,
             )
         )
 
@@ -63,7 +66,7 @@ def main() -> None:
 
     if serializable_rows:
         with raw_path.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=list(serializable_rows[0].keys()))
+            writer = csv.DictWriter(f, fieldnames=list(serializable_rows[0].keys()), lineterminator="\n")
             writer.writeheader()
             writer.writerows(serializable_rows)
     else:
@@ -78,7 +81,7 @@ def main() -> None:
     }
     summary_path = RESULTS_DIR / f"{args.policy}_summary.csv"
     with summary_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(summary_row.keys()))
+        writer = csv.DictWriter(f, fieldnames=list(summary_row.keys()), lineterminator="\n")
         writer.writeheader()
         writer.writerow(summary_row)
 

@@ -1,2 +1,2 @@
-policy,games_requested,games,win_rate,survival_rate,mean_return,mean_regret
-random,1,1.0,0.0,1.0,455.0,621.5
+policy,games_requested,games,win_rate,survival_rate,mean_return,mean_regret,expert_match_rate,minority_adoption_rate,conflict_resolution_quality,plan_revision_quality,plan_revision_improved_rate,agreement_rate_by_opportunity,fallback_rate,discussion_diversity,route_choice_accuracy,route_switch_quality,premature_launch_rate,rescue_wait_failure_rate,cross_role_evidence_use
+random,100,100.0,0.08,0.22,92.6,307.25662878787875,0.275974025974026,nan,nan,0.5178571428571429,0.4226190476190476,nan,nan,nan,0.5772058823529411,0.30357142857142855,0.9333333333333333,0.375,nan
