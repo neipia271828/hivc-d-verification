@@ -420,11 +420,8 @@ def extract_json_discussion(response: str) -> tuple[SpeechAct | None, str, Actio
             if reply_to_message_id is not None:
                 reply_to_message_id = str(reply_to_message_id).strip() or None
             addressed_to = str(payload.get("addressed_to", "")).strip() or None
-            requires_response = payload.get("requires_response")
-            if requires_response is None:
-                requires_response = speech_act == SpeechAct.QUESTION_OBJECTION
-            else:
-                requires_response = bool(requires_response)
+            # speech_act が question_objection なら常に回答を要請
+            requires_response = speech_act == SpeechAct.QUESTION_OBJECTION
             action: Action | None = None
             if "action" in payload:
                 action_text = str(payload["action"]).strip().upper()
@@ -834,7 +831,7 @@ def run_one_game(
                 speech_act = response["speech_act"]
                 is_question = speech_act == SpeechAct.QUESTION_OBJECTION and response["requires_response"]
                 addressed_to = response["addressed_to"]
-                if addressed_to is None and is_question:
+                if is_question and addressed_to != other_speaker:
                     addressed_to = other_speaker
                 reply_to_message_id = response["reply_to_message_id"]
 

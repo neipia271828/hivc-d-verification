@@ -1,5 +1,14 @@
 # 2026-07-15
 
+- P1/P2 修正（質問閉包の追加修正）
+  - `scripts/llm_turn_game_common.py`:
+    - `extract_json_discussion` で `speech_act == question_objection` なら `requires_response` をモデル値に関わらず常に `true` に正規化
+    - `run_one_game` で `is_question` 時の `addressed_to` が相手プレイヤーでない場合は `other_speaker` へ補正
+  - `hivc_sim/tests/test_turn_game.py`:
+    - `requires_response: false` でも `question_objection` は回答待ちになるテストを追加
+    - `addressed_to: "gamma"` でも相手に補正されて回答が返る回帰テストを追加
+  - `pytest hivc_sim/tests -q` が 51 テストで通過
+
 - P1/P2 修正
   - `scripts/llm_turn_game_common.py`:
     - `run_one_game` で未回答質問を残りの自由議論枠で回答し、絶対上限でのみ例外に変更

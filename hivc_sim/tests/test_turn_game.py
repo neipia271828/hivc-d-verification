@@ -297,6 +297,15 @@ def test_extract_json_discussion_parses_question_metadata() -> None:
     assert reply_id2 == "1"
     assert requires2 is False
 
+    # question_objection なら requires_response はモデル値によらず true
+    response3 = (
+        '{"speech_act":"question_objection","message":"なぜ？","action":"C",'
+        '"reason":"確認","addressed_to":"beta","requires_response":false}'
+    )
+    speech_act3, _, _, _, _, _, requires3 = extract_json_discussion(response3)
+    assert speech_act3.value == "question_objection"
+    assert requires3 is True
+
 
 def test_allocate_discussion_budgets_respects_total_and_token_proportional() -> None:
     """配分合計が max_discussion_turns / token_budget を超えず、トークンは発言数に比例。"""
@@ -436,3 +445,60 @@ def test_run_one_game_forced_decision_still_collects_votes(monkeypatch) -> None:
     assert first["beta_vote"] == ""
     assert first["forced_decision_with_open_question"] is True
     assert first["unanswered_question_count"] > 0
+
+
+def test_run_one_game_question_objection_requires_response_and_addressed_to_normalized(monkeypatch) -> None:
+    """question_objection は requires_response が false でも必ず回答待ちし、addressed_to は相手に補正される。"""
+    import json
+    from scripts.llm_turn_game_common import run_one_game
+
+    call_count = 0
+
+    def fake_run_prompt(model, tokenizer, prompt, max_new_tokens, enable_thinking=False, thinking_budget=None):
+        nonlocal call_count
+        if "意思決定機会" in prompt:
+            return "", '{"action":"C","reason":"vote C","message":"C","ready":true}'
+        # 自由議論：1回目 alpha が質問（requires_response=false, addressed_to=gamma と狡猾に出す）
+        if call_count == 0:
+            call_count += 1
+            return (
+                "",
+                '{"speech_act":"question_objection","message":"why?","action":"C",'
+                '"reason":"質問","addressed_to":"gamma","requires_response":false}',
+            )
+        # 2回目 beta が回答
+        call_count += 1
+        return (
+            "",
+            '{"speech_act":"evidence","message":"理由","action":"C",'
+            '"reason":"回答","reply_to_message_id":"1"}',
+        )
+
+    monkeypatch.setattr("scripts.llm_turn_game_common.run_prompt", fake_run_prompt)
+
+    personas = {"alpha": "alpha", "beta": "beta"}
+    persona_params = {"alpha": None, "beta": None}
+    role_keys = {"alpha": "alpha", "beta": "beta"}
+    rows = run_one_game(
+        None,
+        None,
+        "control",
+        seed=42,
+        personas=personas,
+        persona_params=persona_params,
+        role_keys=role_keys,
+        max_new_tokens=96,
+        max_discussion_turns=2,
+        discussion_token_budget=1024,
+        evaluator_rollouts=4,
+        scenario_id="comms_favored",
+    )
+    assert rows
+    first = rows[0]
+    transcript = json.loads(first["discussion_transcript"])
+    assert transcript[0]["addressed_to"] in ("beta", "alpha")
+    assert transcript[0]["requires_response"] is True
+    assert transcript[1]["reply_to_message_id"] == "1"
+    assert first["unanswered_question_count"] == 0
+    assert first["forced_decision_with_open_question"] is False
+    assert first["question_response_latency"] == 1.0
