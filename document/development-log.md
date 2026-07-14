@@ -1,5 +1,15 @@
 # 2026-07-15
 
+- P1/P2 修正（質問閉包の追加修正・その2）
+  - `scripts/llm_turn_game_common.py`:
+    - `reply_to_message_id` による質問クローズ条件を「ID 一致 かつ q['addressed_to'] == speaker」のみに厳密化
+    - 宛先エージェント以外が回答しようとした場合は `open_questions` を維持し、`transcript` に `reply_to_message_id_invalid` フラグを記録
+    - `can_ask_question` 条件から「自分宛て未回答質問がないこと」を削除し、残り予算で全未回答分に回答できる場合に質問を許可するよう変更
+  - `hivc_sim/tests/test_turn_game.py`:
+    - `addressed_to` の補正結果を `== "beta"` に厳密化
+    - 質問者自身や相手以外が `reply_to_message_id` を指定しても質問を閉じない回帰テストを追加
+  - `pytest hivc_sim/tests -q` が 52 テストで通過
+
 - P1/P2 修正（質問閉包の追加修正）
   - `scripts/llm_turn_game_common.py`:
     - `extract_json_discussion` で `speech_act == question_objection` なら `requires_response` をモデル値に関わらず常に `true` に正規化

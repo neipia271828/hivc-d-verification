@@ -791,9 +791,9 @@ def run_one_game(
                 turn_remaining_messages = effective_max_discussion_turns - total_free_messages
                 turn_remaining_tokens = discussion_token_budget - token_budget_used
                 k = len(open_questions)
+                # 新しい質問を出せるのは、残り発言・トークンですべての未回答質問に対する回答分を含められる場合
                 can_ask_question = (
-                    question_to_answer is None
-                    and turn_remaining_messages >= k + 2
+                    turn_remaining_messages >= k + 2
                     and turn_remaining_tokens >= (k + 2) * max_new_tokens
                 )
 
@@ -911,15 +911,27 @@ def run_one_game(
                         transcript[-1]["reply_to_message_id"] = reply_to_message_id
 
                     if reply_to_message_id is not None:
-                        new_open: list[dict[str, Any]] = []
                         answered_id = str(reply_to_message_id)
+                        target_q = None
                         for q in open_questions:
                             if q["message_id"] == answered_id:
-                                latency = (total_free_messages - 1) - q["timestamp"]
-                                question_response_latencies.append(latency)
+                                target_q = q
+                                break
+                        if target_q is not None and target_q["addressed_to"] == speaker:
+                            latency = (total_free_messages - 1) - target_q["timestamp"]
+                            question_response_latencies.append(latency)
+                            open_questions = [q for q in open_questions if q["message_id"] != answered_id]
+                        else:
+                            # 質問の宛先ではないエージェントや存在しないIDを参照した無効な回答
+                            transcript[-1]["reply_to_message_id_invalid"] = True
+                            invalid_reason = (
+                                f"replied_to_question_not_addressed_to_speaker: {answered_id}"
+                            )
+                            if target_q is not None:
+                                invalid_reason += f" (addressed_to={target_q['addressed_to']})"
                             else:
-                                new_open.append(q)
-                        open_questions = new_open
+                                invalid_reason += " (not_found)"
+                            transcript[-1]["reply_to_message_id_invalid_reason"] = invalid_reason
 
             # 未回答質問が残っていれば、後続機会で回答を試行する
             if open_questions and opp_idx < opportunity_count and not forced_decision_with_open_question:
