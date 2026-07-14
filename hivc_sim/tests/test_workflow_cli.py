@@ -88,3 +88,22 @@ def test_experiment_command_creates_isolated_run_artifacts() -> None:
     assert "exit_code" in command
     assert "stream.jsonl" in command
     assert "_discussion_json_contract" in command
+
+
+def test_experiment_running_check_uses_recorded_pid_without_self_matching() -> None:
+    cfg = {
+        "remote_project_dir": "~/projects/hivc-d-verification",
+        "remote_venv": ".venv",
+    }
+    args = argparse.Namespace(
+        experiment_config="configs/experiment.yaml",
+        conditions=["hivc_d"],
+        games=1,
+        seed=None,
+    )
+    command, _ = _start_experiment_remote_command(cfg, args, "episode-test")
+    assert "pgrep -f" not in command
+    assert "for pid_file in hivc_sim/results/turn_game/experiment/runs/*/pid" in command
+    assert 'kill -0 "$active_pid"' in command
+    assert '"/proc/$active_pid/cmdline"' in command
+    assert '"$active_pid" != "$$"' in command

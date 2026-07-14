@@ -231,6 +231,7 @@ Q 値・best_action・acceptable_actions は議論中のエージェントには
 #### uv統合CLI（推奨）
 
 実験フローはリポジトリルートから次の4コマンドで実行できる。
+詳しい操作方法、再実行、状態確認、停止、トラブル対応は **[GPU実験CLIの使い方](document/run-experiments/GPU実験実行手順.md)** を参照。
 
 ```bash
 # 1. 変更をstage・commit・pushし、GPU側でgit pull

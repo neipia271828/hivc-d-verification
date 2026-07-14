@@ -28,7 +28,9 @@ from turn_game import (  # noqa: E402
     terminal_score,
 )
 from scripts.llm_turn_game_common import (  # noqa: E402
+    CONDITION_PROCEDURES,
     allocate_discussion_budgets,
+    decision_opportunity_prompt,
     discussion_prompt,
     extract_json_discussion,
     format_state,
@@ -347,6 +349,52 @@ def test_discussion_prompt_schema_requires_exact_reply_id_for_open_question() ->
     assert "reply_to_message_id を省略しないでください" in prompt
     assert '"addressed_to":"alpha","reply_to_message_id":"7"' in prompt
     assert "通常発言JSON例" not in prompt
+
+
+def test_hivc_d_protocol_is_detailed_and_injected_into_both_prompt_types() -> None:
+    state = GameState(current_event=Event.NONE)
+    discussion = discussion_prompt(
+        "alpha",
+        "alpha persona",
+        None,
+        state,
+        [],
+        max_discussion_turns=6,
+        condition="hivc_d",
+    )
+    decision = decision_opportunity_prompt(
+        "alpha",
+        "alpha persona",
+        None,
+        state,
+        [],
+        "hivc_d",
+        opportunity_index=1,
+        opportunity_count=2,
+    )
+
+    for prompt in (discussion, decision):
+        assert "HIVC-D 合意形成プロトコル：I → V → A" in prompt
+        assert "I（Information: 情報の共有）" in prompt
+        assert "V（Value: 判断基準の整合）" in prompt
+        assert "A（Ability: 実行可能性の確認）" in prompt
+        assert "共通基準 V*" in prompt
+        assert "見えていない状態を推測で事実扱いせず" in prompt
+        assert "最終投票前チェック" in prompt
+
+
+def test_consulting_guide_matches_hivc_d_detail_without_hivc_d_terms() -> None:
+    consulting = CONDITION_PROCEDURES["consulting"]
+    hivc_d = CONDITION_PROCEDURES["hivc_d"]
+
+    assert len(consulting) >= len(hivc_d) * 0.85
+    assert "状況を整理する" in consulting
+    assert "選択肢のリスクと便益を比較する" in consulting
+    assert "実行前に確認する" in consulting
+    assert "見えていない状態を推測で事実扱いせず" in consulting
+    assert "最終投票前チェック" in consulting
+    assert "V*" not in consulting
+    assert "I（Information" not in consulting
 
 
 def test_allocate_discussion_budgets_respects_total_and_token_proportional() -> None:
