@@ -14,10 +14,13 @@ from turn_game_metrics import (  # noqa: E402
     discussion_diversity,
     expert_match_rate,
     fallback_rate,
+    forced_decision_with_open_question_rate,
     minority_adoption_rate,
     plan_revision_quality,
+    question_response_latency_metric,
     route_switch_quality,
     conflict_resolution_quality,
+    unanswered_question_rate,
 )
 
 
@@ -247,3 +250,51 @@ def test_discussion_diversity() -> None:
     ]
     # distinct free speech acts: evidence, question_objection -> 2
     assert discussion_diversity(rows) == 2.0
+
+
+def test_unanswered_question_rate() -> None:
+    rows = [
+        {"unanswered_question_count": 0},
+        {"unanswered_question_count": 1},
+        {"unanswered_question_count": 2},
+    ]
+    assert unanswered_question_rate(rows) == 2 / 3
+
+
+def test_question_response_latency_metric() -> None:
+    rows = [
+        {"question_response_latency": 1.0},
+        {"question_response_latency": 3.0},
+        {"question_response_latency": float("nan")},
+    ]
+    assert question_response_latency_metric(rows) == 2.0
+
+
+def test_forced_decision_with_open_question_rate() -> None:
+    rows = [
+        {"forced_decision_with_open_question": False},
+        {"forced_decision_with_open_question": True},
+        {"forced_decision_with_open_question": "true"},
+    ]
+    assert forced_decision_with_open_question_rate(rows) == 2 / 3
+
+
+def test_compute_summary_metrics_includes_question_metrics() -> None:
+    rows = [
+        {
+            "seed": 42, "turn": 0, "event": "none",
+            "alpha_vote": "A", "beta_vote": "A",
+            "group_action": "A", "acceptable_actions": "A,B",
+            "regret": 0.0, "outcome": "running", "terminal_score": 500.0,
+            "unanswered_question_count": 0,
+            "question_response_latency": 1.0,
+            "forced_decision_with_open_question": False,
+        },
+    ]
+    summary = compute_summary_metrics(rows)
+    assert "unanswered_question_rate" in summary
+    assert "question_response_latency" in summary
+    assert "forced_decision_with_open_question_rate" in summary
+    assert summary["unanswered_question_rate"] == 0.0
+    assert summary["question_response_latency"] == 1.0
+    assert summary["forced_decision_with_open_question_rate"] == 0.0

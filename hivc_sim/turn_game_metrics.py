@@ -486,6 +486,48 @@ def cross_role_evidence_use(rows: list[dict]) -> float:
     return used / total
 
 
+def unanswered_question_rate(rows: list[dict]) -> float:
+    """意思決定開始時点で未回答の質問が残っていたターンの割合。"""
+    total = 0
+    unanswered = 0
+    for row in rows:
+        if "unanswered_question_count" not in row:
+            continue
+        total += 1
+        if _safe_float(row.get("unanswered_question_count"), 0.0) > 0:
+            unanswered += 1
+    if total == 0:
+        return float("nan")
+    return unanswered / total
+
+
+def question_response_latency_metric(rows: list[dict]) -> float:
+    """質問から宛先エージェントの回答までに要した発言数の平均。"""
+    latencies = []
+    for row in rows:
+        latency = _safe_float(row.get("question_response_latency"))
+        if not np.isnan(latency):
+            latencies.append(latency)
+    if not latencies:
+        return float("nan")
+    return float(np.mean(latencies))
+
+
+def forced_decision_with_open_question_rate(rows: list[dict]) -> float:
+    """未回答質問を残したまま上限到達により意思決定へ進んだターンの割合。"""
+    total = 0
+    forced = 0
+    for row in rows:
+        if "forced_decision_with_open_question" not in row:
+            continue
+        total += 1
+        if _to_bool(row.get("forced_decision_with_open_question")):
+            forced += 1
+    if total == 0:
+        return float("nan")
+    return forced / total
+
+
 def compute_summary_metrics(rows: list[dict], threshold: float = CONFLICT_THRESHOLD) -> dict[str, float]:
     """REQUIREMENTS §6 の主要評価指標を全て計算して返す。"""
     enriched = [enrich_turn_row(dict(row)) for row in rows]
@@ -503,4 +545,7 @@ def compute_summary_metrics(rows: list[dict], threshold: float = CONFLICT_THRESH
     summary["premature_launch_rate"] = premature_launch_rate(enriched)
     summary["rescue_wait_failure_rate"] = rescue_wait_failure_rate(enriched)
     summary["cross_role_evidence_use"] = cross_role_evidence_use(enriched)
+    summary["unanswered_question_rate"] = unanswered_question_rate(enriched)
+    summary["question_response_latency"] = question_response_latency_metric(enriched)
+    summary["forced_decision_with_open_question_rate"] = forced_decision_with_open_question_rate(enriched)
     return summary

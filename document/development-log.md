@@ -1,3 +1,28 @@
+# 2026-07-14
+
+- REQUIREMENTS.md 更新（質問・応答の閉包と新評価指標）に合わせて実装を更新
+  - `scripts/llm_turn_game_common.py`:
+    - `extract_json_discussion` で `reply_to_message_id`, `addressed_to`, `requires_response` をパース
+    - `get_discussion_message` を dict 返却に変更し、質問・応答メタデータを運ぶ
+    - `discussion_prompt` に未回答質問への回答指示と予算警告を追加
+    - `allocate_discussion_budgets` を新設し、実際の `opportunity_count` で発言数・トークン予算を配分
+    - `run_one_game` を §7.1.3 質問と応答の閉包に対応:
+      - `message_id`, `addressed_to`, `requires_response`, `reply_to_message_id` をトランスクリプトに記録
+      - 未回答質問がある間は意思決定機会へ進まず、宛先エージェントの次の発言で回答を要求
+      - 質問を出す際は回答1発言分のメッセージ・トークン予算を確保
+      - 予算不足等で回答できない場合は `forced_decision_with_open_question` と理由を記録
+      - ターン行に `unanswered_question_count`, `question_response_latency`, `forced_decision_with_open_question` を追加
+  - `hivc_sim/turn_game_metrics.py`:
+    - `unanswered_question_rate`, `question_response_latency_metric`, `forced_decision_with_open_question_rate` を追加
+    - `compute_summary_metrics` に新指標を含める
+  - `hivc_sim/tests/test_turn_game.py`:
+    - `allocate_discussion_budgets` の配分ルールを検証
+    - `extract_json_discussion` の質問メタデータパースを検証
+    - `run_one_game` の質問→回答→意思決定の閉包をモックで回帰テスト
+  - `hivc_sim/tests/test_turn_game_metrics.py`:
+    - 新評価指標の単体テストを追加
+  - `pytest hivc_sim/tests -q` が 48 テストで通過
+
 # 2026-07-13
 
 - 評価妥当性修正を実装

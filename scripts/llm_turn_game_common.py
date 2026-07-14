@@ -284,6 +284,36 @@ def schedule_decision_opportunities(seed: int, turn: int, schedule_seed: int = 0
     return ((seed + turn * 31 + schedule_seed * 37) % max_opportunities) + 1
 
 
+def allocate_discussion_budgets(
+    opportunity_count: int,
+    max_discussion_turns: int,
+    discussion_token_budget: int,
+    n_speakers: int = 2,
+) -> tuple[list[int], list[int]]:
+    """実際の opportunity_count で発言数とトークン予算を配分。端数は早い機会から。
+
+    第1回目の意思決定機会には、各エージェントが1回ずつ発言できる最小数を確保する。
+    """
+    if opportunity_count <= 0:
+        return [], []
+    messages_per = max(1, max_discussion_turns // opportunity_count)
+    message_remainder = max_discussion_turns - messages_per * opportunity_count
+    tokens_per = max(1, discussion_token_budget // opportunity_count)
+    token_remainder = discussion_token_budget - tokens_per * opportunity_count
+
+    message_limits = [messages_per] * opportunity_count
+    token_limits = [tokens_per] * opportunity_count
+    for i in range(opportunity_count):
+        if i < message_remainder:
+            message_limits[i] += 1
+        if i < token_remainder:
+            token_limits[i] += 1
+
+    # 第1回機会には少なくとも全エージェント1回ずつの発言機会を確保
+    message_limits[0] = max(n_speakers, message_limits[0])
+    return message_limits, token_limits
+
+
 def priority_agent(seed: int, turn: int) -> str:
     """フォールバック優先エージェントを返す。"""
     return "alpha" if (seed + turn) % 2 == 0 else "beta"
@@ -349,7 +379,7 @@ def extract_json_action(response: str) -> tuple[Action | None, str, str, bool]:
     return None, text[:160], text[:160], False
 
 
-def extract_json_discussion(response: str) -> tuple[SpeechAct | None, str, Action | None, str]:
+def extract_json_discussion(response: str) -> tuple[SpeechAct | None, str, Action | None, str, str | None, str | None, bool]:
     """自由議論用JSONをパースする。"""
     text = response.strip()
     json_match = re.search(r"\{.*?\}", text, flags=re.DOTALL)
@@ -359,15 +389,24 @@ def extract_json_discussion(response: str) -> tuple[SpeechAct | None, str, Actio
             speech_act = _normalize_speech_act(payload.get("speech_act"))
             message = str(payload.get("message", "")).strip()
             reason = str(payload.get("reason", "")).strip()
+            reply_to_message_id = payload.get("reply_to_message_id")
+            if reply_to_message_id is not None:
+                reply_to_message_id = str(reply_to_message_id).strip() or None
+            addressed_to = str(payload.get("addressed_to", "")).strip() or None
+            requires_response = payload.get("requires_response")
+            if requires_response is None:
+                requires_response = speech_act == SpeechAct.QUESTION_OBJECTION
+            else:
+                requires_response = bool(requires_response)
             action: Action | None = None
             if "action" in payload:
                 action_text = str(payload["action"]).strip().upper()
                 if action_text in {action.value for action in ALL_ACTIONS}:
                     action = Action(action_text)
-            return speech_act, message, action, reason
+            return speech_act, message, action, reason, reply_to_message_id, addressed_to, requires_response
         except json.JSONDecodeError:
             pass
-    return None, text[:160], None, ""
+    return None, text[:160], None, "", None, None, False
 
 
 def format_persona(agent_name: str, persona: str, persona_params: dict[str, object] | None) -> str:
@@ -420,6 +459,23 @@ def _role_evidence(agent_name: str, state) -> str:
     return role_specific_evidence(agent_name, state)
 
 
+def _question_context(open_question: dict[str, Any] | None, can_ask_question: bool, remaining_messages: int, remaining_tokens: int) -> str:
+    parts: list[str] = []
+    if open_question is not None:
+        parts.append(
+            f"【未回答の質問への回答】\n"
+            f"{open_question['speaker']} からの質問（ID: {open_question['message_id']}）:\n"
+            f"{open_question['message']}\n"
+            f"reply_to_message_id には {open_question['message_id']} を指定して回答してください。"
+        )
+    budget_note = f"残り発言枠: {remaining_messages}, 残りトークン予算: {remaining_tokens}"
+    if not can_ask_question:
+        parts.append(f"【注意】{budget_note}。質問を出すための余裕がないため、質問は避けてください。")
+    else:
+        parts.append(f"【注意】{budget_note}。質問を出す場合は reply_to_message_id への回答分の余裕を残してください。")
+    return "\n\n".join(parts)
+
+
 def discussion_prompt(
     agent_name: str,
     persona: str,
@@ -428,7 +484,12 @@ def discussion_prompt(
     transcript: list[dict[str, Any]],
     max_discussion_turns: int,
     condition: str = "control",
+    open_question: dict[str, Any] | None = None,
+    can_ask_question: bool = True,
+    remaining_messages: int = 0,
+    remaining_tokens: int = 0,
 ) -> str:
+    context = _question_context(open_question, can_ask_question, remaining_messages, remaining_tokens)
     return f"""あなたは深海研究施設トラブルの意思決定エージェントです。
 あなたのペルソナ設定:
 {format_persona(agent_name, persona, persona_params)}
@@ -447,12 +508,15 @@ def discussion_prompt(
 {_procedure_block(condition)}これまでの議論:
 {format_transcript_text(transcript)}
 
+{context}
+
 自由議論の発言目的は以下のいずれかを speech_act として選んでください:
 {_speech_act_guide()}
 
 この自由議論フェーズでは最大 {max_discussion_turns} 発言までです。
 行動案を述べたい場合は action（A-F）と reason を含めてください。
 ready は不要です。
+質問をする場合は speech_act に "question_objection" を使い、addressed_to を指定してください。
 必ず次のJSONだけを返してください。説明文やMarkdownは不要です。
 {{"speech_act":"evidence","message":"相手への短い発言","action":"A","reason":"短い理由"}}
 """
@@ -570,10 +634,10 @@ def get_discussion_message(
     fallback_action: Action | None = None,
     enable_thinking: bool = False,
     thinking_budget: int | None = None,
-) -> tuple[SpeechAct, str, Action | None, str, str, str]:
-    """自由議論用の (speech_act, message, action, reason, raw, thinking) を返す。"""
+) -> dict[str, Any]:
+    """自由議論用の発言情報を dict で返す。"""
     thinking, raw = run_prompt(model, tokenizer, prompt, max_new_tokens, enable_thinking=enable_thinking, thinking_budget=thinking_budget)
-    speech_act, message, action, reason = extract_json_discussion(raw)
+    speech_act, message, action, reason, reply_to_message_id, addressed_to, requires_response = extract_json_discussion(raw)
     if speech_act is None and action is None and not message:
         # JSON 解析ができなかった場合のみフォールバック行動を使用する
         if fallback_action is not None:
@@ -584,7 +648,17 @@ def get_discussion_message(
         speech_act = SpeechAct.INFORMATION_REQUEST
     if not message:
         message = raw[:160].strip()
-    return speech_act, message, action, reason, raw, thinking
+    return {
+        "speech_act": speech_act,
+        "message": message,
+        "action": action,
+        "reason": reason,
+        "reply_to_message_id": reply_to_message_id,
+        "addressed_to": addressed_to,
+        "requires_response": requires_response,
+        "raw": raw,
+        "thinking": thinking,
+    }
 
 
 def run_one_game(
@@ -610,8 +684,8 @@ def run_one_game(
     """1 ゲームを進行し、REQUIREMENTS §6 / §7.1 のターン別記録項目を含む行リストを返す。
 
     個人選択・個人理由・グループ理由・対立度を各行に記録する。
-    live_jsonl_path を指定すると、各ターン終了時にその行を JSON 1 行として追記する
-    （visualize_game.html のライブモード用ストリーム）。
+    質問と応答の閉包（§7.1.3）を実装する。
+    live_jsonl_path を指定すると、各ターン終了時にその行を JSON 1 行として追記する。
     """
     _ = kwargs
     state = initial_state(seed, scenario_id)
@@ -627,8 +701,9 @@ def run_one_game(
         fallback = optimal
 
         opportunity_count = schedule_decision_opportunities(seed, state.turn, decision_schedule_seed, max_decision_opportunities)
-        per_opportunity_message_budget = max(1, max_discussion_turns // max_decision_opportunities)
-        per_opportunity_token_budget = max(1, discussion_token_budget // max_decision_opportunities)
+        message_limits, token_limits = allocate_discussion_budgets(
+            opportunity_count, max_discussion_turns, discussion_token_budget, n_speakers=len(speakers)
+        )
 
         transcript: list[dict[str, Any]] = []
         token_budget_used = 0
@@ -654,18 +729,40 @@ def run_one_game(
         beta_vote_raw = ""
         beta_vote_thinking = ""
 
+        # 質問/応答閉包用の状態
+        next_message_id = 1
+        open_questions: list[dict[str, Any]] = []
+        forced_decision_with_open_question = False
+        forced_decision_reason = ""
+        question_response_latencies: list[int] = []
+
         for opp_idx in range(1, opportunity_count + 1):
-            # 自由議論フェーズ
-            opportunity_message_limit = per_opportunity_message_budget
-            if opp_idx == 1:
-                opportunity_message_limit = max(2, opportunity_message_limit)
+            opportunity_message_limit = message_limits[opp_idx - 1]
+            opportunity_token_limit = token_limits[opp_idx - 1]
             opportunity_token_used = 0
             messages_this_opportunity = 0
 
+            # 自由議論フェーズ
             while messages_this_opportunity < opportunity_message_limit:
-                if opportunity_token_used >= per_opportunity_token_budget:
+                if opportunity_token_used >= opportunity_token_limit:
                     break
-                speaker = speakers[total_free_messages % 2]
+
+                speaker = speakers[total_free_messages % len(speakers)]
+                other_speaker = "beta" if speaker == "alpha" else "alpha"
+
+                # この話者が回答すべき未回答質問（最古）
+                open_for_speaker = [q for q in open_questions if q["addressed_to"] == speaker]
+                question_to_answer = open_for_speaker[0] if open_for_speaker else None
+
+                remaining_messages = opportunity_message_limit - messages_this_opportunity
+                remaining_tokens = opportunity_token_limit - opportunity_token_used
+                k = len(open_questions)
+                can_ask_question = (
+                    question_to_answer is None
+                    and remaining_messages >= k + 2
+                    and remaining_tokens >= (k + 2) * max_new_tokens
+                )
+
                 prompt = discussion_prompt(
                     speaker,
                     personas[speaker],
@@ -674,8 +771,13 @@ def run_one_game(
                     transcript,
                     opportunity_message_limit,
                     condition,
+                    open_question=question_to_answer,
+                    can_ask_question=can_ask_question,
+                    remaining_messages=remaining_messages,
+                    remaining_tokens=remaining_tokens,
                 )
-                speech_act, message, action, reason, raw, thinking = get_discussion_message(
+
+                response = get_discussion_message(
                     model,
                     tokenizer,
                     prompt,
@@ -684,110 +786,205 @@ def run_one_game(
                     enable_thinking=enable_thinking,
                     thinking_budget=thinking_budget,
                 )
+
+                raw = response["raw"]
                 token_count = 0
                 if tokenizer is not None:
                     token_count = len(tokenizer.encode(raw, add_special_tokens=False))
                 token_budget_used += token_count
                 opportunity_token_used += token_count
+
+                speech_act = response["speech_act"]
+                is_question = speech_act == SpeechAct.QUESTION_OBJECTION and response["requires_response"]
+                addressed_to = response["addressed_to"]
+                if addressed_to is None and is_question:
+                    addressed_to = other_speaker
+                reply_to_message_id = response["reply_to_message_id"]
+
+                # 未回答質問がある状態で、かつ質問する余裕がない場合は強制意思決定
+                if is_question and not can_ask_question:
+                    forced_decision_with_open_question = True
+                    forced_decision_reason = (
+                        f"insufficient_budget_for_reply: {len(open_questions)} open questions, "
+                        f"remaining_messages={remaining_messages}, remaining_tokens={remaining_tokens}"
+                    )
+                    this_message_id = str(next_message_id)
+                    transcript.append(
+                        {
+                            "speaker": speaker,
+                            "speech_act": speech_act.value if speech_act else None,
+                            "message": response["message"],
+                            "action": response["action"].value if response["action"] else "",
+                            "reason": response["reason"],
+                            "message_id": this_message_id,
+                            "addressed_to": addressed_to,
+                            "requires_response": True,
+                            "reply_to_message_id": None,
+                            "raw": raw,
+                            "thinking": response["thinking"],
+                        }
+                    )
+                    next_message_id += 1
+                    open_questions.append(
+                        {
+                            "message_id": this_message_id,
+                            "speaker": speaker,
+                            "addressed_to": addressed_to,
+                            "message": response["message"],
+                            "timestamp": total_free_messages,
+                        }
+                    )
+                    total_free_messages += 1
+                    messages_this_opportunity += 1
+                    break
+
+                # 発言を記録
+                this_message_id = str(next_message_id)
                 transcript.append(
                     {
                         "speaker": speaker,
                         "speech_act": speech_act.value if speech_act else None,
-                        "message": message,
-                        "action": action.value if action else "",
-                        "reason": reason,
+                        "message": response["message"],
+                        "action": response["action"].value if response["action"] else "",
+                        "reason": response["reason"],
+                        "message_id": this_message_id,
+                        "addressed_to": addressed_to,
+                        "requires_response": response["requires_response"],
+                        "reply_to_message_id": reply_to_message_id,
                         "raw": raw,
-                        "thinking": thinking,
+                        "thinking": response["thinking"],
                     }
                 )
+                next_message_id += 1
                 total_free_messages += 1
                 messages_this_opportunity += 1
 
-            # 意思決定機会
-            alpha_vote, alpha_vote_reason, alpha_vote_message, alpha_vote_ready, alpha_vote_raw, alpha_vote_thinking = get_action(
-                model,
-                tokenizer,
-                decision_opportunity_prompt(
-                    "alpha",
-                    personas["alpha"],
-                    persona_params["alpha"],
-                    state,
-                    transcript,
-                    condition,
-                    opp_idx,
-                    opportunity_count,
-                ),
-                max_new_tokens,
-                fallback,
-                enable_thinking=enable_thinking,
-                thinking_budget=thinking_budget,
-            )
-            beta_vote, beta_vote_reason, beta_vote_message, beta_vote_ready, beta_vote_raw, beta_vote_thinking = get_action(
-                model,
-                tokenizer,
-                decision_opportunity_prompt(
-                    "beta",
-                    personas["beta"],
-                    persona_params["beta"],
-                    state,
-                    transcript,
-                    condition,
-                    opp_idx,
-                    opportunity_count,
-                ),
-                max_new_tokens,
-                fallback,
-                enable_thinking=enable_thinking,
-                thinking_budget=thinking_budget,
-            )
+                if is_question:
+                    open_questions.append(
+                        {
+                            "message_id": this_message_id,
+                            "speaker": speaker,
+                            "addressed_to": addressed_to,
+                            "message": response["message"],
+                            "timestamp": total_free_messages - 1,
+                        }
+                    )
+                else:
+                    # 回答を処理
+                    if reply_to_message_id is None and open_for_speaker:
+                        # 自動的に最古の未回答質問への回答とみなす
+                        reply_to_message_id = open_for_speaker[0]["message_id"]
+                        transcript[-1]["reply_to_message_id"] = reply_to_message_id
 
-            # 投票は全エージェントが出し終わってからトランスクリプトへ追加
-            transcript.append(
-                {
-                    "speaker": "alpha",
-                    "action": alpha_vote.value,
-                    "reason": alpha_vote_reason,
-                    "message": alpha_vote_message,
-                    "ready": str(alpha_vote_ready).lower(),
-                    "raw": alpha_vote_raw,
-                    "thinking": alpha_vote_thinking,
-                }
-            )
-            transcript.append(
-                {
-                    "speaker": "beta",
-                    "action": beta_vote.value,
-                    "reason": beta_vote_reason,
-                    "message": beta_vote_message,
-                    "ready": str(beta_vote_ready).lower(),
-                    "raw": beta_vote_raw,
-                    "thinking": beta_vote_thinking,
-                }
-            )
+                    if reply_to_message_id is not None:
+                        new_open: list[dict[str, Any]] = []
+                        answered_id = str(reply_to_message_id)
+                        for q in open_questions:
+                            if q["message_id"] == answered_id:
+                                latency = (total_free_messages - 1) - q["timestamp"]
+                                question_response_latencies.append(latency)
+                            else:
+                                new_open.append(q)
+                        open_questions = new_open
 
-            consensus = (alpha_vote == beta_vote) and alpha_vote_ready and beta_vote_ready
-            decision_history.append(
-                {
-                    "opportunity_index": opp_idx,
-                    "opportunity_count": opportunity_count,
-                    "alpha_vote": alpha_vote.value,
-                    "alpha_reason": alpha_vote_reason,
-                    "alpha_ready": alpha_vote_ready,
-                    "beta_vote": beta_vote.value,
-                    "beta_reason": beta_vote_reason,
-                    "beta_ready": beta_vote_ready,
-                    "consensus": consensus,
-                }
-            )
-
-            final_attempt_index = opp_idx
-            if consensus:
-                group_action = alpha_vote
-                decision_rule = "consensus"
-                group_reason = (
-                    f"consensus on action {alpha_vote.value}: "
-                    f"alpha reason={alpha_vote_reason}; beta reason={beta_vote_reason}"
+            # 未回答質問が残っている場合は、この時点で意思決定に進むことは例外となる
+            if open_questions and not forced_decision_with_open_question:
+                forced_decision_with_open_question = True
+                forced_decision_reason = (
+                    f"opportunity_budget_exhausted: {len(open_questions)} open questions, "
+                    f"opportunity_index={opp_idx}"
                 )
+
+            # 意思決定機会
+            if not forced_decision_with_open_question:
+                alpha_vote, alpha_vote_reason, alpha_vote_message, alpha_vote_ready, alpha_vote_raw, alpha_vote_thinking = get_action(
+                    model,
+                    tokenizer,
+                    decision_opportunity_prompt(
+                        "alpha",
+                        personas["alpha"],
+                        persona_params["alpha"],
+                        state,
+                        transcript,
+                        condition,
+                        opp_idx,
+                        opportunity_count,
+                    ),
+                    max_new_tokens,
+                    fallback,
+                    enable_thinking=enable_thinking,
+                    thinking_budget=thinking_budget,
+                )
+                beta_vote, beta_vote_reason, beta_vote_message, beta_vote_ready, beta_vote_raw, beta_vote_thinking = get_action(
+                    model,
+                    tokenizer,
+                    decision_opportunity_prompt(
+                        "beta",
+                        personas["beta"],
+                        persona_params["beta"],
+                        state,
+                        transcript,
+                        condition,
+                        opp_idx,
+                        opportunity_count,
+                    ),
+                    max_new_tokens,
+                    fallback,
+                    enable_thinking=enable_thinking,
+                    thinking_budget=thinking_budget,
+                )
+
+                # 投票は全エージェントが出し終わってからトランスクリプトへ追加
+                transcript.append(
+                    {
+                        "speaker": "alpha",
+                        "action": alpha_vote.value,
+                        "reason": alpha_vote_reason,
+                        "message": alpha_vote_message,
+                        "ready": str(alpha_vote_ready).lower(),
+                        "raw": alpha_vote_raw,
+                        "thinking": alpha_vote_thinking,
+                    }
+                )
+                transcript.append(
+                    {
+                        "speaker": "beta",
+                        "action": beta_vote.value,
+                        "reason": beta_vote_reason,
+                        "message": beta_vote_message,
+                        "ready": str(beta_vote_ready).lower(),
+                        "raw": beta_vote_raw,
+                        "thinking": beta_vote_thinking,
+                    }
+                )
+
+                consensus = (alpha_vote == beta_vote) and alpha_vote_ready and beta_vote_ready
+                decision_history.append(
+                    {
+                        "opportunity_index": opp_idx,
+                        "opportunity_count": opportunity_count,
+                        "alpha_vote": alpha_vote.value,
+                        "alpha_reason": alpha_vote_reason,
+                        "alpha_ready": alpha_vote_ready,
+                        "beta_vote": beta_vote.value,
+                        "beta_reason": beta_vote_reason,
+                        "beta_ready": beta_vote_ready,
+                        "consensus": consensus,
+                    }
+                )
+
+                final_attempt_index = opp_idx
+                if consensus:
+                    group_action = alpha_vote
+                    decision_rule = "consensus"
+                    group_reason = (
+                        f"consensus on action {alpha_vote.value}: "
+                        f"alpha reason={alpha_vote_reason}; beta reason={beta_vote_reason}"
+                    )
+                    break
+            else:
+                # 強制遷移: 未回答質問ありなので投票を取らずにフォールバックへ
+                final_attempt_index = opp_idx
                 break
 
         if group_action is None:
@@ -822,6 +1019,9 @@ def run_one_game(
             "alpha": role_specific_evidence("alpha", state),
             "beta": role_specific_evidence("beta", state),
         }
+
+        unanswered_question_count = len(open_questions)
+        question_response_latency = float(np.mean(question_response_latencies)) if question_response_latencies else float("nan")
 
         row: dict[str, object] = {
             "game_id": seed,
@@ -879,6 +1079,10 @@ def run_one_game(
             "role_specific_evidence": json.dumps(role_evidence, ensure_ascii=False),
             "alpha_evidence": role_evidence["alpha"],
             "beta_evidence": role_evidence["beta"],
+            "unanswered_question_count": unanswered_question_count,
+            "question_response_latency": question_response_latency,
+            "forced_decision_with_open_question": forced_decision_with_open_question,
+            "forced_decision_reason": forced_decision_reason,
         }
         rows.append(row)
         print(
@@ -886,7 +1090,8 @@ def run_one_game(
             f"disc={row['discussion_turns']} opp={row['decision_attempt_index']}/{row['decision_opportunity_count']} "
             f"alpha={row['alpha_vote']} beta={row['beta_vote']} "
             f"group={row['group_action']} rule={row['decision_rule']} "
-            f"best={row['best_action']} regret={row['regret']} outcome={row['outcome']}"
+            f"best={row['best_action']} regret={row['regret']} outcome={row['outcome']} "
+            f"open_questions={unanswered_question_count} forced={forced_decision_with_open_question}"
         )
         if live_jsonl_path:
             with open(live_jsonl_path, "a", encoding="utf-8") as f:
