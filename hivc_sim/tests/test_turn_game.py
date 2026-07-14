@@ -565,7 +565,64 @@ def test_run_one_game_fake_reply_from_non_addressee_keeps_question_open(monkeypa
     assert transcript[1].get("reply_to_message_id_invalid") is True
     assert transcript[2].get("reply_to_message_id_invalid") is True
     assert first["unanswered_question_count"] == 1
+    assert first["forced_decision_with_open_question"] is True
+    assert "invalid_reply_to_message_id" in first["forced_decision_reason"]
     assert first["question_response_latency"] != first["question_response_latency"]  # nan
+
+
+def test_run_one_game_missing_reply_to_while_answer_required(monkeypatch) -> None:
+    """回答すべき未回答質問があるのに reply_to_message_id を返さない発言は無効。"""
+    import json
+    from scripts.llm_turn_game_common import run_one_game
+
+    call_count = 0
+
+    def fake_run_prompt(model, tokenizer, prompt, max_new_tokens, enable_thinking=False, thinking_budget=None):
+        nonlocal call_count
+        if "意思決定機会" in prompt:
+            return "", '{"action":"C","reason":"vote C","message":"C","ready":true}'
+        # 1 alpha -> beta 質問
+        if call_count == 0:
+            call_count += 1
+            return (
+                "",
+                '{"speech_act":"question_objection","message":"Q1","action":"C",'
+                '"reason":"質問","addressed_to":"beta","requires_response":true}',
+            )
+        # 2 beta は reply_to_message_id を返さない一般発言
+        call_count += 1
+        return (
+            "",
+            '{"speech_act":"evidence","message":"一般論","action":"C",'
+            '"reason":"一般発言"}',
+        )
+
+    monkeypatch.setattr("scripts.llm_turn_game_common.run_prompt", fake_run_prompt)
+
+    personas = {"alpha": "alpha", "beta": "beta"}
+    persona_params = {"alpha": None, "beta": None}
+    role_keys = {"alpha": "alpha", "beta": "beta"}
+    rows = run_one_game(
+        None,
+        None,
+        "control",
+        seed=42,
+        personas=personas,
+        persona_params=persona_params,
+        role_keys=role_keys,
+        max_new_tokens=96,
+        max_discussion_turns=2,
+        discussion_token_budget=1024,
+        evaluator_rollouts=4,
+        scenario_id="comms_favored",
+    )
+    assert rows
+    first = rows[0]
+    transcript = json.loads(first["discussion_transcript"])
+    assert first["unanswered_question_count"] == 1
+    assert transcript[1].get("missing_reply_to_message_id_while_answer_required") is True
+    assert first["forced_decision_with_open_question"] is True
+    assert "missing_reply_to_message_id_while_answer_required" in first["forced_decision_reason"]
 
 
 def test_run_one_game_question_while_answer_required_forces_invalid(monkeypatch) -> None:

@@ -937,12 +937,16 @@ def run_one_game(
                     )
                 else:
                     # 回答を処理
-                    if reply_to_message_id is None and open_for_speaker:
-                        # 自動的に最古の未回答質問への回答とみなす
-                        reply_to_message_id = open_for_speaker[0]["message_id"]
-                        transcript[-1]["reply_to_message_id"] = reply_to_message_id
-
-                    if reply_to_message_id is not None:
+                    if question_to_answer is not None and reply_to_message_id is None:
+                        # 回答すべき未回答質問があるのに reply_to_message_id を返さなかった
+                        transcript[-1]["missing_reply_to_message_id_while_answer_required"] = True
+                        transcript[-1]["missing_reply_to_message_id_while_answer_required_reason"] = (
+                            f"{speaker} had question from {question_to_answer['speaker']} "
+                            f"(id={question_to_answer['message_id']}) but reply_to_message_id was missing"
+                        )
+                        if not forced_decision_reason:
+                            forced_decision_reason = "missing_reply_to_message_id_while_answer_required"
+                    elif reply_to_message_id is not None:
                         answered_id = str(reply_to_message_id)
                         target_q = None
                         for q in open_questions:
@@ -956,14 +960,14 @@ def run_one_game(
                         else:
                             # 質問の宛先ではないエージェントや存在しないIDを参照した無効な回答
                             transcript[-1]["reply_to_message_id_invalid"] = True
-                            invalid_reason = (
-                                f"replied_to_question_not_addressed_to_speaker: {answered_id}"
-                            )
+                            invalid_reason = f"replied_to_question_not_addressed_to_speaker: {answered_id}"
                             if target_q is not None:
                                 invalid_reason += f" (addressed_to={target_q['addressed_to']})"
                             else:
                                 invalid_reason += " (not_found)"
                             transcript[-1]["reply_to_message_id_invalid_reason"] = invalid_reason
+                            if not forced_decision_reason:
+                                forced_decision_reason = "invalid_reply_to_message_id"
 
             # 未回答質問が残っていれば、後続機会で回答を試行する
             if open_questions and opp_idx < opportunity_count and not forced_decision_with_open_question:
@@ -973,7 +977,8 @@ def run_one_game(
             if open_questions and (opp_idx == opportunity_count or forced_decision_with_open_question):
                 if not forced_decision_with_open_question:
                     forced_decision_with_open_question = True
-                    forced_decision_reason = "absolute_budget_limit_reached"
+                    if not forced_decision_reason:
+                        forced_decision_reason = "absolute_budget_limit_reached"
 
             # 意思決定機会：例外時もエージェントの投票は実行する
             alpha_vote, alpha_vote_reason, alpha_vote_message, alpha_vote_ready, alpha_vote_raw, alpha_vote_thinking = get_action(

@@ -1,5 +1,15 @@
 # 2026-07-15
 
+- P1/P2 修正（質問閉包の追加修正・その4）
+  - `scripts/llm_turn_game_common.py`:
+    - 回答すべき未回答質問がある場合に `reply_to_message_id` を省略した発言を自動補完しない
+    - `reply_to_message_id` がない場合は `missing_reply_to_message_id_while_answer_required` を `transcript` に記録し、`forced_decision_reason` に反映
+    - 無効な `reply_to_message_id` 時は `forced_decision_reason` に `invalid_reply_to_message_id` を反映（既存の理由があっても `absolute_budget_limit_reached` で上書きしない）
+  - `hivc_sim/tests/test_turn_game.py`:
+    - `reply_to_message_id` 省略の回帰テストを追加
+    - 無効な返信ID後の `forced_decision_reason` が `invalid_reply_to_message_id` になることを検証
+    - テスト数を 54 に更新
+
 - P1/P2 修正（質問閉包の追加修正・その3）
   - `scripts/llm_turn_game_common.py`:
     - `can_ask_question` 条件を「自分宛の未回答質問がない かつ 残り予算で回答できる」に戻す
