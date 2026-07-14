@@ -1,5 +1,15 @@
 # 2026-07-15
 
+- P1/P2 修正（質問閉包の追加修正・その3）
+  - `scripts/llm_turn_game_common.py`:
+    - `can_ask_question` 条件を「自分宛の未回答質問がない かつ 残り予算で回答できる」に戻す
+    - 回答すべき未回答質問があるのに `question_objection` を返した場合は `invalid_response_while_answer_required` として `transcript` に記録し、強制意思決定
+    - 無効な `reply_to_message_id`（存在しない、または `addressed_to != speaker`）では質問を閉じず、`reply_to_message_id_invalid` フラグを記録
+  - `hivc_sim/tests/test_turn_game.py`:
+    - 回答すべき未回答質問がある発言で新しい質問を返すケースの回帰テストを追加
+    - 質問者自身や宛先外が `reply_to_message_id` を指定しても質問を閉じないケースのテストを修正
+    - テスト数を 53 に更新
+
 - P1/P2 修正（質問閉包の追加修正・その2）
   - `scripts/llm_turn_game_common.py`:
     - `reply_to_message_id` による質問クローズ条件を「ID 一致 かつ q['addressed_to'] == speaker」のみに厳密化

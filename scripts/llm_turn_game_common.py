@@ -791,9 +791,11 @@ def run_one_game(
                 turn_remaining_messages = effective_max_discussion_turns - total_free_messages
                 turn_remaining_tokens = discussion_token_budget - token_budget_used
                 k = len(open_questions)
-                # 新しい質問を出せるのは、残り発言・トークンですべての未回答質問に対する回答分を含められる場合
+                # 新しい質問を出せるのは、自分宛の未回答質問がなく、
+                # 残り発言・トークンですべての未回答質問に対する回答分を含められる場合
                 can_ask_question = (
-                    turn_remaining_messages >= k + 2
+                    question_to_answer is None
+                    and turn_remaining_messages >= k + 2
                     and turn_remaining_tokens >= (k + 2) * max_new_tokens
                 )
 
@@ -834,6 +836,36 @@ def run_one_game(
                 if is_question and addressed_to != other_speaker:
                     addressed_to = other_speaker
                 reply_to_message_id = response["reply_to_message_id"]
+
+                # 回答すべき未回答質問があるのに質問を返した場合は無効
+                if is_question and question_to_answer is not None:
+                    forced_decision_with_open_question = True
+                    forced_decision_reason = (
+                        f"invalid_response_while_answer_required: {speaker} had question "
+                        f"from {question_to_answer['speaker']} (id={question_to_answer['message_id']}) "
+                        "but returned a question"
+                    )
+                    this_message_id = str(next_message_id)
+                    transcript.append(
+                        {
+                            "speaker": speaker,
+                            "speech_act": speech_act.value if speech_act else None,
+                            "message": response["message"],
+                            "action": response["action"].value if response["action"] else "",
+                            "reason": response["reason"],
+                            "message_id": this_message_id,
+                            "addressed_to": addressed_to,
+                            "requires_response": False,
+                            "reply_to_message_id": None,
+                            "invalid_response_while_answer_required": True,
+                            "raw": raw,
+                            "thinking": response["thinking"],
+                        }
+                    )
+                    next_message_id += 1
+                    total_free_messages += 1
+                    messages_this_opportunity += 1
+                    break
 
                 # ターン全体の絶対上限で質問回答ができない場合は強制意思決定
                 if is_question and not can_ask_question:

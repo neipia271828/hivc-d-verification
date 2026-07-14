@@ -505,7 +505,7 @@ def test_run_one_game_question_objection_requires_response_and_addressed_to_norm
 
 
 def test_run_one_game_fake_reply_from_non_addressee_keeps_question_open(monkeypatch) -> None:
-    """質問の宛先以外が reply_to_message_id を指定しても質問を閉じない。"""
+    """質問の宛先以外、または質問者自身が reply_to_message_id を指定しても質問を閉じない。"""
     import json
     from scripts.llm_turn_game_common import run_one_game
 
@@ -523,28 +523,20 @@ def test_run_one_game_fake_reply_from_non_addressee_keeps_question_open(monkeypa
                 '{"speech_act":"question_objection","message":"Q1","action":"C",'
                 '"reason":"質問","addressed_to":"beta","requires_response":true}',
             )
-        # 2 beta -> alpha 質問（Q1 には回答しない）
+        # 2 beta は存在しない返信IDを指定（not_found）
         if call_count == 1:
             call_count += 1
             return (
                 "",
-                '{"speech_act":"question_objection","message":"Q2","action":"C",'
-                '"reason":"返質問","addressed_to":"alpha","requires_response":true}',
+                '{"speech_act":"evidence","message":"無効","action":"C",'
+                '"reason":"回答","reply_to_message_id":"999"}',
             )
-        # 3 alpha が Q1 に自分で回答（無効）
-        if call_count == 2:
-            call_count += 1
-            return (
-                "",
-                '{"speech_act":"evidence","message":"自答","action":"C",'
-                '"reason":"回答","reply_to_message_id":"1"}',
-            )
-        # 4 beta が Q2 に自分で回答（無効）
+        # 3 alpha が自分の質問 Q1 に回答（addressed_to mismatch）
         call_count += 1
         return (
             "",
             '{"speech_act":"evidence","message":"自答","action":"C",'
-            '"reason":"回答","reply_to_message_id":"2"}',
+            '"reason":"回答","reply_to_message_id":"1"}',
         )
 
     monkeypatch.setattr("scripts.llm_turn_game_common.run_prompt", fake_run_prompt)
@@ -561,7 +553,7 @@ def test_run_one_game_fake_reply_from_non_addressee_keeps_question_open(monkeypa
         persona_params=persona_params,
         role_keys=role_keys,
         max_new_tokens=96,
-        max_discussion_turns=4,
+        max_discussion_turns=3,
         discussion_token_budget=1024,
         evaluator_rollouts=4,
         scenario_id="comms_favored",
@@ -569,8 +561,63 @@ def test_run_one_game_fake_reply_from_non_addressee_keeps_question_open(monkeypa
     assert rows
     first = rows[0]
     transcript = json.loads(first["discussion_transcript"])
-    # 3, 4 番目は無効な回答参照
+    # 2, 3 番目は無効な回答参照
+    assert transcript[1].get("reply_to_message_id_invalid") is True
     assert transcript[2].get("reply_to_message_id_invalid") is True
-    assert transcript[3].get("reply_to_message_id_invalid") is True
-    assert first["unanswered_question_count"] == 2
+    assert first["unanswered_question_count"] == 1
     assert first["question_response_latency"] != first["question_response_latency"]  # nan
+
+
+def test_run_one_game_question_while_answer_required_forces_invalid(monkeypatch) -> None:
+    """未回答質問の宛先エージェントが回答せず新しい質問を返した場合は強制遷移する。"""
+    import json
+    from scripts.llm_turn_game_common import run_one_game
+
+    call_count = 0
+
+    def fake_run_prompt(model, tokenizer, prompt, max_new_tokens, enable_thinking=False, thinking_budget=None):
+        nonlocal call_count
+        if "意思決定機会" in prompt:
+            return "", '{"action":"C","reason":"vote C","message":"C","ready":true}'
+        # 1 alpha -> beta 質問
+        if call_count == 0:
+            call_count += 1
+            return (
+                "",
+                '{"speech_act":"question_objection","message":"Q1","action":"C",'
+                '"reason":"質問","addressed_to":"beta","requires_response":true}',
+            )
+        # 2 beta は Q1 に回答せず alpha 宛の質問を返す（無効）
+        call_count += 1
+        return (
+            "",
+            '{"speech_act":"question_objection","message":"Q2","action":"C",'
+            '"reason":"返質問","addressed_to":"alpha","requires_response":true}',
+        )
+
+    monkeypatch.setattr("scripts.llm_turn_game_common.run_prompt", fake_run_prompt)
+
+    personas = {"alpha": "alpha", "beta": "beta"}
+    persona_params = {"alpha": None, "beta": None}
+    role_keys = {"alpha": "alpha", "beta": "beta"}
+    rows = run_one_game(
+        None,
+        None,
+        "control",
+        seed=42,
+        personas=personas,
+        persona_params=persona_params,
+        role_keys=role_keys,
+        max_new_tokens=96,
+        max_discussion_turns=2,
+        discussion_token_budget=1024,
+        evaluator_rollouts=4,
+        scenario_id="comms_favored",
+    )
+    assert rows
+    first = rows[0]
+    transcript = json.loads(first["discussion_transcript"])
+    assert first["unanswered_question_count"] == 1
+    assert transcript[1].get("invalid_response_while_answer_required") is True
+    assert first["forced_decision_with_open_question"] is True
+    assert "invalid_response_while_answer_required" in first["forced_decision_reason"]
