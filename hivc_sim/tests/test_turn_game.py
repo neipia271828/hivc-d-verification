@@ -298,8 +298,30 @@ def test_extract_json_discussion_parses_question_metadata() -> None:
     assert requires2 is False
 
 
+def test_allocate_discussion_budgets_respects_total_and_token_proportional() -> None:
+    """配分合計が max_discussion_turns / token_budget を超えず、トークンは発言数に比例。"""
+    # 第1機会を2に確保して後続を0に削減
+    m, t = allocate_discussion_budgets(3, 2, 100, n_speakers=2)
+    assert sum(m) <= 2
+    assert m[0] >= 2
+    assert sum(t) <= 100
+    assert t[0] == 100
+
+    # 3機会に3発言：2,1,0
+    m, t = allocate_discussion_budgets(3, 3, 100, n_speakers=2)
+    assert sum(m) <= 3
+    assert m == [2, 1, 0]
+    assert sum(t) <= 100
+    assert t[0] > 0 and t[1] > 0
+
+    # 多めの発言とトークン
+    m, t = allocate_discussion_budgets(2, 25, 1000, n_speakers=2)
+    assert sum(m) <= 25
+    assert m[0] >= 2
+    assert sum(t) <= 1000
+
+
 def test_run_one_game_question_response_closure(monkeypatch) -> None:
-    """質問発言後に宛先エージェントが回答し、未回答を残さず意思決定に進む。"""
     import json
     from scripts.llm_turn_game_common import run_one_game
 
@@ -354,3 +376,63 @@ def test_run_one_game_question_response_closure(monkeypatch) -> None:
     assert first["unanswered_question_count"] == 0
     assert first["forced_decision_with_open_question"] is False
     assert first["question_response_latency"] == 1.0
+
+
+def test_run_one_game_forced_decision_still_collects_votes(monkeypatch) -> None:
+    """予算末尾で未回答質問が残っても、投票を取らずにフォールバックしない。"""
+    import json
+    from scripts.llm_turn_game_common import run_one_game
+
+    call_count = 0
+
+    def fake_run_prompt(model, tokenizer, prompt, max_new_tokens, enable_thinking=False, thinking_budget=None):
+        nonlocal call_count
+        # 意思決定機会では無効応答を返して、フォールバック票が best にならないことを確認
+        if "意思決定機会" in prompt:
+            return "", "this is not json"
+        # 自由議論：1回目 alpha が質問、2回目 beta も質問（回答なし）
+        if call_count == 0:
+            call_count += 1
+            return (
+                "",
+                '{"speech_act":"question_objection","message":"なぜ？","action":"C",'
+                '"reason":"質問","addressed_to":"beta","requires_response":true}',
+            )
+        call_count += 1
+        return (
+            "",
+            '{"speech_act":"question_objection","message":"さらに？","action":"C",'
+            '"reason":"追加質問","addressed_to":"alpha","requires_response":true}',
+        )
+
+    monkeypatch.setattr("scripts.llm_turn_game_common.run_prompt", fake_run_prompt)
+
+    personas = {"alpha": "alpha", "beta": "beta"}
+    persona_params = {"alpha": None, "beta": None}
+    role_keys = {"alpha": "alpha", "beta": "beta"}
+    rows = run_one_game(
+        None,
+        None,
+        "control",
+        seed=42,
+        personas=personas,
+        persona_params=persona_params,
+        role_keys=role_keys,
+        max_new_tokens=96,
+        max_discussion_turns=2,
+        discussion_token_budget=1024,
+        evaluator_rollouts=4,
+        scenario_id="comms_favored",
+    )
+    assert rows
+    first = rows[0]
+    # 投票は実行されたので decision_history が存在する
+    decision_history = json.loads(first["decision_history"])
+    assert len(decision_history) > 0
+    assert decision_history[0]["alpha_vote"] == ""
+    assert decision_history[0]["beta_vote"] == ""
+    # 無効な票を best にしないため、alpha_vote は空で best_action とは異なる
+    assert first["alpha_vote"] == ""
+    assert first["beta_vote"] == ""
+    assert first["forced_decision_with_open_question"] is True
+    assert first["unanswered_question_count"] > 0

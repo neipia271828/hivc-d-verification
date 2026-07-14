@@ -1,3 +1,16 @@
+# 2026-07-15
+
+- P1/P2 修正
+  - `scripts/llm_turn_game_common.py`:
+    - `run_one_game` で未回答質問を残りの自由議論枠で回答し、絶対上限でのみ例外に変更
+    - 例外時も `alpha`/`beta` の投票を実行し、無効な票は `None` にして `best_action` をフォールバック票として使わない
+    - `max_discussion_turns < n_speakers` の場合は実効値を `n_speakers` へ繰り上げ、ログへ明示
+    - `allocate_discussion_budgets` で合計が `max_discussion_turns` / `discussion_token_budget` を超えないよう修正
+    - トークン配分を発言数配分に比例させ、端数は早い機会から配分
+  - `hivc_sim/tests/test_turn_game.py`:
+    - `allocate_discussion_budgets` の上限・比例配分テストを更新
+  - `pytest hivc_sim/tests -q` が 48 テストで通過
+
 # 2026-07-14
 
 - REQUIREMENTS.md 更新（質問・応答の閉包と新評価指標）に合わせて実装を更新

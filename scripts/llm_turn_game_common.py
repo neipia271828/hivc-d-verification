@@ -293,24 +293,51 @@ def allocate_discussion_budgets(
     """実際の opportunity_count で発言数とトークン予算を配分。端数は早い機会から。
 
     第1回目の意思決定機会には、各エージェントが1回ずつ発言できる最小数を確保する。
+    合計は max_discussion_turns ・ discussion_token_budget を超えない。
     """
     if opportunity_count <= 0:
         return [], []
-    messages_per = max(1, max_discussion_turns // opportunity_count)
-    message_remainder = max_discussion_turns - messages_per * opportunity_count
-    tokens_per = max(1, discussion_token_budget // opportunity_count)
-    token_remainder = discussion_token_budget - tokens_per * opportunity_count
 
+    # 発言数配分
+    messages_per = max_discussion_turns // opportunity_count
+    message_remainder = max_discussion_turns - messages_per * opportunity_count
     message_limits = [messages_per] * opportunity_count
-    token_limits = [tokens_per] * opportunity_count
     for i in range(opportunity_count):
         if i < message_remainder:
             message_limits[i] += 1
-        if i < token_remainder:
-            token_limits[i] += 1
-
-    # 第1回機会には少なくとも全エージェント1回ずつの発言機会を確保
+    # 第1回機会には少なくとも全エージェント1回ずつ
     message_limits[0] = max(n_speakers, message_limits[0])
+    # 合計が max_discussion_turns を超えないよう後続機会から削減
+    if sum(message_limits) > max_discussion_turns:
+        excess = sum(message_limits) - max_discussion_turns
+        for i in range(opportunity_count - 1, 0, -1):
+            cut = min(excess, message_limits[i])
+            message_limits[i] -= cut
+            excess -= cut
+            if excess <= 0:
+                break
+        # 後続機会だけでは補えない場合（max_discussion_turns < n_speakers 等）は第1機会を抑制
+        if excess > 0:
+            message_limits[0] = max(0, message_limits[0] - excess)
+
+    # トークン配分は発言数配分に比例
+    total_messages = sum(message_limits)
+    if total_messages == 0:
+        token_limits = [0] * opportunity_count
+    else:
+        token_limits = [
+            (discussion_token_budget * message_limits[i]) // total_messages
+            for i in range(opportunity_count)
+        ]
+        # 端数は早い機会から
+        token_shortfall = discussion_token_budget - sum(token_limits)
+        for i in range(opportunity_count):
+            if token_shortfall <= 0:
+                break
+            add = min(token_shortfall, max(0, message_limits[i]))
+            token_limits[i] += add
+            token_shortfall -= add
+
     return message_limits, token_limits
 
 
@@ -692,7 +719,13 @@ def run_one_game(
     rng = np.random.default_rng(seed)
     rows: list[dict[str, object]] = []
     speakers = ["alpha", "beta"]
+    n_speakers = len(speakers)
     planned_route = "undecided"
+
+    # 少なくとも各エージェント1回ずつ発言できるよう実効値を確保
+    effective_max_discussion_turns = max(max_discussion_turns, n_speakers)
+    if effective_max_discussion_turns != max_discussion_turns:
+        print(f"[run_one_game] max_discussion_turns {max_discussion_turns} is below {n_speakers}; bumping to {effective_max_discussion_turns}")
 
     while not state.done:
         q_values = estimate_q_values(state, n_rollouts=evaluator_rollouts, seed=seed + state.turn * 1000)
@@ -702,7 +735,7 @@ def run_one_game(
 
         opportunity_count = schedule_decision_opportunities(seed, state.turn, decision_schedule_seed, max_decision_opportunities)
         message_limits, token_limits = allocate_discussion_budgets(
-            opportunity_count, max_discussion_turns, discussion_token_budget, n_speakers=len(speakers)
+            opportunity_count, effective_max_discussion_turns, discussion_token_budget, n_speakers=n_speakers
         )
 
         transcript: list[dict[str, Any]] = []
@@ -716,13 +749,13 @@ def run_one_game(
         fallback_priority_agent: str | None = None
         final_attempt_index = 0
 
-        alpha_vote: Action = fallback
+        alpha_vote: Action | None = None
         alpha_vote_reason = ""
         alpha_vote_message = ""
         alpha_vote_ready = False
         alpha_vote_raw = ""
         alpha_vote_thinking = ""
-        beta_vote: Action = fallback
+        beta_vote: Action | None = None
         beta_vote_reason = ""
         beta_vote_message = ""
         beta_vote_ready = False
@@ -743,24 +776,28 @@ def run_one_game(
             messages_this_opportunity = 0
 
             # 自由議論フェーズ
-            while messages_this_opportunity < opportunity_message_limit:
+            while (
+                messages_this_opportunity < opportunity_message_limit
+                and total_free_messages < effective_max_discussion_turns
+                and token_budget_used < discussion_token_budget
+            ):
                 if opportunity_token_used >= opportunity_token_limit:
                     break
 
-                speaker = speakers[total_free_messages % len(speakers)]
+                speaker = speakers[total_free_messages % n_speakers]
                 other_speaker = "beta" if speaker == "alpha" else "alpha"
 
                 # この話者が回答すべき未回答質問（最古）
                 open_for_speaker = [q for q in open_questions if q["addressed_to"] == speaker]
                 question_to_answer = open_for_speaker[0] if open_for_speaker else None
 
-                remaining_messages = opportunity_message_limit - messages_this_opportunity
-                remaining_tokens = opportunity_token_limit - opportunity_token_used
+                turn_remaining_messages = effective_max_discussion_turns - total_free_messages
+                turn_remaining_tokens = discussion_token_budget - token_budget_used
                 k = len(open_questions)
                 can_ask_question = (
                     question_to_answer is None
-                    and remaining_messages >= k + 2
-                    and remaining_tokens >= (k + 2) * max_new_tokens
+                    and turn_remaining_messages >= k + 2
+                    and turn_remaining_tokens >= (k + 2) * max_new_tokens
                 )
 
                 prompt = discussion_prompt(
@@ -773,8 +810,8 @@ def run_one_game(
                     condition,
                     open_question=question_to_answer,
                     can_ask_question=can_ask_question,
-                    remaining_messages=remaining_messages,
-                    remaining_tokens=remaining_tokens,
+                    remaining_messages=turn_remaining_messages,
+                    remaining_tokens=turn_remaining_tokens,
                 )
 
                 response = get_discussion_message(
@@ -801,12 +838,12 @@ def run_one_game(
                     addressed_to = other_speaker
                 reply_to_message_id = response["reply_to_message_id"]
 
-                # 未回答質問がある状態で、かつ質問する余裕がない場合は強制意思決定
+                # ターン全体の絶対上限で質問回答ができない場合は強制意思決定
                 if is_question and not can_ask_question:
                     forced_decision_with_open_question = True
                     forced_decision_reason = (
-                        f"insufficient_budget_for_reply: {len(open_questions)} open questions, "
-                        f"remaining_messages={remaining_messages}, remaining_tokens={remaining_tokens}"
+                        f"turn_budget_exhausted_for_reply: {len(open_questions)} open questions, "
+                        f"turn_remaining_messages={turn_remaining_messages}, turn_remaining_tokens={turn_remaining_tokens}"
                     )
                     this_message_id = str(next_message_id)
                     transcript.append(
@@ -887,117 +924,145 @@ def run_one_game(
                                 new_open.append(q)
                         open_questions = new_open
 
-            # 未回答質問が残っている場合は、この時点で意思決定に進むことは例外となる
-            if open_questions and not forced_decision_with_open_question:
-                forced_decision_with_open_question = True
-                forced_decision_reason = (
-                    f"opportunity_budget_exhausted: {len(open_questions)} open questions, "
-                    f"opportunity_index={opp_idx}"
-                )
+            # 未回答質問が残っていれば、後続機会で回答を試行する
+            if open_questions and opp_idx < opportunity_count and not forced_decision_with_open_question:
+                continue
 
-            # 意思決定機会
-            if not forced_decision_with_open_question:
-                alpha_vote, alpha_vote_reason, alpha_vote_message, alpha_vote_ready, alpha_vote_raw, alpha_vote_thinking = get_action(
-                    model,
-                    tokenizer,
-                    decision_opportunity_prompt(
-                        "alpha",
-                        personas["alpha"],
-                        persona_params["alpha"],
-                        state,
-                        transcript,
-                        condition,
-                        opp_idx,
-                        opportunity_count,
-                    ),
-                    max_new_tokens,
-                    fallback,
-                    enable_thinking=enable_thinking,
-                    thinking_budget=thinking_budget,
-                )
-                beta_vote, beta_vote_reason, beta_vote_message, beta_vote_ready, beta_vote_raw, beta_vote_thinking = get_action(
-                    model,
-                    tokenizer,
-                    decision_opportunity_prompt(
-                        "beta",
-                        personas["beta"],
-                        persona_params["beta"],
-                        state,
-                        transcript,
-                        condition,
-                        opp_idx,
-                        opportunity_count,
-                    ),
-                    max_new_tokens,
-                    fallback,
-                    enable_thinking=enable_thinking,
-                    thinking_budget=thinking_budget,
-                )
+            # 未回答質問が残っていて、かつこれが最後の機会なら強制意思決定
+            if open_questions and (opp_idx == opportunity_count or forced_decision_with_open_question):
+                if not forced_decision_with_open_question:
+                    forced_decision_with_open_question = True
+                    forced_decision_reason = "absolute_budget_limit_reached"
 
-                # 投票は全エージェントが出し終わってからトランスクリプトへ追加
-                transcript.append(
-                    {
-                        "speaker": "alpha",
-                        "action": alpha_vote.value,
-                        "reason": alpha_vote_reason,
-                        "message": alpha_vote_message,
-                        "ready": str(alpha_vote_ready).lower(),
-                        "raw": alpha_vote_raw,
-                        "thinking": alpha_vote_thinking,
-                    }
-                )
-                transcript.append(
-                    {
-                        "speaker": "beta",
-                        "action": beta_vote.value,
-                        "reason": beta_vote_reason,
-                        "message": beta_vote_message,
-                        "ready": str(beta_vote_ready).lower(),
-                        "raw": beta_vote_raw,
-                        "thinking": beta_vote_thinking,
-                    }
-                )
+            # 意思決定機会：例外時もエージェントの投票は実行する
+            alpha_vote, alpha_vote_reason, alpha_vote_message, alpha_vote_ready, alpha_vote_raw, alpha_vote_thinking = get_action(
+                model,
+                tokenizer,
+                decision_opportunity_prompt(
+                    "alpha",
+                    personas["alpha"],
+                    persona_params["alpha"],
+                    state,
+                    transcript,
+                    condition,
+                    opp_idx,
+                    opportunity_count,
+                ),
+                max_new_tokens,
+                fallback,
+                enable_thinking=enable_thinking,
+                thinking_budget=thinking_budget,
+            )
+            if alpha_vote_reason.startswith("invalid_response_fallback"):
+                alpha_vote = None
+            beta_vote, beta_vote_reason, beta_vote_message, beta_vote_ready, beta_vote_raw, beta_vote_thinking = get_action(
+                model,
+                tokenizer,
+                decision_opportunity_prompt(
+                    "beta",
+                    personas["beta"],
+                    persona_params["beta"],
+                    state,
+                    transcript,
+                    condition,
+                    opp_idx,
+                    opportunity_count,
+                ),
+                max_new_tokens,
+                fallback,
+                enable_thinking=enable_thinking,
+                thinking_budget=thinking_budget,
+            )
+            if beta_vote_reason.startswith("invalid_response_fallback"):
+                beta_vote = None
 
-                consensus = (alpha_vote == beta_vote) and alpha_vote_ready and beta_vote_ready
-                decision_history.append(
-                    {
-                        "opportunity_index": opp_idx,
-                        "opportunity_count": opportunity_count,
-                        "alpha_vote": alpha_vote.value,
-                        "alpha_reason": alpha_vote_reason,
-                        "alpha_ready": alpha_vote_ready,
-                        "beta_vote": beta_vote.value,
-                        "beta_reason": beta_vote_reason,
-                        "beta_ready": beta_vote_ready,
-                        "consensus": consensus,
-                    }
-                )
+            # 投票は全エージェントが出し終わってからトランスクリプトへ追加
+            transcript.append(
+                {
+                    "speaker": "alpha",
+                    "action": alpha_vote.value if alpha_vote else "",
+                    "reason": alpha_vote_reason,
+                    "message": alpha_vote_message,
+                    "ready": str(alpha_vote_ready).lower(),
+                    "raw": alpha_vote_raw,
+                    "thinking": alpha_vote_thinking,
+                }
+            )
+            transcript.append(
+                {
+                    "speaker": "beta",
+                    "action": beta_vote.value if beta_vote else "",
+                    "reason": beta_vote_reason,
+                    "message": beta_vote_message,
+                    "ready": str(beta_vote_ready).lower(),
+                    "raw": beta_vote_raw,
+                    "thinking": beta_vote_thinking,
+                }
+            )
 
-                final_attempt_index = opp_idx
-                if consensus:
-                    group_action = alpha_vote
-                    decision_rule = "consensus"
-                    group_reason = (
-                        f"consensus on action {alpha_vote.value}: "
-                        f"alpha reason={alpha_vote_reason}; beta reason={beta_vote_reason}"
-                    )
-                    break
-            else:
-                # 強制遷移: 未回答質問ありなので投票を取らずにフォールバックへ
-                final_attempt_index = opp_idx
+            consensus = (
+                alpha_vote is not None
+                and beta_vote is not None
+                and alpha_vote == beta_vote
+                and alpha_vote_ready
+                and beta_vote_ready
+            )
+            decision_history.append(
+                {
+                    "opportunity_index": opp_idx,
+                    "opportunity_count": opportunity_count,
+                    "alpha_vote": alpha_vote.value if alpha_vote else "",
+                    "alpha_reason": alpha_vote_reason,
+                    "alpha_ready": alpha_vote_ready,
+                    "beta_vote": beta_vote.value if beta_vote else "",
+                    "beta_reason": beta_vote_reason,
+                    "beta_ready": beta_vote_ready,
+                    "consensus": consensus,
+                }
+            )
+
+            final_attempt_index = opp_idx
+            if consensus:
+                group_action = alpha_vote
+                decision_rule = "consensus"
+                group_reason = (
+                    f"consensus on action {alpha_vote.value}: "
+                    f"alpha reason={alpha_vote_reason}; beta reason={beta_vote_reason}"
+                )
+                break
+            if forced_decision_with_open_question:
                 break
 
         if group_action is None:
             priority = priority_agent(seed, state.turn)
             fallback_priority_agent = priority
             fallback_used = True
-            decision_rule = "fallback_priority"
             if priority == "alpha":
-                group_action = alpha_vote
-                group_reason = f"fallback priority agent alpha: {alpha_vote_reason}"
+                if alpha_vote is not None:
+                    group_action = alpha_vote
+                    group_reason = f"fallback priority agent alpha: {alpha_vote_reason}"
+                    decision_rule = "fallback_priority"
+                elif beta_vote is not None:
+                    group_action = beta_vote
+                    group_reason = f"fallback priority agent alpha invalid; using beta: {beta_vote_reason}"
+                    decision_rule = "fallback_priority"
+                else:
+                    group_action = fallback
+                    group_reason = "both votes invalid; fallback to best action"
+                    decision_rule = "fallback_best"
             else:
-                group_action = beta_vote
-                group_reason = f"fallback priority agent beta: {beta_vote_reason}"
+                if beta_vote is not None:
+                    group_action = beta_vote
+                    group_reason = f"fallback priority agent beta: {beta_vote_reason}"
+                    decision_rule = "fallback_priority"
+                elif alpha_vote is not None:
+                    group_action = alpha_vote
+                    group_reason = f"fallback priority agent beta invalid; using alpha: {alpha_vote_reason}"
+                    decision_rule = "fallback_priority"
+                else:
+                    group_action = fallback
+                    group_reason = "both votes invalid; fallback to best action"
+                    decision_rule = "fallback_best"
 
         result = step(state, group_action, rng)
         regret = q_values[optimal] - q_values[group_action]
@@ -1011,7 +1076,9 @@ def run_one_game(
             planned_route = optimal_route_value
         route_switch = (prev_route in ("comms", "escape") and planned_route in ("comms", "escape") and prev_route != planned_route)
 
-        individual_actions = f"{alpha_vote.value},{beta_vote.value}"
+        alpha_vote_value = alpha_vote.value if alpha_vote else ""
+        beta_vote_value = beta_vote.value if beta_vote else ""
+        individual_actions = f"{alpha_vote_value},{beta_vote_value}"
         individual_reasons = json.dumps(
             {"alpha": alpha_vote_reason, "beta": beta_vote_reason}, ensure_ascii=False
         )
@@ -1042,13 +1109,13 @@ def run_one_game(
             "discussion_turns": total_free_messages,
             "discussion_token_budget_used": token_budget_used,
             "discussion_transcript": json.dumps(transcript, ensure_ascii=False),
-            "alpha_vote": alpha_vote.value,
+            "alpha_vote": alpha_vote_value,
             "alpha_vote_reason": alpha_vote_reason,
             "alpha_vote_message": alpha_vote_message,
             "alpha_vote_ready": str(alpha_vote_ready).lower(),
             "alpha_vote_raw": alpha_vote_raw,
             "alpha_vote_thinking": alpha_vote_thinking,
-            "beta_vote": beta_vote.value,
+            "beta_vote": beta_vote_value,
             "beta_vote_reason": beta_vote_reason,
             "beta_vote_message": beta_vote_message,
             "beta_vote_ready": str(beta_vote_ready).lower(),
@@ -1088,7 +1155,7 @@ def run_one_game(
         print(
             f"[{condition} seed={seed}] turn={row['turn']} event={row['event']} "
             f"disc={row['discussion_turns']} opp={row['decision_attempt_index']}/{row['decision_opportunity_count']} "
-            f"alpha={row['alpha_vote']} beta={row['beta_vote']} "
+            f"alpha={alpha_vote_value} beta={beta_vote_value} "
             f"group={row['group_action']} rule={row['decision_rule']} "
             f"best={row['best_action']} regret={row['regret']} outcome={row['outcome']} "
             f"open_questions={unanswered_question_count} forced={forced_decision_with_open_question}"
