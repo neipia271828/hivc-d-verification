@@ -29,6 +29,7 @@ from turn_game import (  # noqa: E402
 )
 from scripts.llm_turn_game_common import (  # noqa: E402
     allocate_discussion_budgets,
+    discussion_prompt,
     extract_json_discussion,
     format_state,
 )
@@ -305,6 +306,47 @@ def test_extract_json_discussion_parses_question_metadata() -> None:
     speech_act3, _, _, _, _, _, requires3 = extract_json_discussion(response3)
     assert speech_act3.value == "question_objection"
     assert requires3 is True
+
+
+def test_discussion_prompt_schema_includes_question_metadata_keys() -> None:
+    prompt = discussion_prompt(
+        "alpha",
+        "alpha persona",
+        None,
+        GameState(current_event=Event.NONE),
+        [],
+        max_discussion_turns=6,
+    )
+
+    assert "必須キー: speech_act, message, action, reason, addressed_to, reply_to_message_id" in prompt
+    assert '"addressed_to":null,"reply_to_message_id":null' in prompt
+    assert '"speech_act":"question_objection"' in prompt
+    assert '"addressed_to":"beta","reply_to_message_id":null' in prompt
+
+
+def test_discussion_prompt_schema_requires_exact_reply_id_for_open_question() -> None:
+    prompt = discussion_prompt(
+        "beta",
+        "beta persona",
+        None,
+        GameState(current_event=Event.NONE),
+        [],
+        max_discussion_turns=6,
+        open_question={
+            "message_id": "7",
+            "speaker": "alpha",
+            "addressed_to": "beta",
+            "message": "通信を優先する根拠は？",
+        },
+        can_ask_question=False,
+        remaining_messages=3,
+        remaining_tokens=288,
+    )
+
+    assert "今は質問ID 7 への回答が必須です" in prompt
+    assert "reply_to_message_id を省略しないでください" in prompt
+    assert '"addressed_to":"alpha","reply_to_message_id":"7"' in prompt
+    assert "通常発言JSON例" not in prompt
 
 
 def test_allocate_discussion_budgets_respects_total_and_token_proportional() -> None:

@@ -193,7 +193,9 @@ q_values, best_action, acceptable_actions, conflict_level, outcome,
 decision_opportunity_count, decision_attempts, decision_attempt_index,
 free_discussion_message_count, decision_history, fallback_used,
 fallback_priority_agent, scenario_id, planned_route, optimal_route,
-route_switch, role_specific_evidence
+route_switch, role_specific_evidence, message_id, reply_to_message_id,
+addressed_to, requires_response, unanswered_question_count,
+question_response_latency, forced_decision_with_open_question
 ```
 
 主要評価指標:
@@ -216,6 +218,9 @@ route_switch, role_specific_evidence
 | premature_launch_rate | 発進条件未達で行動 F を選んだ割合 |
 | rescue_wait_failure_rate | 通信成功後、救助到着前に敗北した割合 |
 | cross_role_evidence_use | 相手の役割固有情報を最終理由または採択根拠に反映した割合 |
+| unanswered_question_rate | 意思決定開始時点で未回答の質問が残っていたターンの割合 |
+| question_response_latency | 質問から、宛先エージェントの自由議論上の回答までに要した発言数 |
+| forced_decision_with_open_question_rate | 未回答質問を残したまま、上限到達により意思決定へ進んだターンの割合 |
 
 HIVC-D の効果は、単なる勝率だけでなく、`regret`、`plan_revision_quality`、`minority_adoption_rate` を重視して測定する。
 
@@ -239,7 +244,8 @@ HIVC-D の効果は、単なる勝率だけでなく、`regret`、`plan_revision
 
 - 各ゲームターンには、**1回以上3回以下**の意思決定機会を与える。
 - 機会数は、ゲームseed、ターン番号、固定のスケジュールseedから決定的に生成する。各条件は同じゲームseed・ターン番号で同一の機会数・同一の機会順序を使う。
-- 各意思決定機会の直前には自由議論フェーズを置く。自由議論フェーズは、全条件共通の発言数上限およびトークン予算を持つ。上限に達した場合も、次の意思決定機会へ進む。
+- 各意思決定機会の直前には自由議論フェーズを置く。自由議論フェーズは、全条件共通の発言数上限およびトークン予算を持つ。
+- 発言数上限とトークン予算は、設定可能な最大機会数ではなく、そのターンで実際に割り当てられた `opportunity_count` で配分する。端数は早い機会から順に配分し、機会が少ないターンで予算を未使用のまま失わせない。
 - そのターンの第1回意思決定機会より前には、少なくとも各エージェントが1回ずつ自由発言する機会を与える。
 - ある意思決定機会で全員が同じ行動を明示して合意した場合、その時点で当該ターンの行動を決定し、残りの意思決定機会は使わない。
 - 合意に至らなかった場合、残りの意思決定機会があれば、直前の不一致理由と相手の発言を含む自由議論フェーズへ戻る。単に同じ行動記号を再送するだけの発言は、自由議論として数えない。
@@ -256,15 +262,25 @@ HIVC-D の効果は、単なる勝率だけでなく、`regret`、`plan_revision
 
 自由議論の応答形式は、`message` と発言目的を示す `speech_act` を基本とする。行動案は必要に応じて述べてよいが、`A`〜`F` の選択、`ready`、最終票は意思決定機会でのみ要求する。
 
-#### 7.1.3 意思決定機会
+#### 7.1.3 質問と応答の閉包
+
+質問を含む発言が、その回答を聞かないまま投票フェーズへ移ることを防ぐ。ここでいう回答は、自由議論フェーズ中に、質問の宛先エージェントが質問内容を参照して返す発言を指す。意思決定機会の独立投票に含まれる `reason` は回答として数えない。
+
+- `speech_act=question_objection` で質問を行う場合、発言に `message_id`、`addressed_to`、`requires_response=true` を記録する。宛先を省略した場合は相手エージェントを宛先とする。
+- 宛先エージェントの次の自由発言は当該質問への回答を優先し、`reply_to_message_id` を記録する。質問への回答後に通常の根拠提示・反論・トレードオフ比較へ戻る。
+- 未回答質問がある間は意思決定機会へ進んではならない。通常の発言枠が尽きる直前に質問を出すことは許可しない。質問を出した場合は、回答1発言分のメッセージ・トークン予算をあらかじめ確保する。
+- モデルの無効出力、またはターン全体の絶対上限により回答を生成できない場合に限り、ゲーム進行を止めないため強制的に意思決定へ進んでよい。この場合は `forced_decision_with_open_question=true`、未回答数、質問ID、理由（予算超過・無効出力等）を必ずログへ残す。
+- 上記の質問・応答規則、発言数、トークン予算、強制遷移規則は全実験条件で共通とする。
+
+#### 7.1.4 意思決定機会
 
 意思決定機会では、各エージェントに現在の最終案を一つだけ出させる。出力には `action`、短い `reason`、および合意意思を表す `ready` を含める。
 
 - 全エージェントが同一の `action` を出し、全員が `ready=true` の場合は合意成立とする。
-- それ以外は不成立とし、次の自由議論フェーズへ戻る。ただし、そのターンに残る意思決定機会がない場合は、7.1.4 のフォールバックを適用する。
+- それ以外は不成立とし、次の自由議論フェーズへ戻る。ただし、そのターンに残る意思決定機会がない場合は、7.1.5 のフォールバックを適用する。
 - 合意成立・不成立のいずれでも、その機会における全提案、理由、`ready` をログへ保存する。
 
-#### 7.1.4 最終不成立時のルールベース採択
+#### 7.1.5 最終不成立時のルールベース採択
 
 そのターンに与えられたすべての意思決定機会で合意できなかった場合は、最終意思決定機会における事前定義済みの優先エージェントの `action` を採用する。
 
@@ -314,3 +330,4 @@ HIVC-D の効果は、単なる勝率だけでなく、`regret`、`plan_revision
 - 各状態の `Q(s,a)`、`best_action`、`acceptable_actions` を出力できる。
 - LLM 実験ログと探索ベース評価ログを結合できる。
 - REQUIREMENTS に記載した主要評価指標（route系・役割別情報利用を含む）を CSV として出力できる。
+- 質問発言の後、宛先エージェントの自由議論上の回答を経ずに意思決定へ進まないことを、回帰テストと実エピソードログで確認できる。例外時は強制遷移の理由を記録できる。

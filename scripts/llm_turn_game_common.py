@@ -500,6 +500,54 @@ def _question_context(open_question: dict[str, Any] | None, can_ask_question: bo
     return "\n\n".join(parts)
 
 
+def _discussion_json_contract(agent_name: str, open_question: dict[str, Any] | None) -> str:
+    """自由議論の状況に合った必須 JSON スキーマと例を返す。"""
+    other_agent = "beta" if agent_name == "alpha" else "alpha"
+    required_keys = (
+        "必須キー: speech_act, message, action, reason, addressed_to, reply_to_message_id\n"
+        "- addressed_to: 質問の宛先。質問以外は null\n"
+        "- reply_to_message_id: 回答対象の質問ID。回答以外は null"
+    )
+
+    if open_question is not None:
+        answer_example = {
+            "speech_act": "evidence",
+            "message": "質問への短い回答",
+            "action": "A",
+            "reason": "短い理由",
+            "addressed_to": open_question["speaker"],
+            "reply_to_message_id": str(open_question["message_id"]),
+        }
+        return (
+            f"{required_keys}\n"
+            f"今は質問ID {open_question['message_id']} への回答が必須です。"
+            "新しい質問や別の話題を出さず、reply_to_message_id を省略しないでください。\n"
+            f"回答JSON例:\n{json.dumps(answer_example, ensure_ascii=False, separators=(',', ':'))}"
+        )
+
+    statement_example = {
+        "speech_act": "evidence",
+        "message": "相手への短い発言",
+        "action": "A",
+        "reason": "短い理由",
+        "addressed_to": None,
+        "reply_to_message_id": None,
+    }
+    question_example = {
+        "speech_act": "question_objection",
+        "message": "相手への短い質問",
+        "action": "A",
+        "reason": "確認したい理由",
+        "addressed_to": other_agent,
+        "reply_to_message_id": None,
+    }
+    return (
+        f"{required_keys}\n"
+        f"通常発言JSON例:\n{json.dumps(statement_example, ensure_ascii=False, separators=(',', ':'))}\n"
+        f"質問JSON例:\n{json.dumps(question_example, ensure_ascii=False, separators=(',', ':'))}"
+    )
+
+
 def discussion_prompt(
     agent_name: str,
     persona: str,
@@ -514,6 +562,7 @@ def discussion_prompt(
     remaining_tokens: int = 0,
 ) -> str:
     context = _question_context(open_question, can_ask_question, remaining_messages, remaining_tokens)
+    json_contract = _discussion_json_contract(agent_name, open_question)
     return f"""あなたは深海研究施設トラブルの意思決定エージェントです。
 あなたのペルソナ設定:
 {format_persona(agent_name, persona, persona_params)}
@@ -542,7 +591,7 @@ def discussion_prompt(
 ready は不要です。
 質問をする場合は speech_act に "question_objection" を使い、addressed_to を指定してください。
 必ず次のJSONだけを返してください。説明文やMarkdownは不要です。
-{{"speech_act":"evidence","message":"相手への短い発言","action":"A","reason":"短い理由"}}
+{json_contract}
 """
 
 

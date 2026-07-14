@@ -190,3 +190,42 @@
     - `heuristic_policy` で発進条件を満たしている場合は酸素・電力修理より先に `EXECUTE_ESCAPE` を選択するよう順序を調整
   - `hivc_sim/tests/test_turn_game.py`:
     - `test_route_reversal_changes_optimal_route` を `optimal_route(state, ...)` 呼び出しと `BACKUP_POWER_FOUND` イベント確認に更新
+
+# 2026-07-14
+
+- 自由議論の回答 JSON スキーマを修正
+  - `scripts/llm_turn_game_common.py`:
+    - 全自由議論出力で `addressed_to` と `reply_to_message_id` を必須キーとして明示
+    - 通常発言・質問・未回答質問への回答で、状況別の有効な JSON 例を提示
+    - 未回答質問がある場合は、対象の質問 ID と質問者を埋め込んだ回答専用 JSON 例に切り替え
+    - 回答時に新しい質問や別話題を禁止し、`reply_to_message_id` を省略しないよう明記
+  - `hivc_sim/tests/test_turn_game.py`:
+    - 通常発言・質問スキーマに質問メタデータキーが含まれることを検証
+    - 未回答質問への回答スキーマに正しい質問 ID が埋め込まれることを検証
+  - `pytest hivc_sim/tests -q` が 56 テストで通過
+
+# 2026-07-14
+
+- GPU実験ワークフローを `uv run` の4コマンドへ統合
+  - `pyproject.toml` / `scripts/workflow_cli.py`:
+    - `uv run sync`: ローカルのGit状態・origin・ブランチを検証し、push後にGPU側で `git pull --ff-only`、HEAD一致を確認
+    - GPU側に `.git` がない初回は、SSH agent forwardingでGit管理を復元。秘密鍵を複製せず、`.venv` と実験結果を保持
+    - `uv run experiment`: 一意なrun IDを発行し、GPUで1エピソードをバックグラウンド起動。run単位でログ・PID・終了コード・CSVを保存
+    - `uv run download`: 直前のrun IDを引き継ぎ、完了と終了コードを確認してMacへ取得
+    - `uv run visualize`: `127.0.0.1` 限定のローカルGUIを起動しブラウザを自動表示
+  - `.hivc-workflow.json` で直前runをローカル管理し、Git対象外に設定
+  - GPU側runとローカルdownloadsをGit対象外に設定
+  - `hivc_sim/tests/test_workflow_cli.py` にCLI登録・run ID検証・リモートコマンド生成のテストを追加
+  - `README.md` に4コマンドの基本フローとオプションを追記
+  - `pytest hivc_sim/tests -q` が 61 テストで通過
+  - `uv run visualize --no-open --port 8876` でHTMLと `/api/runs` の応答、Ctrl+Cでの正常終了を確認
+
+# 2026-07-14
+
+- `uv run sync` にstage・commitの自動実行を追加
+  - 未コミット変更がある場合は `git add -A` と `git commit` を自動実行してからpush・GPU pullへ進む
+  - `--message` で自動commitメッセージを指定可能
+  - `--allow-dirty` は未コミット変更を除外して現在のHEADだけを同期する互換オプションとして維持
+  - dry-runではstage・commit・push・GPU pull予定を表示するだけでGit状態を変更しない
+  - 自動commit後にhook等による未コミット変更が残った場合は同期を停止
+  - `pytest hivc_sim/tests -q` が 62 テストで通過

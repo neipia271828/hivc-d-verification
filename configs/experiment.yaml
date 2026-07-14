@@ -25,7 +25,7 @@ games: 30
 seed: 42
 
 # LLM生成パラメータ
-max_new_tokens: 1024
+max_new_tokens: 2048
 max_discussion_turns: 24       # 1ターンあたりの自由議論発言上限（各自由議論フェーズに配分）
 discussion_token_budget: 16184  # 1ターンあたりの議論トークン予算上限（各自由議論フェーズに配分）
 
@@ -38,7 +38,7 @@ max_decision_opportunities: 3
 # false: thinking無効（従来通り、最終応答のみ生成）
 # true:  thinking有効（モデルが内部推論を行ってから応答）
 #   ※ thinking有効時は max_new_tokens を大きめに設定すること（思考分も消費するため）
-enable_thinking: false
+enable_thinking: true
 # thinkingモード時の推論トークン上限（Qwen3 thinking_budget）。
 # null なら制限なし。数値を指定すると思考をそのトークン数に抑える。
 thinking_budget: null
@@ -49,15 +49,9 @@ evaluator_rollouts: 24
 # 出力先
 output_dir: hivc_sim/results/turn_game/experiment
 
-# ライブ可視化用JSONLの出力パス。
-# null なら無効。パスを指定すると各ターン終了時にJSONLを追記し、
-# visualize_game.html のライブモードでリアルタイム表示できる。
-# 使い方:
-#   1. ここにパスを指定して実験を起動
-#   2. 別ターミナルで python3 scripts/live_server.py --file <同じパス> --port 8765
-#   3. ブラウザで http://localhost:8765/visualize を開き「ライブモード」ボタン
-live_jsonl: hivc_sim/results/turn_game/experiment/stream.jsonl
-# live_jsonl: hivc_sim/results/turn_game/experiment/stream.jsonl
+# ライブ可視化用JSONLの出力パス。本設計ではローカルプレビューにCSVを用いるため、
+# 既定は null（無効）。ローカルプレビュー: scripts/local_preview.py
+live_jsonl: null
 
 # ペルソナ指定（いずれか1つ。全て null ならデフォルトペルソナを使用）
 role_file: role.json          # role.json の agent_01/agent_02 を使う

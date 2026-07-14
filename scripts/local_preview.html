@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HIVC-D Local Experiment Log Preview</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #1a1d27; --panel2: #232733; --border: #2e3340;
+    --text: #e0e3eb; --muted: #8892a6; --accent: #5b9bf5; --accent2: #a78bfa;
+    --alpha: #5b9bf5; --beta: #f5915b; --good: #4ade80; --warn: #fbbf24; --bad: #f87171;
+    --shadow: 0 2px 8px rgba(0,0,0,0.3);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; font-size: 14px; line-height: 1.5; min-height: 100vh; }
+  .app { max-width: 1280px; margin: 0 auto; padding: 16px; }
+
+  .topbar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 12px 16px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 16px; }
+  .topbar h1 { font-size: 18px; font-weight: 600; white-space: nowrap; }
+  .topbar .mode-badge { font-size: 11px; padding: 3px 8px; border-radius: 12px; background: var(--accent); color: #fff; font-weight: 600; }
+  .topbar .spacer { flex: 1; }
+  .btn { padding: 6px 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel2); color: var(--text); cursor: pointer; font-size: 13px; transition: all 0.15s; }
+  .btn:hover { border-color: var(--accent); background: #2a2f3d; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { background: #4a8ae0; }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .bar-row { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 16px; font-size: 13px; flex-wrap: wrap; }
+  .bar-row label { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .bar-row select { padding: 6px 10px; border-radius: 6px; background: var(--panel2); color: var(--text); border: 1px solid var(--border); font-size: 13px; }
+  .bar-row .file-meta { font-size: 11px; color: var(--muted); }
+
+  .main { display: grid; grid-template-columns: 340px 1fr; gap: 16px; }
+  @media (max-width: 900px) { .main { grid-template-columns: 1fr; } }
+  .col-left { display: flex; flex-direction: column; gap: 16px; }
+  .col-right { display: flex; flex-direction: column; gap: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px; box-shadow: var(--shadow); }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); margin-bottom: 10px; }
+
+  .resource { margin-bottom: 10px; }
+  .resource:last-child { margin-bottom: 0; }
+  .resource .label { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 3px; }
+  .resource .label .val { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .bar { height: 8px; border-radius: 4px; background: var(--panel2); overflow: hidden; }
+  .bar .fill { height: 100%; border-radius: 4px; transition: width 0.4s ease, background 0.3s; }
+  .fill.good { background: var(--good); }
+  .fill.warn { background: var(--warn); }
+  .fill.bad { background: var(--bad); }
+  .fill.info { background: var(--accent); }
+
+  .event-badge { display: inline-block; padding: 4px 12px; border-radius: 16px; font-size: 12px; font-weight: 600; margin-bottom: 8px; }
+  .event-none { background: #2a2f3d; color: var(--muted); }
+  .event-active { background: var(--warn); color: #1a1d27; }
+
+  .outcome { text-align: center; font-size: 16px; font-weight: 700; padding: 8px; border-radius: 8px; margin-top: 8px; }
+  .outcome.win { background: rgba(74,222,128,0.15); color: var(--good); }
+  .outcome.loss { background: rgba(248,113,113,0.15); color: var(--bad); }
+  .outcome.running { background: var(--panel2); color: var(--muted); }
+
+  .chat { position: relative; max-height: 560px; overflow-y: auto; padding: 4px; scroll-behavior: smooth; }
+  .msg { display: flex; margin-bottom: 10px; }
+  .msg.new { animation: slideIn 0.3s ease; }
+  @keyframes slideIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  .turn-sep { display: flex; align-items: center; gap: 8px; margin: 16px 2px 8px; color: var(--muted); font-size: 11px; }
+  .turn-sep:first-child { margin-top: 4px; }
+  .turn-sep::before, .turn-sep::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+  .turn-sep .tn { font-weight: 700; color: var(--text); white-space: nowrap; }
+  .turn-sep .ev { color: var(--warn); white-space: nowrap; }
+  .turn-sep .act { color: var(--accent2); white-space: nowrap; }
+  .turn-sep.active .tn { color: var(--accent); }
+  .turn-sep.active::before, .turn-sep.active::after { background: var(--accent); opacity: 0.5; }
+  .turn-result { text-align: center; font-size: 11px; color: var(--muted); margin: 2px 0 2px; }
+  .msg.alpha { flex-direction: row; }
+  .msg.beta { flex-direction: row-reverse; }
+  .bubble { max-width: 80%; padding: 10px 14px; border-radius: 14px; position: relative; }
+  .msg.alpha .bubble { background: rgba(91,155,245,0.15); border: 1px solid rgba(91,155,245,0.3); border-bottom-left-radius: 4px; }
+  .msg.beta .bubble { background: rgba(245,145,91,0.15); border: 1px solid rgba(245,145,91,0.3); border-bottom-right-radius: 4px; }
+  .bubble .speaker { font-size: 11px; font-weight: 600; margin-bottom: 2px; }
+  .msg.alpha .speaker { color: var(--alpha); }
+  .msg.beta .speaker { color: var(--beta); }
+  .bubble .action-tag { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 700; margin-left: 4px; background: var(--panel2); }
+  .bubble .message { font-size: 13px; margin: 4px 0; }
+  .bubble .reason { font-size: 11px; color: var(--muted); font-style: italic; }
+  .bubble .ready-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-left: 6px; vertical-align: middle; }
+  .ready-dot.true { background: var(--good); }
+  .ready-dot.false { background: var(--muted); }
+  .avatar { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; flex-shrink: 0; margin: 0 8px; }
+  .avatar.alpha { background: rgba(91,155,245,0.25); color: var(--alpha); border: 2px solid var(--alpha); }
+  .avatar.beta { background: rgba(245,145,91,0.25); color: var(--beta); border: 2px solid var(--beta); }
+  .bubble .thinking-block { margin-top: 6px; }
+  .bubble .thinking-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--accent2); cursor: pointer; user-select: none; padding: 2px 8px; border-radius: 6px; background: rgba(167,139,250,0.1); border: 1px solid rgba(167,139,250,0.2); transition: all 0.15s; }
+  .bubble .thinking-toggle:hover { background: rgba(167,139,250,0.2); }
+  .bubble .thinking-toggle .arrow { display: inline-block; transition: transform 0.2s; font-size: 9px; }
+  .bubble .thinking-toggle.open .arrow { transform: rotate(90deg); }
+  .bubble .thinking-content { display: none; margin-top: 6px; padding: 8px 10px; background: rgba(167,139,250,0.06); border: 1px solid rgba(167,139,250,0.15); border-radius: 6px; font-size: 11px; color: var(--muted); white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow-y: auto; line-height: 1.5; }
+  .bubble .thinking-content.show { display: block; }
+
+  .vote-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+  .vote-cell { text-align: center; padding: 8px; border-radius: 8px; background: var(--panel2); }
+  .vote-cell .who { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  .vote-cell .act { font-size: 22px; font-weight: 700; }
+  .vote-cell.alpha .act { color: var(--alpha); }
+  .vote-cell.beta .act { color: var(--beta); }
+  .vote-cell.group { background: rgba(167,139,250,0.15); border: 1px solid rgba(167,139,250,0.3); }
+  .vote-cell.group .act { color: var(--accent2); }
+  .decision-rule { text-align: center; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .group-reason { font-size: 12px; color: var(--text); background: var(--panel2); padding: 8px; border-radius: 6px; }
+  .vote-thinking { margin-top: 10px; }
+  .vote-thinking .vt-title { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .vote-thinking .vt-row { margin-bottom: 8px; }
+  .vote-thinking .vt-label { font-size: 11px; font-weight: 600; margin-bottom: 2px; }
+  .vote-thinking .vt-label.alpha { color: var(--alpha); }
+  .vote-thinking .vt-label.beta { color: var(--beta); }
+
+  .eval-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .eval-row:last-child { border-bottom: none; }
+  .eval-row .key { color: var(--muted); font-size: 12px; }
+  .eval-row .val { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .regret-gauge { position: relative; height: 10px; background: var(--panel2); border-radius: 5px; overflow: hidden; margin-top: 4px; }
+  .regret-gauge .fill { height: 100%; background: linear-gradient(90deg, var(--good), var(--warn), var(--bad)); transition: width 0.4s; }
+  .qbar { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+  .qbar .qlabel { width: 16px; font-weight: 700; font-size: 12px; text-align: center; }
+  .qbar .qtrack { flex: 1; height: 6px; background: var(--panel2); border-radius: 3px; overflow: hidden; }
+  .qbar .qfill { height: 100%; background: var(--accent); transition: width 0.4s; }
+  .qbar .qval { width: 50px; text-align: right; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--muted); }
+
+  .timeline-card { margin-top: 16px; }
+  .timeline-controls { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+  .timeline { display: flex; gap: 6px; flex-wrap: wrap; }
+  .turn-dot { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; cursor: pointer; border: 2px solid var(--border); background: var(--panel2); transition: all 0.15s; }
+  .turn-dot:hover { border-color: var(--accent); }
+  .turn-dot.active { border-color: var(--accent); background: rgba(91,155,245,0.2); }
+  .turn-dot.win { border-color: var(--good); color: var(--good); }
+  .turn-dot.loss { border-color: var(--bad); color: var(--bad); }
+
+  .cond-bar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .cond-tab { padding: 6px 14px; border-radius: 8px; cursor: pointer; border: 1px solid var(--border); background: var(--panel2); font-size: 13px; transition: all 0.15s; }
+  .cond-tab:hover { border-color: var(--accent); }
+  .cond-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  .game-select { padding: 6px 10px; border-radius: 6px; background: var(--panel2); color: var(--text); border: 1px solid var(--border); font-size: 13px; }
+
+  .empty { text-align: center; padding: 60px 20px; color: var(--muted); }
+  .empty h3 { font-size: 16px; margin-bottom: 8px; }
+  .empty p { font-size: 13px; margin-bottom: 16px; }
+
+  .persona-info { font-size: 11px; color: var(--muted); margin-top: 6px; line-height: 1.4; }
+  .persona-info strong { color: var(--text); }
+
+  .summary-table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }
+  .summary-table th, .summary-table td { border: 1px solid var(--border); padding: 6px 8px; text-align: right; }
+  .summary-table th { background: var(--panel2); color: var(--muted); text-align: center; }
+  .summary-table td:first-child, .summary-table th:first-child { text-align: left; }
+  .summary-table tr:hover { background: rgba(255,255,255,0.03); }
+
+  .waiting { text-align: center; padding: 80px 20px; color: var(--muted); }
+  .waiting .spinner { width: 40px; height: 40px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; margin: 0 auto 20px; animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .waiting h3 { font-size: 16px; margin-bottom: 8px; color: var(--text); }
+  .waiting p { font-size: 13px; margin-bottom: 6px; }
+
+  .error-detail { font-size: 11px; color: var(--bad); margin-top: 4px; word-break: break-all; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <h1>HIVC-D Local Experiment Log Preview</h1>
+    <span class="mode-badge">OFFLINE</span>
+    <div class="spacer"></div>
+    <button class="btn" id="btnRefresh" title="run一覧を更新">更新</button>
+  </div>
+
+  <div class="bar-row">
+    <label>run:</label>
+    <select id="runSelect"></select>
+    <label>ファイル:</label>
+    <select id="fileSelect"></select>
+    <span class="file-meta" id="fileMeta"></span>
+  </div>
+
+  <div id="emptyState" class="waiting">
+    <div class="spinner"></div>
+    <h3>読み込み中...</h3>
+    <p>ローカルrunディレクトリをスキャンしています。</p>
+  </div>
+
+  <div id="vizContent" style="display:none;">
+    <div class="card" style="margin-bottom:16px;">
+      <h2>条件別集計（summary.csv）</h2>
+      <div id="summaryArea"></div>
+    </div>
+
+    <div class="cond-bar" id="condBar"></div>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+      <label style="font-size:13px;color:var(--muted);">ゲーム:</label>
+      <select class="game-select" id="gameSelect"></select>
+    </div>
+
+    <div class="main">
+      <div class="col-left">
+        <div class="card">
+          <h2>施設状態</h2>
+          <div id="eventArea"></div>
+          <div id="stateBars"></div>
+          <div id="outcomeArea"></div>
+        </div>
+        <div class="card">
+          <h2>ペルソナ</h2>
+          <div id="personaArea"></div>
+        </div>
+        <div class="card">
+          <h2>評価（探索ベース）</h2>
+          <div id="evalArea"></div>
+        </div>
+      </div>
+      <div class="col-right">
+        <div class="card">
+          <h2>エージェント議論</h2>
+          <div class="chat" id="chatArea"></div>
+        </div>
+        <div class="card">
+          <h2>投票・合意</h2>
+          <div class="vote-grid" id="voteGrid"></div>
+          <div class="decision-rule" id="decisionRule"></div>
+          <div class="group-reason" id="groupReason"></div>
+          <div class="vote-thinking" id="voteThinking" style="display:none;"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card timeline-card">
+      <h2>タイムライン</h2>
+      <div class="timeline-controls">
+        <button class="btn" id="btnPrev">前ターン</button>
+        <button class="btn primary" id="btnPlay">自動再生</button>
+        <button class="btn" id="btnNext">次ターン</button>
+        <span style="font-size:12px;color:var(--muted);margin-left:8px;" id="turnLabel"></span>
+      </div>
+      <div class="timeline" id="timeline"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+let allRecords = [];
+let byCondition = {};
+let byGame = {};
+let currentCondition = null;
+let currentGameKey = null;
+let currentTurnIdx = 0;
+let playTimer = null;
+
+let runs = [];
+let currentRun = null;
+let currentFileName = null;
+
+let summaryData = [];
+
+const ACTION_NAMES = { A: '酸素安定化', B: '発電系修理', C: '通信修理', D: '浸水封鎖' };
+const EVENT_NAMES = { none: '異常なし', pressure_spike: '外圧上昇', leak_surge: '浸水増加', signal_window: '通信窓', crew_panic: '乗員動揺' };
+
+function apiBase() { return window.location.origin; }
+
+function safeJSON(str, fallback) {
+  if (!str || str === '') return fallback;
+  try { return JSON.parse(str); } catch { return fallback; }
+}
+
+function escapeHTML(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
+  return (bytes/1024/1024).toFixed(1) + ' MB';
+}
+
+function parseCSV(text) {
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  if (lines.length < 2) return [];
+  const headers = parseCSVLine(lines[0]);
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const vals = parseCSVLine(lines[i]);
+    const row = {};
+    for (let j = 0; j < headers.length; j++) row[headers[j]] = vals[j] !== undefined ? vals[j] : '';
+    rows.push(row);
+  }
+  return rows;
+}
+
+function parseCSVLine(line) {
+  const result = [];
+  let cur = '', inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (inQ) {
+      if (c === '"' && line[i+1] === '"') { cur += '"'; i++; }
+      else if (c === '"') { inQ = false; }
+      else { cur += c; }
+    } else {
+      if (c === '"') { inQ = true; }
+      else if (c === ',') { result.push(cur); cur = ''; }
+      else { cur += c; }
+    }
+  }
+  result.push(cur);
+  return result;
+}
+
+function normalizeRecord(row) {
+  return {
+    condition: row.condition || 'unknown',
+    seed: parseInt(row.seed || row.game_id || 0),
+    turn: parseInt(row.turn || 0),
+    event: row.event || row.current_event || 'none',
+    state_before: safeJSON(row.state_before, {}),
+    state_after: safeJSON(row.state_after, {}),
+    discussion_transcript: safeJSON(row.discussion_transcript, []),
+    alpha_vote: row.alpha_vote || '',
+    beta_vote: row.beta_vote || '',
+    group_action: row.group_action || row.action || '',
+    group_action_label: row.group_action_label || row.action_label || '',
+    group_reason: row.group_reason || '',
+    decision_rule: row.decision_rule || '',
+    best_action: row.best_action || '',
+    acceptable_actions: row.acceptable_actions || '',
+    regret: parseFloat(row.regret || 0),
+    q_values: safeJSON(row.q_values, {}),
+    outcome: row.outcome || 'running',
+    terminal_score: parseFloat(row.terminal_score || 0),
+    alpha_persona: row.alpha_persona || '',
+    beta_persona: row.beta_persona || '',
+    alpha_role_key: row.alpha_role_key || '',
+    beta_role_key: row.beta_role_key || '',
+    alpha_vote_thinking: row.alpha_vote_thinking || '',
+    beta_vote_thinking: row.beta_vote_thinking || '',
+    discussion_turns: parseInt(row.discussion_turns || 0),
+    individual_actions: row.individual_actions || '',
+  };
+}
+
+function parseSummaryCSV(text) {
+  const rows = parseCSV(text);
+  return rows;
+}
+
+async function fetchRuns() {
+  const resp = await fetch(apiBase() + '/api/runs?t=' + Date.now(), { cache: 'no-store' });
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  return await resp.json();
+}
+
+async function fetchRunFile(runId, filename) {
+  const resp = await fetch(apiBase() + '/api/runs/' + encodeURIComponent(runId) + '/file/' + encodeURIComponent(filename) + '?t=' + Date.now(), { cache: 'no-store' });
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  return await resp.text();
+}
+
+async function init() {
+  const empty = document.getElementById('emptyState');
+  const viz = document.getElementById('vizContent');
+  empty.style.display = 'block';
+  viz.style.display = 'none';
+  empty.innerHTML = '<div class="spinner"></div><h3>読み込み中...</h3><p>ローカルrunディレクトリをスキャンしています。</p>';
+  try {
+    runs = await fetchRuns();
+    renderRunSelect();
+    if (runs.length === 0) {
+      empty.innerHTML = '<h3>runが見つかりません</h3><p>hivc_sim/results/turn_game/downloads/ 以下にCSVが含まれるrunディレクトリがありません。</p>';
+      return;
+    }
+    empty.style.display = 'none';
+    viz.style.display = 'block';
+    loadCurrentRunFile();
+  } catch (e) {
+    empty.innerHTML = '<h3>エラー</h3><p>run一覧の取得に失敗しました。</p><p class="error-detail">' + escapeHTML(e.message) + '</p>';
+  }
+}
+
+function renderRunSelect() {
+  const sel = document.getElementById('runSelect');
+  sel.innerHTML = '';
+  for (const r of runs) {
+    const opt = document.createElement('option');
+    opt.value = r.run_id;
+    const date = r.acquired_at ? ' (' + r.acquired_at.slice(0,19).replace('T',' ') + ')' : '';
+    opt.textContent = r.run_id + date;
+    sel.appendChild(opt);
+  }
+  const saved = localStorage.getItem('preview_lastRun');
+  if (saved && runs.some(r => r.run_id === saved)) sel.value = saved;
+  sel.onchange = () => { currentRun = sel.value; localStorage.setItem('preview_lastRun', currentRun); loadCurrentRunFile(); };
+  currentRun = sel.value;
+}
+
+async function loadCurrentRunFile() {
+  if (!currentRun) return;
+  const run = runs.find(r => r.run_id === currentRun);
+  if (!run) return;
+
+  const fileSelect = document.getElementById('fileSelect');
+  fileSelect.innerHTML = '';
+  const csvFiles = run.files.filter(f => f.endsWith('.csv')).sort();
+  const allGames = csvFiles.find(f => f === 'all_games.csv');
+  const condFiles = csvFiles.filter(f => f.endsWith('_games.csv'));
+  let displayFiles = [];
+  if (allGames) displayFiles.push(allGames);
+  displayFiles = displayFiles.concat(condFiles.filter(f => f !== allGames));
+  if (displayFiles.length === 0 && csvFiles.length > 0) displayFiles = csvFiles;
+
+  for (const f of displayFiles) {
+    const opt = document.createElement('option');
+    opt.value = f;
+    opt.textContent = f;
+    fileSelect.appendChild(opt);
+  }
+
+  const saved = localStorage.getItem('preview_lastFile_' + currentRun);
+  if (saved && displayFiles.includes(saved)) fileSelect.value = saved;
+  fileSelect.onchange = () => { loadCSV(fileSelect.value); };
+
+  await loadCSV(fileSelect.value);
+
+  try {
+    const summaryText = await fetchRunFile(currentRun, 'summary.csv');
+    summaryData = parseSummaryCSV(summaryText);
+    renderSummary();
+  } catch (e) {
+    document.getElementById('summaryArea').innerHTML = '<p style="color:var(--muted)">summary.csv を読み込めませんでした。</p>';
+  }
+}
+
+async function loadCSV(filename) {
+  if (!currentRun || !filename) return;
+  localStorage.setItem('preview_lastFile_' + currentRun, filename);
+  currentFileName = filename;
+  const text = await fetchRunFile(currentRun, filename);
+  const records = parseCSV(text).map(normalizeRecord);
+  document.getElementById('fileMeta').textContent = filename + ' (' + records.length + ' rows)';
+  loadRecords(records);
+}
+
+function renderSummary() {
+  const area = document.getElementById('summaryArea');
+  if (!summaryData.length) { area.innerHTML = ''; return; }
+  const keys = Object.keys(summaryData[0]).filter(k => k !== 'condition');
+  let html = '<table class="summary-table"><thead><tr><th>condition</th>';
+  for (const k of keys) html += '<th>' + escapeHTML(k) + '</th>';
+  html += '</tr></thead><tbody>';
+  for (const row of summaryData) {
+    html += '<tr><td>' + escapeHTML(row.condition || '') + '</td>';
+    for (const k of keys) {
+      const v = row[k];
+      let num = parseFloat(v);
+      let display = v;
+      if (!isNaN(num) && isFinite(num)) display = num.toFixed(4);
+      html += '<td>' + escapeHTML(String(display)) + '</td>';
+    }
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  area.innerHTML = html;
+}
+
+function reindexRecords() {
+  byCondition = {};
+  byGame = {};
+  for (const r of allRecords) {
+    if (!byCondition[r.condition]) byCondition[r.condition] = [];
+    byCondition[r.condition].push(r);
+    const gk = r.condition + '|' + r.seed;
+    if (!byGame[gk]) byGame[gk] = [];
+    byGame[gk].push(r);
+  }
+  for (const gk in byGame) byGame[gk].sort((a, b) => a.turn - b.turn);
+}
+
+function loadRecords(records) {
+  allRecords = records;
+  reindexRecords();
+  stopPlay();
+  const conds = Object.keys(byCondition).sort();
+  if (conds.length === 0) {
+    showEmpty('データなし', 'ファイルに有効なレコードが含まれていません。');
+    return;
+  }
+  currentCondition = conds[0];
+  const gameKeys = Object.keys(byGame).filter(k => k.startsWith(currentCondition + '|')).sort((a, b) => {
+    return parseInt(a.split('|')[1]) - parseInt(b.split('|')[1]);
+  });
+  currentGameKey = gameKeys[0];
+  currentTurnIdx = 0;
+  hideEmpty();
+  renderCondBar();
+  renderGameSelect();
+  render();
+}
+
+function showEmpty(title, msg) {
+  const empty = document.getElementById('emptyState');
+  const viz = document.getElementById('vizContent');
+  empty.style.display = 'block';
+  viz.style.display = 'none';
+  empty.innerHTML = '<h3>' + escapeHTML(title) + '</h3><p>' + escapeHTML(msg) + '</p>';
+}
+
+function hideEmpty() {
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('vizContent').style.display = 'block';
+}
+
+function renderCondBar() {
+  const bar = document.getElementById('condBar');
+  bar.innerHTML = '';
+  const conds = Object.keys(byCondition).sort();
+  for (const c of conds) {
+    const tab = document.createElement('div');
+    tab.className = 'cond-tab' + (c === currentCondition ? ' active' : '');
+    tab.textContent = c;
+    tab.onclick = () => {
+      currentCondition = c;
+      const gks = Object.keys(byGame).filter(k => k.startsWith(c + '|')).sort((a, b) => parseInt(a.split('|')[1]) - parseInt(b.split('|')[1]));
+      currentGameKey = gks[0];
+      currentTurnIdx = 0;
+      renderCondBar();
+      renderGameSelect();
+      render();
+    };
+    bar.appendChild(tab);
+  }
+}
+
+function renderGameSelect() {
+  const sel = document.getElementById('gameSelect');
+  sel.innerHTML = '';
+  const gks = Object.keys(byGame).filter(k => k.startsWith(currentCondition + '|')).sort((a, b) => parseInt(a.split('|')[1]) - parseInt(b.split('|')[1]));
+  for (const gk of gks) {
+    const seed = gk.split('|')[1];
+    const opt = document.createElement('option');
+    opt.value = gk;
+    opt.textContent = 'seed=' + seed;
+    sel.appendChild(opt);
+  }
+  sel.value = currentGameKey;
+  sel.onchange = () => { currentGameKey = sel.value; currentTurnIdx = 0; render(); };
+}
+
+function getCurrentGame() { return byGame[currentGameKey] || []; }
+
+function renderBubble(m, isNew) {
+  const initial = m.speaker === 'alpha' ? 'α' : 'β';
+  const ready = m.ready === 'true' || m.ready === true;
+  const readyDot = m.ready !== undefined ? `<span class="ready-dot ${ready}" title="${ready ? '合意準備OK' : 'まだ合意不可'}"></span>` : '';
+  const thinking = m.thinking || '';
+  const thinkingBlock = thinking ? `<div class="thinking-block"><div class="thinking-toggle" onclick="toggleThinking(this)"><span class="arrow">▶</span> 思考プロセス (${thinking.length}文字)</div><div class="thinking-content">${escapeHTML(thinking)}</div></div>` : '';
+  const speechAct = m.speech_act || '';
+  const act = m.action || '';
+  return `<div class="msg ${m.speaker}${isNew ? ' new' : ''}"><div class="avatar ${m.speaker}">${initial}</div><div class="bubble"><div class="speaker">${m.speaker} ${readyDot}<span class="action-tag">${act} ${ACTION_NAMES[act] || ''} ${speechAct ? '[' + speechAct + ']' : ''}</span></div><div class="message">${escapeHTML(m.message || '')}</div><div class="reason">${escapeHTML(m.reason || '')}</div>${thinkingBlock}</div></div>`;
+}
+
+function toggleThinking(el) {
+  const content = el.nextElementSibling;
+  el.classList.toggle('open');
+  content.classList.toggle('show');
+}
+
+function renderThinkingToggle(text) {
+  return `<div class="thinking-block"><div class="thinking-toggle" onclick="toggleThinking(this)"><span class="arrow">▶</span> 思考を表示 (${text.length}文字)</div><div class="thinking-content">${escapeHTML(text)}</div></div>`;
+}
+
+const OUTCOME_SHORT = { win: '勝利', loss_oxygen: '敗北（酸素）', loss_power: '敗北（電力）', loss_hull: '敗北（船体）', loss_flooding: '敗北（浸水）', survived_timeout: '生存（時間切れ）' };
+
+function render() {
+  const game = getCurrentGame();
+  if (game.length === 0) return;
+  const r = game[currentTurnIdx];
+  if (!r) return;
+
+  const evArea = document.getElementById('eventArea');
+  const isEvent = r.event && r.event !== 'none';
+  evArea.innerHTML = `<span class="event-badge ${isEvent ? 'event-active' : 'event-none'}">${EVENT_NAMES[r.event] || r.event}</span>`;
+
+  const st = r.state_before;
+  const bars = [
+    { key: 'oxygen', label: '酸素', val: st.oxygen, max: 12, danger: 'low' },
+    { key: 'power', label: '電力', val: st.power, max: 12, danger: 'low' },
+    { key: 'hull_damage', label: '船体損傷', val: st.hull_damage, max: 6, danger: 'high' },
+    { key: 'flooding', label: '浸水', val: st.flooding, max: 6, danger: 'high' },
+    { key: 'communication', label: '通信', val: st.communication, max: 4, danger: 'low', goodHigh: true },
+    { key: 'morale', label: '士気', val: st.morale, max: 100, danger: 'low', goodHigh: true },
+  ];
+  const stateBars = document.getElementById('stateBars');
+  stateBars.innerHTML = bars.map(b => {
+    const pct = Math.max(0, Math.min(100, (b.val / b.max) * 100));
+    let cls = 'good';
+    if (b.danger === 'low') {
+      if (b.goodHigh) cls = pct > 60 ? 'good' : pct > 30 ? 'warn' : 'bad';
+      else cls = pct > 50 ? 'good' : pct > 25 ? 'warn' : 'bad';
+    } else {
+      if (b.goodHigh) cls = pct < 40 ? 'good' : pct < 70 ? 'warn' : 'bad';
+      else cls = pct < 30 ? 'good' : pct < 60 ? 'warn' : 'bad';
+    }
+    return `<div class="resource"><div class="label"><span>${b.label}</span><span class="val">${b.val}</span></div><div class="bar"><div class="fill ${cls}" style="width:${pct}%"></div></div></div>`;
+  }).join('');
+
+  const outText = { win: '勝利', loss_oxygen: '敗北（酸素）', loss_power: '敗北（電力）', loss_hull: '敗北（船体）', loss_flooding: '敗北（浸水）', survived_timeout: '生存（時間切れ）', running: '進行中' };
+  const outcome = r.outcome;
+  const outCls = outcome === 'win' ? 'win' : outcome.startsWith('loss') ? 'loss' : 'running';
+  document.getElementById('outcomeArea').innerHTML = `<div class="outcome ${outCls}">${outText[outcome] || outcome}</div>`;
+
+  document.getElementById('personaArea').innerHTML = `
+    <div class="persona-info"><strong style="color:var(--alpha)">α ${r.alpha_role_key || 'alpha'}</strong>: ${escapeHTML(r.alpha_persona || '')}</div>
+    <div class="persona-info"><strong style="color:var(--beta)">β ${r.beta_role_key || 'beta'}</strong>: ${escapeHTML(r.beta_persona || '')}</div>`;
+
+  const evalArea = document.getElementById('evalArea');
+  const qvals = r.q_values;
+  const qEntries = Object.entries(qvals).sort((a, b) => b[1] - a[1]);
+  const qMax = Math.max(...qEntries.map(e => Math.abs(e[1])), 1);
+  const regretPct = Math.min(100, Math.abs(r.regret) / 5);
+  const regretCls = r.regret < 25 ? 'good' : r.regret < 100 ? 'warn' : 'bad';
+  const accSet = new Set(String(r.acceptable_actions).split(',').map(s => s.trim()).filter(Boolean));
+  const isBest = accSet.has(r.group_action);
+  evalArea.innerHTML = `
+    <div class="eval-row"><span class="key">最適行動</span><span class="val" style="color:var(--good)">${r.best_action} ${ACTION_NAMES[r.best_action] || ''}</span></div>
+    <div class="eval-row"><span class="key">許容行動</span><span class="val">${escapeHTML(r.acceptable_actions)}</span></div>
+    <div class="eval-row"><span class="key">合意一致</span><span class="val" style="color:${isBest ? 'var(--good)' : 'var(--bad)'}">${isBest ? '許容' : '乖離'}</span></div>
+    <div class="eval-row"><span class="key">regret</span><span class="val" style="color:var(--${regretCls})">${r.regret.toFixed(1)}</span></div>
+    <div class="regret-gauge"><div class="fill" style="width:${regretPct}%"></div></div>
+    <div style="margin-top:10px;"><div style="font-size:11px;color:var(--muted);margin-bottom:6px;">Q値</div>
+    ${qEntries.map(([a, v]) => {
+      const pct = Math.max(2, (Math.abs(v) / qMax) * 100);
+      const isBestQ = a === r.best_action;
+      return `<div class="qbar"><span class="qlabel" style="color:${isBestQ ? 'var(--good)' : 'var(--text)'}">${a}</span><div class="qtrack"><div class="qfill" style="width:${pct}%;background:${isBestQ ? 'var(--good)' : 'var(--accent)'}"></div></div><span class="qval">${v.toFixed(0)}</span></div>`;
+    }).join('')}
+    </div>
+    <div class="eval-row" style="margin-top:8px;"><span class="key">終端スコア</span><span class="val">${r.terminal_score.toFixed(0)}</span></div>
+  `;
+
+  const chatArea = document.getElementById('chatArea');
+  let chatHTML = '';
+  const upto = Math.min(currentTurnIdx, game.length - 1);
+  for (let t = 0; t <= upto; t++) {
+    const tr = game[t];
+    const isActive = (t === upto);
+    const ev = tr.event && tr.event !== 'none' ? `<span class="ev">${EVENT_NAMES[tr.event] || tr.event}</span>` : '';
+    const actLabel = tr.group_action ? `採用 ${tr.group_action}${ACTION_NAMES[tr.group_action] ? ' ' + ACTION_NAMES[tr.group_action] : ''}` : '';
+    chatHTML += `<div class="turn-sep${isActive ? ' active' : ''}"><span class="tn">ターン ${tr.turn}</span>${ev}<span class="act">${actLabel}</span></div>`;
+    const transcript = tr.discussion_transcript || [];
+    if (transcript.length === 0) {
+      chatHTML += '<div style="text-align:center;color:var(--muted);padding:6px;font-size:12px;">議論なし</div>';
+    } else {
+      chatHTML += transcript.map(m => renderBubble(m, isActive)).join('');
+    }
+    if (tr.outcome && tr.outcome !== 'running') {
+      chatHTML += `<div class="turn-result">— ${OUTCOME_SHORT[tr.outcome] || tr.outcome} —</div>`;
+    }
+  }
+  chatArea.innerHTML = chatHTML || '<div style="text-align:center;color:var(--muted);padding:20px;">議論なし</div>';
+  const activeSep = chatArea.querySelector('.turn-sep.active');
+  if (activeSep) chatArea.scrollTop = Math.max(0, activeSep.offsetTop - 8);
+  else chatArea.scrollTop = chatArea.scrollHeight;
+
+  document.getElementById('voteGrid').innerHTML = `
+    <div class="vote-cell alpha"><div class="who">α の票</div><div class="act">${r.alpha_vote || '-'}</div></div>
+    <div class="vote-cell group"><div class="who">グループ行動</div><div class="act">${r.group_action || '-'}</div></div>
+    <div class="vote-cell beta"><div class="who">β の票</div><div class="act">${r.beta_vote || '-'}</div></div>
+  `;
+  document.getElementById('decisionRule').textContent = '判定ルール: ' + r.decision_rule;
+  document.getElementById('groupReason').innerHTML = '<strong>グループ理由:</strong> ' + escapeHTML(r.group_reason || '');
+
+  const voteThinking = document.getElementById('voteThinking');
+  const aThink = r.alpha_vote_thinking || '';
+  const bThink = r.beta_vote_thinking || '';
+  if (aThink || bThink) {
+    let vtHTML = '<div class="vt-title">最終投票時の思考プロセス</div>';
+    if (aThink) vtHTML += `<div class="vt-row"><div class="vt-label alpha">α の思考</div>${renderThinkingToggle(aThink)}</div>`;
+    if (bThink) vtHTML += `<div class="vt-row"><div class="vt-label beta">β の思考</div>${renderThinkingToggle(bThink)}</div>`;
+    voteThinking.innerHTML = vtHTML;
+    voteThinking.style.display = 'block';
+  } else {
+    voteThinking.innerHTML = '';
+    voteThinking.style.display = 'none';
+  }
+
+  renderTimeline();
+  document.getElementById('turnLabel').textContent = `ターン ${r.turn} / ${game.length - 1}`;
+}
+
+function renderTimeline() {
+  const game = getCurrentGame();
+  const tl = document.getElementById('timeline');
+  tl.innerHTML = '';
+  for (let i = 0; i < game.length; i++) {
+    const r = game[i];
+    const dot = document.createElement('div');
+    let cls = 'turn-dot';
+    if (i === currentTurnIdx) cls += ' active';
+    if (r.outcome === 'win') cls += ' win';
+    if (r.outcome && r.outcome.startsWith('loss')) cls += ' loss';
+    dot.className = cls;
+    dot.textContent = r.turn;
+    dot.title = `Turn ${r.turn}: ${r.outcome}, regret=${r.regret}`;
+    dot.onclick = () => { currentTurnIdx = i; render(); };
+    tl.appendChild(dot);
+  }
+}
+
+function nextTurn() {
+  const game = getCurrentGame();
+  if (currentTurnIdx < game.length - 1) { currentTurnIdx++; render(); }
+  else { stopPlay(); }
+}
+function prevTurn() { if (currentTurnIdx > 0) { currentTurnIdx--; render(); } }
+function togglePlay() {
+  if (playTimer) { stopPlay(); }
+  else {
+    const game = getCurrentGame();
+    if (currentTurnIdx >= game.length - 1) currentTurnIdx = 0;
+    document.getElementById('btnPlay').textContent = '停止';
+    playTimer = setInterval(() => {
+      const g = getCurrentGame();
+      if (currentTurnIdx >= g.length - 1) { stopPlay(); return; }
+      nextTurn();
+    }, 1500);
+  }
+}
+function stopPlay() {
+  if (playTimer) { clearInterval(playTimer); playTimer = null; }
+  document.getElementById('btnPlay').textContent = '自動再生';
+}
+
+document.getElementById('btnRefresh').onclick = init;
+document.getElementById('btnPrev').onclick = prevTurn;
+document.getElementById('btnNext').onclick = nextTurn;
+document.getElementById('btnPlay').onclick = togglePlay;
+
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (e.key === 'ArrowLeft') prevTurn();
+  if (e.key === 'ArrowRight') nextTurn();
+  if (e.key === ' ') { e.preventDefault(); togglePlay(); }
+});
+
+init();
+</script>
+</body>
+</html>

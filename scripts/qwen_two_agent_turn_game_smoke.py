@@ -72,15 +72,20 @@ DEFAULT_PERSONA_PARAMS: dict[str, dict[str, object]] = {
 
 
 def format_state(state) -> str:
+    rescue = "未送信" if state.rescue_eta is None else f"救助到着まであと{state.rescue_eta}ターン"
     return "\n".join(
         [
             f"turn: {state.turn}",
+            f"scenario: {state.scenario_id}",
             f"event: {EVENT_LABELS[state.current_event]} ({state.current_event.value})",
             f"oxygen: {state.oxygen}",
             f"power: {state.power}",
             f"hull_damage: {state.hull_damage}",
             f"flooding: {state.flooding}",
             f"communication: {state.communication}",
+            f"pod_readiness: {state.pod_readiness}",
+            f"pod_integrity: {state.pod_integrity}",
+            f"rescue_eta: {rescue}",
             f"morale: {state.morale}",
         ]
     )
@@ -105,7 +110,7 @@ def extract_json_action(response: str) -> tuple[Action | None, str, str, bool]:
         except json.JSONDecodeError:
             pass
 
-    letter_match = re.search(r"\b([ABCD])\b", text.upper())
+    letter_match = re.search(r"\b([ABCDEF])\b", text.upper())
     if letter_match:
         return Action(letter_match.group(1)), text[:160], text[:160], False
     return None, text[:160], text[:160], False
@@ -187,13 +192,15 @@ def discussion_prompt(
 {format_persona(agent_name, persona, persona_params)}
 
 勝利条件:
-- communication >= 3
+- 通信救助: communication >= 3 となり、救助到着（rescue_eta=0）まで生存する
+- 自力脱出: 行動 F で pod_readiness >= 2, pod_integrity >= 2, oxygen >= 3, power >= 2, flooding <= 3
 
 敗北条件:
 - oxygen <= 0
 - power <= 0
 - hull_damage >= 5
 - flooding >= 5
+- 行動 F を未達条件で実行すると重大損傷または敗北
 
 現在状態:
 {format_state(state)}
@@ -231,6 +238,17 @@ def forced_vote_prompt(
 あなたのペルソナ設定:
 {format_persona(agent_name, persona, persona_params)}
 
+勝利条件:
+- 通信救助: communication >= 3 となり、救助到着（rescue_eta=0）まで生存する
+- 自力脱出: 行動 F で pod_readiness >= 2, pod_integrity >= 2, oxygen >= 3, power >= 2, flooding <= 3
+
+敗北条件:
+- oxygen <= 0
+- power <= 0
+- hull_damage >= 5
+- flooding >= 5
+- 行動 F を未達条件で実行すると重大損傷または敗北
+
 現在状態:
 {format_state(state)}
 
@@ -265,10 +283,15 @@ def find_discussion_consensus(transcript: list[dict[str, str]]) -> Action | None
     return None
 
 
-def decide_group_action(turn: int, alpha_vote: Action, beta_vote: Action) -> tuple[Action, str]:
+def priority_agent(seed: int, turn: int) -> str:
+    return "alpha" if (seed + turn) % 2 == 0 else "beta"
+
+
+def decide_group_action(seed: int, turn: int, alpha_vote: Action, beta_vote: Action) -> tuple[Action, str]:
     if alpha_vote == beta_vote:
         return alpha_vote, "forced_vote_agreement"
-    if turn % 2 == 0:
+    priority = priority_agent(seed, turn)
+    if priority == "alpha":
         return alpha_vote, "split_vote_alpha_priority"
     return beta_vote, "split_vote_beta_priority"
 
@@ -551,7 +574,7 @@ def main() -> None:
                 fallback,
                 enable_thinking=cfg["enable_thinking"],
             )
-            group_action, decision_rule = decide_group_action(state.turn, alpha_vote, beta_vote)
+            group_action, decision_rule = decide_group_action(cfg["seed"], state.turn, alpha_vote, beta_vote)
 
         result = step(state, group_action, rng)
         regret = q_values[optimal] - q_values[group_action]
@@ -593,6 +616,8 @@ def main() -> None:
             "state_after": json.dumps(result.state_after.as_dict(), ensure_ascii=False, sort_keys=True),
             "outcome": result.outcome,
             "terminal_score": terminal_score(result.state_after),
+            "scenario_id": state.scenario_id,
+            "premature": result.premature,
         }
         rows.append(row)
         print(

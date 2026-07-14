@@ -15,6 +15,9 @@ venv/
 
 # GPU server SSH config (contains private key path)
 configs/gpu_server.yaml
+.hivc-workflow.json
+hivc_sim/results/turn_game/downloads/
+hivc_sim/results/turn_game/experiment/runs/
 
 # LaTeX build artifacts
 *.aux

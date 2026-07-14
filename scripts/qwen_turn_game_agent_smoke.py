@@ -30,15 +30,20 @@ from turn_game import (  # noqa: E402
 
 
 def format_state(state) -> str:
+    rescue = "未送信" if state.rescue_eta is None else f"救助到着まであと{state.rescue_eta}ターン"
     return "\n".join(
         [
             f"turn: {state.turn}",
+            f"scenario: {state.scenario_id}",
             f"event: {EVENT_LABELS[state.current_event]} ({state.current_event.value})",
             f"oxygen: {state.oxygen}",
             f"power: {state.power}",
             f"hull_damage: {state.hull_damage}",
             f"flooding: {state.flooding}",
             f"communication: {state.communication}",
+            f"pod_readiness: {state.pod_readiness}",
+            f"pod_integrity: {state.pod_integrity}",
+            f"rescue_eta: {rescue}",
             f"morale: {state.morale}",
         ]
     )
@@ -47,16 +52,17 @@ def format_state(state) -> str:
 def build_prompt(state) -> str:
     actions = "\n".join([f"{action.value}. {ACTION_LABELS[action]}" for action in ALL_ACTIONS])
     return f"""あなたは深海研究施設トラブルの意思決定エージェントです。
-目的は、施設が壊滅する前に通信を復旧して救助要請することです。
 
 勝利条件:
-- communication >= 3
+- 通信救助: communication >= 3 となり、救助到着（rescue_eta=0）まで生存する
+- 自力脱出: 行動 F で pod_readiness >= 2, pod_integrity >= 2, oxygen >= 3, power >= 2, flooding <= 3
 
 敗北条件:
 - oxygen <= 0
 - power <= 0
 - hull_damage >= 5
 - flooding >= 5
+- 行動 F を未達条件で実行すると重大損傷または敗北
 
 現在状態:
 {format_state(state)}
@@ -83,7 +89,7 @@ def extract_action(response: str) -> tuple[Action | None, str]:
         except json.JSONDecodeError:
             pass
 
-    letter_match = re.search(r"\b([ABCD])\b", text.upper())
+    letter_match = re.search(r"\b([ABCDEF])\b", text.upper())
     if letter_match:
         return Action(letter_match.group(1)), text
     return None, text
@@ -202,6 +208,8 @@ def main() -> None:
             "state_after": json.dumps(result.state_after.as_dict(), ensure_ascii=False, sort_keys=True),
             "outcome": result.outcome,
             "terminal_score": terminal_score(result.state_after),
+            "scenario_id": state.scenario_id,
+            "premature": result.premature,
         }
         rows.append(row)
         print(

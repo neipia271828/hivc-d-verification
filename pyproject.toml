@@ -1,0 +1,22 @@
+[project]
+name = "hivc-d-verification"
+version = "0.1.0"
+description = "HIVC-D GPU experiment workflow commands"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+sync = "scripts.workflow_cli:sync_main"
+experiment = "scripts.workflow_cli:experiment_main"
+download = "scripts.workflow_cli:download_main"
+visualize = "scripts.workflow_cli:visualize_main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["scripts"]
+
+[tool.setuptools.package-data]
+scripts = ["local_preview.html"]

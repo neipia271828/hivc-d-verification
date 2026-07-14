@@ -140,7 +140,7 @@ max_discussion_turns: 6
 discussion_token_budget: 768
 evaluator_rollouts: 24
 output_dir: hivc_sim/results/turn_game/experiment
-live_jsonl: null              # ライブ可視化用JSONLパス
+live_jsonl: null              # ライブ可視化は無効（ローカルCSVプレビューを使用）
 role_file: role.json          # ペルソナ指定
 alpha_role_key: null          # role.json内の任意キー
 beta_role_key: null
@@ -224,96 +224,115 @@ python3 scripts/qwen_two_agent_experiment.py --config configs/experiment.yaml --
 
 Q 値・best_action・acceptable_actions は議論中のエージェントには見せず、行動後の評価にのみ使う（REQUIREMENTS §7.1）。
 
-### エージェント対話のグラフィカル可視化
+### エージェント対話のグラフィカル可視化（ローカルオフライン）
 
-`scripts/visualize_game.html` はブラウザでエージェント間の議論・投票・合意・状態遷移を可視化する。2つのモードがある。
+実験結果は `scripts/download_gpu_logs.py` でローカルMacに取得し、`scripts/local_preview.py` でブラウザから可視化する。GPUサーバー上のngrokやライブサーバーは不要で、取得後はネットワークを切断しても閲覧できる。
 
-**再生モード（CSVログから）**: ブラウザで `visualize_game.html` を開き、「CSVを読み込む」またはドラッグ＆ドロップで `all_games.csv` / `{condition}_games.csv` を選択する。条件タブ・ゲーム選択・タイムラインで任意のターンにジャンプでき、自動再生も可能。
+#### uv統合CLI（推奨）
 
-**ライブモード（実験中リアルタイム）**: 実験スクリプトを `--live-jsonl` 付きで起動し、別途 `live_server.py` を立ててブラウザからポーリングする。
-
-### リモートGPUサーバーから1コマンドで実験+可視化（推奨）
-
-`scripts/gpu_run.py` は、このMacから1コマンドでGPUサーバー上の実験を起動し、ngrok経由でライブ可視化を自動開始する。
+実験フローはリポジトリルートから次の4コマンドで実行できる。
 
 ```bash
-# フル自動: 実験起動 + サーバー起動 + ブラウザ自動オープン
+# 1. 変更をstage・commit・pushし、GPU側でgit pull
+uv run sync
+
+# 2. GPUで hivc_d 条件を1ゲーム実行（run ID・ログ・PIDを自動管理）
+uv run experiment
+
+# 3. 直前に開始した完了済みrunをMacへ取得
+uv run download
+
+# 4. 127.0.0.1:8765でGUIを起動し、ブラウザを開く
+uv run visualize
+```
+
+`sync` は変更があれば `git add -A` とcommitを自動実行してからpushする。既定メッセージは `chore: sync experiment workflow` で、`--message "任意のメッセージ"` で変更できる。自動commitせず現在のHEADだけを同期する場合は `--allow-dirty` を指定する。GPU側に `.git` がない初回は、Macの `github-neipia` 鍵をSSH agent forwardingで一時利用してGit管理を復元する。秘密鍵はGPUへコピーせず、既存の `.venv` と実験結果も保持する。originが規定SSH URLと異なる、または同期後HEADが一致しない場合は安全のため停止する。
+
+`experiment` は既定で `--conditions hivc_d --games 1` としてバックグラウンド起動する。runごとの出力はGPU側の `hivc_sim/results/turn_game/experiment/runs/<run-id>/` に保存され、`run.log`、`pid`、`exit_code`、CSV、`stream.jsonl` をまとめて管理する。
+
+```bash
+# 任意条件・ゲーム数・seed
+uv run experiment --conditions control consulting hivc_d --games 30 --seed 42
+
+# 状態・ログ・停止
+uv run experiment --status
+uv run experiment --logs
+uv run experiment --stop
+
+# run ID指定、既存ローカルrunの上書き
+uv run download --run-id episode-20260714-120000 --overwrite
+
+# ポート変更、ブラウザ自動起動なし
+uv run visualize --port 8080 --no-open
+```
+
+```bash
+# 1. GPUサーバーで実験を完了させる
+python3 scripts/gpu_run.py
+
+# 2. 完了したログをローカルに取得
+python3 scripts/download_gpu_logs.py
+
+# 3. ローカルプレビューサーバーを起動
+python3 scripts/local_preview.py
+
+# 4. ブラウザで http://127.0.0.1:8765/ を開く
+```
+
+`download_gpu_logs.py` は `configs/gpu_server.yaml` のSSH接続情報を使い、GPUサーバー上の `output_dir` を `hivc_sim/results/turn_game/downloads/<run-id>/` へ `rsync` する。取得時に `manifest.json` を生成し、どのGPU実験から来たかを追跡できる。
+
+```bash
+# 既定の実験出力を取得
+python3 scripts/download_gpu_logs.py
+
+# run名を指定
+python3 scripts/download_gpu_logs.py --run-id 2026-07-13-run1
+
+# リモート出力ディレクトリを変更
+python3 scripts/download_gpu_logs.py --remote-output-dir hivc_sim/results/turn_game/experiment
+
+# ドライラン
+python3 scripts/download_gpu_logs.py --dry-run
+```
+
+`local_preview.py` は `127.0.0.1:8765` で待ち受け、以下を提供する:
+- run選択
+- 条件タブ（control / consulting / hivc_d）
+- ゲーム選択（seed）
+- ターン選択・自動再生
+- 施設状態パネル（酸素・電力・船体損傷・浸水・通信・士気）
+- イベントバッジ・勝敗結果
+- エージェント議論のチャットバブル（α・β、行動タグ・理由・ready状態）
+- 投票パネル（α票・グループ行動・β票・判定ルール・グループ理由）
+- 評価パネル（最適行動・許容行動・regretゲージ・Q値バー）
+- `summary.csv` の条件別集計
+
+### リモートGPUサーバーから実験を起動
+
+`scripts/gpu_run.py` は、このMacから1コマンドでGPUサーバー上の実験を起動する。
+
+```bash
+# デフォルトconfigで実験を起動
 python3 scripts/gpu_run.py
 
 # 実験configを指定
 python3 scripts/gpu_run.py --experiment-config configs/experiment.yaml
 
-# 実験のみ（可視化なし）
-python3 scripts/gpu_run.py --no-visualize
-
-# サーバーのみ（実験は別途手動起動済みを想定）
-python3 scripts/gpu_run.py --server-only
-
 # 実験ログを tail -f で表示
 python3 scripts/gpu_run.py --logs
 
-# GPUサーバーの状態確認（プロセス・GPU使用率・ngrok）
+# GPUサーバーの状態確認（プロセス・GPU使用率）
 python3 scripts/gpu_run.py --status
 
-# 実験とサーバーを停止
+# 実験を停止
 python3 scripts/gpu_run.py --stop
 ```
 
 事前準備:
 1. `configs/gpu_server.yaml` にSSH接続情報を設定（`.gitignore`で除外済み）
-2. GPUサーバーにngrokをインストール + `ngrok config add-authtoken`
-3. GPUサーバーにコードを配置（`rsync` または `git push/pull`）
+2. GPUサーバーにコードを配置（`git push/pull` または `rsync`）
 
-実行するとngrokの公開URLが表示され、ブラウザが自動で開く:
-
-```
-============================================================
-  Live visualizer ready!
-  Visualizer:  https://xxxx-xx-xx.ngrok-free.app/visualize
-  JSONL stream: https://xxxx-xx-xx.ngrok-free.app/stream.jsonl
-============================================================
-```
-
-### 手動でライブ可視化を起動する場合
-
-SSH接続してGPUサーバー上で直接起動する場合:
-
-```bash
-# ターミナル1: 実験を実行（JSONLストリームを追記）
-python3 scripts/qwen_two_agent_experiment.py \
-  --config configs/experiment.yaml \
-  --live-jsonl hivc_sim/results/turn_game/experiment/stream.jsonl
-
-# ターミナル2: ライブ配信サーバー（ローカルアクセス）
-python3 scripts/live_server.py \
-  --file hivc_sim/results/turn_game/experiment/stream.jsonl \
-  --port 8765
-
-# ブラウザで http://localhost:8765/visualize を開き「ライブモード」ボタン →
-# http://localhost:8765/stream.jsonl を指定
-```
-
-リモートGPUサーバーの場合は `--ngrok` オプションを追加:
-
-```bash
-python3 scripts/live_server.py --port 8765 --ngrok
-```
-
-または SSHポートフォワーディング（より安全）:
-
-```bash
-ssh -L 8765:localhost:8765 user@gpu-server
-# ローカルPCのブラウザで http://localhost:8765/visualize にアクセス
-```
-
-可視化内容:
-- 施設状態パネル（酸素・電力・船体損傷・浸水・通信・士気のバー、危険度色分け）
-- イベントバッジ・勝敗結果
-- エージェント議論のチャットバブル（α左・β右、行動タグ・理由・ready状態）
-- 投票パネル（α票・グループ行動・β票・判定ルール・グループ理由）
-- 評価パネル（最適行動・許容行動・regretゲージ・Q値バー）
-- ペルソナ情報
-- タイムライン（ターンごとのドット、勝敗色分け、クリックでジャンプ）
+実験が完了したら、上記の `download_gpu_logs.py` と `local_preview.py` でローカルに確認する。
 
 ペルソナJSONは自然文だけでなく、以下のような構造化パラメータでも指定できる。
 
