@@ -1,5 +1,9 @@
 # 2026-07-15
 
+- GPU並列実験 orchestrator の最終検証
+  - `python3 -m py_compile scripts/qwen_parallel_experiment.py` で構文を確認
+  - `pytest hivc_sim/tests -q` が 75 tests passed
+
 - P1/P2 修正（質問閉包の追加修正・その4）
   - `scripts/llm_turn_game_common.py`:
     - 回答すべき未回答質問がある場合に `reply_to_message_id` を省略した発言を自動補完しない
