@@ -1,0 +1,233 @@
+from __future__ import annotations
+
+import json
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from scripts import qwen_parallel_experiment as qp
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_compute_shards_even_split_two_gpus() -> None:
+    shards = qp.compute_shards(["control"], seed=42, games=30, gpu_ids=[0, 1], workers_per_gpu=1)
+    assert len(shards) == 2
+    assert shards[0].gpu_id == 0
+    assert shards[0].seed_start == 42
+    assert shards[0].seed_count == 15
+    assert shards[0].shard_id == "control-gpu0-seed42-56"
+    assert shards[1].gpu_id == 1
+    assert shards[1].seed_start == 57
+    assert shards[1].seed_count == 15
+    assert shards[1].shard_id == "control-gpu1-seed57-71"
+
+
+def test_compute_shards_three_conditions_share_same_split() -> None:
+    shards = qp.compute_shards(["control", "consulting", "hivc_d"], seed=42, games=30, gpu_ids=[0, 1], workers_per_gpu=1)
+    assert len(shards) == 6
+    for cond in ("control", "consulting", "hivc_d"):
+        cond_shards = [s for s in shards if s.condition == cond]
+        assert len(cond_shards) == 2
+        assert cond_shards[0].seed_start == 42
+        assert cond_shards[1].seed_start == 57
+
+
+def test_compute_shards_uneven_one_game_no_empty_shard() -> None:
+    shards = qp.compute_shards(["control"], seed=42, games=1, gpu_ids=[0, 1], workers_per_gpu=1)
+    assert len(shards) == 1
+    assert shards[0].gpu_id == 0
+    assert shards[0].seed_count == 1
+
+
+def test_compute_shards_workers_per_gpu_two() -> None:
+    shards = qp.compute_shards(["control"], seed=42, games=4, gpu_ids=[0, 1], workers_per_gpu=2)
+    assert len(shards) == 4
+    assert [s.gpu_id for s in shards] == [0, 0, 1, 1]
+    assert [s.seed_start for s in shards] == [42, 43, 44, 45]
+
+
+def _make_row(condition: str, seed: int, turn: int) -> dict[str, str]:
+    return {
+        "condition": condition,
+        "seed": str(seed),
+        "turn": str(turn),
+        "scenario_id": "test",
+        "event": "none",
+        "alpha_role_key": "a",
+        "beta_role_key": "b",
+        "alpha_persona": "p",
+        "beta_persona": "p",
+        "alpha_persona_params": "{}",
+        "beta_persona_params": "{}",
+        "state_before": "{}",
+        "individual_actions": "A,A",
+        "individual_reasons": '{"alpha": "", "beta": ""}',
+        "discussion_turns": "0",
+        "discussion_token_budget_used": "0",
+        "discussion_transcript": "[]",
+        "alpha_vote": "A",
+        "alpha_vote_reason": "",
+        "alpha_vote_message": "",
+        "alpha_vote_ready": "true",
+        "alpha_vote_raw": "",
+        "alpha_vote_thinking": "",
+        "beta_vote": "A",
+        "beta_vote_reason": "",
+        "beta_vote_message": "",
+        "beta_vote_ready": "true",
+        "beta_vote_raw": "",
+        "beta_vote_thinking": "",
+        "group_action": "A",
+        "group_action_label": "A",
+        "group_reason": "",
+        "decision_rule": "consensus",
+        "best_action": "A",
+        "acceptable_actions": "A",
+        "regret": "0.0",
+        "q_values": "{}",
+        "state_after": "{}",
+        "outcome": "win",
+        "terminal_score": "0.0",
+        "decision_opportunity_count": "1",
+        "decision_attempts": "1",
+        "decision_attempt_index": "1",
+        "free_discussion_message_count": "0",
+        "decision_history": "[]",
+        "fallback_used": "false",
+        "fallback_priority_agent": "",
+        "planned_route": "comms",
+        "optimal_route": "comms",
+        "route_switch": "false",
+        "premature": "false",
+        "role_specific_evidence": "{}",
+        "alpha_evidence": "",
+        "beta_evidence": "",
+        "unanswered_question_count": "0",
+        "question_response_latency": "nan",
+        "forced_decision_with_open_question": "false",
+        "forced_decision_reason": "",
+    }
+
+
+def test_merge_results_generates_master_csvs_and_report(tmp_path: Path) -> None:
+    master_dir = tmp_path / "run1"
+    master_dir.mkdir()
+    shards_dir = master_dir / "shards"
+    shards_dir.mkdir()
+
+    shard = qp.compute_shards(["control"], seed=42, games=1, gpu_ids=[0], workers_per_gpu=1)[0]
+    shard.shard_dir = shards_dir / shard.shard_id
+    shard.shard_dir.mkdir()
+    shard.status = "completed"
+    shard.exit_code = 0
+
+    cfg = {
+        "conditions": ["control"],
+        "games": 1,
+        "seed": 42,
+        "model_path": "/tmp/model",
+    }
+    manifest = {
+        "config_hash": "config-hash",
+        "git_sha": "git-hash",
+        "persona_hash": None,
+        "framework_info": {"python_version": "3.11"},
+    }
+    shard_manifest = {
+        "config_hash": "config-hash",
+        "git_sha": "git-hash",
+        "persona_hash": None,
+        "framework_info": {"python_version": "3.11"},
+    }
+    (shard.shard_dir / "shard_manifest.json").write_text(json.dumps(shard_manifest), encoding="utf-8")
+    qp._write_csv(shard.shard_dir / "control_games.csv", [_make_row("control", 42, 1)])
+
+    logger = qp.MasterLogger(master_dir)
+    exit_code = qp._merge_results(master_dir, cfg, manifest, [shard], logger)
+    assert exit_code == 0
+    assert (master_dir / "control_games.csv").is_file()
+    assert (master_dir / "all_games.csv").is_file()
+    assert (master_dir / "summary.csv").is_file()
+    assert (master_dir / "merge_report.json").is_file()
+
+    report = json.loads((master_dir / "merge_report.json").read_text(encoding="utf-8"))
+    assert report["status"] == "merged"
+    assert all(c["passed"] for c in report["checks"])
+    assert report["row_counts"]["control"] == 1
+
+
+def test_merge_results_fails_when_shard_missing_output(tmp_path: Path) -> None:
+    master_dir = tmp_path / "run1"
+    master_dir.mkdir()
+    shards_dir = master_dir / "shards"
+    shards_dir.mkdir()
+
+    shard = qp.compute_shards(["control"], seed=42, games=1, gpu_ids=[0], workers_per_gpu=1)[0]
+    shard.shard_dir = shards_dir / shard.shard_id
+    shard.shard_dir.mkdir()
+    shard.status = "failed"
+    shard.exit_code = 1
+
+    cfg = {
+        "conditions": ["control"],
+        "games": 1,
+        "seed": 42,
+        "model_path": "/tmp/model",
+    }
+    manifest = {
+        "config_hash": "config-hash",
+        "git_sha": "git-hash",
+        "persona_hash": None,
+        "framework_info": {},
+    }
+    logger = qp.MasterLogger(master_dir)
+    exit_code = qp._merge_results(master_dir, cfg, manifest, [shard], logger)
+    assert exit_code == 1
+    report = json.loads((master_dir / "merge_report.json").read_text(encoding="utf-8"))
+    assert report["status"] == "failed"
+    assert not all(c["passed"] for c in report["checks"])
+
+
+def test_merge_results_fails_when_duplicate_turn(tmp_path: Path) -> None:
+    master_dir = tmp_path / "run1"
+    master_dir.mkdir()
+    shards_dir = master_dir / "shards"
+    shards_dir.mkdir()
+
+    shard = qp.compute_shards(["control"], seed=42, games=1, gpu_ids=[0], workers_per_gpu=1)[0]
+    shard.shard_dir = shards_dir / shard.shard_id
+    shard.shard_dir.mkdir()
+    shard.status = "completed"
+    shard.exit_code = 0
+
+    cfg = {
+        "conditions": ["control"],
+        "games": 1,
+        "seed": 42,
+        "model_path": "/tmp/model",
+    }
+    manifest = {
+        "config_hash": "config-hash",
+        "git_sha": "git-hash",
+        "persona_hash": None,
+        "framework_info": {},
+    }
+    shard_manifest = {
+        "config_hash": "config-hash",
+        "git_sha": "git-hash",
+        "persona_hash": None,
+        "framework_info": {},
+    }
+    (shard.shard_dir / "shard_manifest.json").write_text(json.dumps(shard_manifest), encoding="utf-8")
+    qp._write_csv(shard.shard_dir / "control_games.csv", [_make_row("control", 42, 1), _make_row("control", 42, 1)])
+
+    logger = qp.MasterLogger(master_dir)
+    exit_code = qp._merge_results(master_dir, cfg, manifest, [shard], logger)
+    assert exit_code == 1
+    report = json.loads((master_dir / "merge_report.json").read_text(encoding="utf-8"))
+    assert report["status"] == "failed"
+    dup_check = next(c for c in report["checks"] if c["name"] == "no_duplicate_turn")
+    assert not dup_check["passed"]

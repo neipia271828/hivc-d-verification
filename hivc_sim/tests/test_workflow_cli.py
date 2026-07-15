@@ -10,6 +10,7 @@ from scripts.workflow_cli import (
     EXPECTED_ORIGIN,
     WorkflowError,
     _local_commit_commands,
+    _parallel_runner_args,
     _remote_project_shell,
     _start_experiment_remote_command,
     _sync_remote_command,
@@ -107,3 +108,56 @@ def test_experiment_running_check_uses_recorded_pid_without_self_matching() -> N
     assert 'kill -0 "$active_pid"' in command
     assert '"/proc/$active_pid/cmdline"' in command
     assert '"$active_pid" != "$$"' in command
+
+
+def test_parallel_runner_args_passes_parallel_and_gpu_options() -> None:
+    cfg = {"remote_venv": ".venv"}
+    args = argparse.Namespace(
+        experiment_config="configs/experiment.yaml",
+        conditions=["control", "consulting", "hivc_d"],
+        games=30,
+        seed=42,
+        gpus=[0, 1],
+        workers_per_gpu=1,
+        temperature_warning=80,
+        temperature_stop_scheduling=83,
+        resume=False,
+    )
+    command = _parallel_runner_args(cfg, args, "hivc_sim/results/turn_game/experiment/runs/episode-test")
+    assert "python" in command[0]
+    assert "scripts/qwen_parallel_experiment.py" in command
+    assert "--parallel" in command
+    assert "--gpus" in command
+    assert "0" in command
+    assert "1" in command
+    assert "--workers-per-gpu" not in command  # 既定値は省略
+    assert "--temperature-warning" not in command  # 既定値は省略
+    assert "--temperature-stop-scheduling" not in command  # 既定値は省略
+    assert "--resume" not in command
+
+
+def test_parallel_experiment_command_uses_parallel_runner_and_blocks_other_parallel_workers() -> None:
+    cfg = {
+        "remote_project_dir": "~/projects/hivc-d-verification",
+        "remote_venv": ".venv",
+    }
+    args = argparse.Namespace(
+        experiment_config="configs/experiment.yaml",
+        conditions=["control", "consulting", "hivc_d"],
+        games=30,
+        seed=42,
+        parallel=True,
+        gpus=[0, 1],
+        workers_per_gpu=1,
+        temperature_warning=80,
+        temperature_stop_scheduling=83,
+        resume=False,
+    )
+    command, run_dir = _start_experiment_remote_command(cfg, args, "episode-test")
+    assert run_dir.endswith("/episode-test")
+    assert "scripts/qwen_parallel_experiment.py" in command
+    assert "--parallel" in command
+    assert "--gpus 0 1" in command
+    assert "stream.jsonl" not in command
+    # worker プロセスも含め、他の並列実験を検出する
+    assert "qwen_parallel_worker" in command

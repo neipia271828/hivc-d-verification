@@ -356,6 +356,45 @@ def _experiment_runner_args(
     return command
 
 
+def _parallel_runner_args(
+    cfg: dict[str, Any],
+    args: argparse.Namespace,
+    run_dir: str,
+) -> list[str]:
+    venv = str(cfg.get("remote_venv", ".venv"))
+    command = [
+        f"{venv}/bin/python",
+        "-u",
+        "scripts/qwen_parallel_experiment.py",
+        "--config",
+        args.experiment_config,
+        "--conditions",
+        *args.conditions,
+        "--games",
+        str(args.games),
+        "--output-dir",
+        run_dir,
+        "--parallel",
+    ]
+    if args.seed is not None:
+        command.extend(["--seed", str(args.seed)])
+    gpus = getattr(args, "gpus", None)
+    if gpus:
+        command.extend(["--gpus", *[str(g) for g in gpus]])
+    workers_per_gpu = getattr(args, "workers_per_gpu", 1)
+    if workers_per_gpu != 1:
+        command.extend(["--workers-per-gpu", str(workers_per_gpu)])
+    temperature_warning = getattr(args, "temperature_warning", 80)
+    if temperature_warning != 80:
+        command.extend(["--temperature-warning", str(temperature_warning)])
+    temperature_stop = getattr(args, "temperature_stop_scheduling", 83)
+    if temperature_stop != 83:
+        command.extend(["--temperature-stop-scheduling", str(temperature_stop)])
+    if getattr(args, "resume", False):
+        command.append("--resume")
+    return command
+
+
 def _start_experiment_remote_command(
     cfg: dict[str, Any],
     args: argparse.Namespace,
@@ -363,7 +402,10 @@ def _start_experiment_remote_command(
 ) -> tuple[str, str]:
     project = _remote_project_shell(cfg)
     run_dir = f"{DEFAULT_REMOTE_RUNS_ROOT}/{run_id}"
-    runner = shlex.join(_experiment_runner_args(cfg, args, run_dir))
+    if getattr(args, "parallel", False):
+        runner = shlex.join(_parallel_runner_args(cfg, args, run_dir))
+    else:
+        runner = shlex.join(_experiment_runner_args(cfg, args, run_dir))
     inner = "\n".join(
         [
             "set +e",
@@ -390,7 +432,7 @@ def _start_experiment_remote_command(
             "  [ \"$active_pid\" != \"$PPID\" ] || continue",
             "  kill -0 \"$active_pid\" 2>/dev/null || continue",
             "  [ -r \"/proc/$active_pid/cmdline\" ] || continue",
-            "  if tr '\\000' ' ' < \"/proc/$active_pid/cmdline\" | grep -q -- 'scripts/qwen_two_agent_experiment.py'; then",
+            "  if tr '\\000' ' ' < \"/proc/$active_pid/cmdline\" | grep -q -E 'scripts/(qwen_two_agent_experiment|qwen_parallel_experiment|qwen_parallel_worker)\\.py'; then",
             "    echo \"ERROR: 別の実験が実行中です: $(basename \"$active_run_dir\") (pid=$active_pid)\" >&2",
             "    exit 23",
             "  fi",
@@ -440,6 +482,12 @@ def experiment_main() -> None:
     parser.add_argument("--conditions", nargs="+", default=["hivc_d"], choices=["control", "consulting", "hivc_d"])
     parser.add_argument("--games", type=int, default=1)
     parser.add_argument("--seed", type=int)
+    parser.add_argument("--parallel", action="store_true", help="shard並列モードを有効化")
+    parser.add_argument("--gpus", nargs="+", type=int, default=None, help="使用する物理GPU ID（未指定時は自動検出）")
+    parser.add_argument("--workers-per-gpu", type=int, default=1, help="GPUあたりの最大worker数（通常運用では1）")
+    parser.add_argument("--temperature-warning", type=int, default=80, help="警告温度（℃）")
+    parser.add_argument("--temperature-stop-scheduling", type=int, default=83, help="新規shard起動を止める温度（℃）")
+    parser.add_argument("--resume", action="store_true", help="成功済みshardを再利用して再開")
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument("--status", action="store_true")
     actions.add_argument("--logs", action="store_true")

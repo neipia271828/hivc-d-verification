@@ -271,3 +271,29 @@
   - 両条件の手順文量と概念分離を検証する回帰テストを追加
   - 手順文は `consulting` 778文字、`hivc_d` 859文字（91%）であることを確認
   - `pytest hivc_sim/tests -q` が66テストで通過
+
+# 2026-07-15
+
+- GPU並列実験の効率化要件を策定
+  - `document/要件定義/GPU並列実験効率化要件.md` を追加
+  - RTX A5000×2の実測値をbaselineとし、1GPU・1worker、2GPU同時実行の目標構成を定義
+  - 条件ごとのseed集合を両GPUへ同じ規則で割り当て、GPU割当と条件効果の交絡を防止する要件を明記
+  - master run、shard manifest、GPU負荷監視、温度時の安全停止、失敗再開、結果整合性検査を定義
+  - baseline比1.4倍以上のgames/hourと、VRAM・温度・エラーの安全基準を採用条件に設定
+  - 現在稼働中の `episode-20260715-210345` は中断せず、現行方式のbaselineとして完了させる導入順序とした
+
+- GPU並列実験を実装
+  - `scripts/qwen_parallel_experiment.py` (orchestrator) 新規作成
+    - 1GPU・1worker、条件ごとに blocked schedule（control → consulting → hivc_d）でshardを起動
+    - `nvidia-smi` によるGPU検出、VRAM・温度・他プロセスの事前検査
+    - 30秒間隔の `gpu_metrics.csv` 記録、温度閾値・thermal slowdown検出、`pause_request` による安全停止
+    - `master_manifest.json` / `merge_report.json` 生成、shard結果の整合性検査と `summary.csv` 再計算
+  - `scripts/qwen_parallel_worker.py` (shard worker) 新規作成
+    - `CUDA_VISIBLE_DEVICES` で1GPUを固定し、1 condition の連続seed範囲を実行
+    - 各ゲーム後に `pause_request` を検知、`paused_thermal` 状態と `shard_manifest.json` を記録
+  - `scripts/workflow_cli.py` を並列モード対応
+    - `uv run experiment --parallel --gpus 0 1 --conditions ... --games ... --seed ...` などに対応
+    - `--workers-per-gpu`, `--temperature-warning`, `--temperature-stop-scheduling`, `--resume` 引数追加
+    - 既存の非並列実行、status/logs/stop、runディレクトリ管理を維持
+  - `hivc_sim/tests/test_qwen_parallel_experiment.py` と `hivc_sim/tests/test_workflow_cli.py` に並列系テストを追加
+  - `pytest hivc_sim/tests -q` が75テストで通過

@@ -249,11 +249,14 @@ uv run visualize
 
 `sync` は変更があれば `git add -A` とcommitを自動実行してからpushする。既定メッセージは `chore: sync experiment workflow` で、`--message "任意のメッセージ"` で変更できる。自動commitせず現在のHEADだけを同期する場合は `--allow-dirty` を指定する。GPU側に `.git` がない初回は、Macの `github-neipia` 鍵をSSH agent forwardingで一時利用してGit管理を復元する。秘密鍵はGPUへコピーせず、既存の `.venv` と実験結果も保持する。originが規定SSH URLと異なる、または同期後HEADが一致しない場合は安全のため停止する。
 
-`experiment` は既定で `--conditions hivc_d --games 1` としてバックグラウンド起動する。runごとの出力はGPU側の `hivc_sim/results/turn_game/experiment/runs/<run-id>/` に保存され、`run.log`、`pid`、`exit_code`、CSV、`stream.jsonl` をまとめて管理する。
+`experiment` は既定で `--conditions hivc_d --games 1` としてバックグラウンド起動する。runごとの出力はGPU側の `hivc_sim/results/turn_game/experiment/runs/<run-id>/` に保存され、`run.log`、`pid`、`exit_code`、CSV、`stream.jsonl` をまとめて管理する。`--parallel` 実行時は `shards/` 配下に `shard_manifest.json`、runルートに `master_manifest.json`、`gpu_metrics.csv`、`merge_report.json` が追加される。
 
 ```bash
 # 任意条件・ゲーム数・seed
 uv run experiment --conditions control consulting hivc_d --games 30 --seed 42
+
+# GPU並列実行（1GPU・1worker、blocked schedule）
+uv run experiment --parallel --gpus 0 1 --conditions control consulting hivc_d --games 30 --seed 42
 
 # 状態・ログ・停止
 uv run experiment --status
