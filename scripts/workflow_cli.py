@@ -520,7 +520,7 @@ def experiment_main() -> None:
                     f"cd {project}",
                     f"run_dir={shlex.quote(run_dir)}",
                     "pid=$(cat \"$run_dir/pid\")",
-                    "for worker_pid_file in \"$run_dir/shards/\"*/pid; do",
+                    "for worker_pid_file in \"$run_dir\"/shards/*/pid; do",
                     "  [ -f \"$worker_pid_file\" ] || continue",
                     "  worker_pid=$(cat \"$worker_pid_file\")",
                     "  case \"$worker_pid\" in (*[!0-9]*|'') continue ;; esac",
