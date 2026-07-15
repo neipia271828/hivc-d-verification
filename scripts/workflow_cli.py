@@ -409,10 +409,12 @@ def _start_experiment_remote_command(
     inner = "\n".join(
         [
             "set +e",
+            f"run_dir={shlex.quote(run_dir)}",
+            "trap 'printf \"%s\\n\" 1 > \"$run_dir/exit_code\"; date -Iseconds > \"$run_dir/finished_at\"; exit 1' TERM",
             runner,
             "code=$?",
-            f"printf '%s\\n' \"$code\" > {shlex.quote(run_dir + '/exit_code')}",
-            f"date -Iseconds > {shlex.quote(run_dir + '/finished_at')}",
+            "printf '%s\\n' \"$code\" > \"$run_dir/exit_code\"",
+            "date -Iseconds > \"$run_dir/finished_at\"",
             "exit \"$code\"",
         ]
     )
@@ -516,9 +518,16 @@ def experiment_main() -> None:
                 [
                     "set -eu",
                     f"cd {project}",
-                    f"pid=$(cat {shlex.quote(run_dir + '/pid')})",
-                    "kill \"$pid\"",
-                    f"date -Iseconds > {shlex.quote(run_dir + '/stopped_at')}",
+                    f"run_dir={shlex.quote(run_dir)}",
+                    "pid=$(cat \"$run_dir/pid\")",
+                    "for worker_pid_file in \"$run_dir/shards/\"*/pid; do",
+                    "  [ -f \"$worker_pid_file\" ] || continue",
+                    "  worker_pid=$(cat \"$worker_pid_file\")",
+                    "  case \"$worker_pid\" in (*[!0-9]*|'') continue ;; esac",
+                    "  kill \"$worker_pid\" 2>/dev/null || true",
+                    "done",
+                    "kill -TERM -\"$pid\" 2>/dev/null || kill \"$pid\" 2>/dev/null || true",
+                    "date -Iseconds > \"$run_dir/stopped_at\"",
                     "echo \"stopped pid=$pid\"",
                 ]
             )
