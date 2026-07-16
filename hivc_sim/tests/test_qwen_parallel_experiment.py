@@ -65,6 +65,29 @@ def test_gpu_snapshot_uses_supported_software_thermal_slowdown_field(monkeypatch
     assert snapshot[0]["thermal_throttle"] is True
 
 
+def test_gpu_snapshot_does_not_treat_not_active_as_active(monkeypatch) -> None:
+    def fake_query(gpu_ids, fields):
+        values = {
+            "index": "0",
+            "uuid": "GPU-test",
+            "name": "NVIDIA RTX A5000",
+            "compute_mode": "Default",
+            "memory.free": "24000",
+            "memory.used": "1",
+            "memory.total": "24564",
+            "temperature.gpu": "35",
+        }
+        return [{field: values.get(field, "Not Active") for field in fields}]
+
+    monkeypatch.setattr(qp, "_nvidia_smi_query", fake_query)
+
+    snapshot = qp.get_gpu_snapshot([0])
+
+    assert snapshot[0]["thermal_throttle"] is False
+    assert snapshot[0]["hw_thermal_slowdown"] is False
+    assert snapshot[0]["hw_slowdown"] is False
+
+
 def test_compute_shards_even_split_two_gpus() -> None:
     shards = qp.compute_shards(["control"], seed=42, games=30, gpu_ids=[0, 1], workers_per_gpu=1)
     assert len(shards) == 2

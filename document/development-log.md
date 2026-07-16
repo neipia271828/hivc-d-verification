@@ -375,8 +375,11 @@
   - 従来はstderrのみ記録していたため、stdoutに出力された無効フィールドエラーが空文字として表示されていた
 - `hivc_sim/tests/test_qwen_parallel_experiment.py` に、対応フィールドの使用とエラー詳細保存の回帰テストを追加
 - ローカル検証結果
-  - `uv run pytest hivc_sim/tests -q`: 117 passed
+  - `uv run pytest hivc_sim/tests -q`: 118 passed
   - `python3 -m py_compile scripts/qwen_parallel_experiment.py`: 成功
   - `git diff --check`: 成功
 - GPUサーバー上で修正後と同一の `nvidia-smi` クエリが2 GPUとも成功することを確認
+- 実GPU出力の `Not Active` が部分文字列判定で `Active` と誤認される既存バグも修正
+  - thermal slowdown系フィールドは前後空白と大小文字を正規化し、`Active` と完全一致した場合だけ真とする
+  - `Not Active` の3フィールドをすべて偽と判定する回帰テストを追加
 - GPU実験本体は実行していない

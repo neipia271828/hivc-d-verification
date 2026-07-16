@@ -193,6 +193,10 @@ def get_gpu_snapshot(gpu_ids: list[int]) -> list[dict[str, object]]:
     ]
     rows = _nvidia_smi_query(gpu_ids, fields)
     out: list[dict[str, object]] = []
+
+    def _is_active(value: str | None) -> bool:
+        return (value or "").strip().casefold() == "active"
+
     for row in rows:
         try:
             temp = int(row["temperature.gpu"])
@@ -210,11 +214,15 @@ def get_gpu_snapshot(gpu_ids: list[int]) -> list[dict[str, object]]:
             mem_total = int(row["memory.total"])
         except ValueError:
             mem_total = None
-        thermal_active = "Active" in (
-            row.get("clocks_throttle_reasons.sw_thermal_slowdown") or ""
+        thermal_active = _is_active(
+            row.get("clocks_throttle_reasons.sw_thermal_slowdown")
         )
-        hw_thermal_active = "Active" in (row.get("clocks_throttle_reasons.hw_thermal_slowdown") or "")
-        hw_slowdown_active = "Active" in (row.get("clocks_throttle_reasons.hw_slowdown") or "")
+        hw_thermal_active = _is_active(
+            row.get("clocks_throttle_reasons.hw_thermal_slowdown")
+        )
+        hw_slowdown_active = _is_active(
+            row.get("clocks_throttle_reasons.hw_slowdown")
+        )
         out.append(
             {
                 "index": int(row["index"]),
