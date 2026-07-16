@@ -59,12 +59,13 @@ class PreviewServer:
                         except Exception:
                             pass
                     files = [f.name for f in sorted(p.iterdir()) if f.is_file()]
+                    has_shard_value_manifest = any((p / "shards").glob("*/value_manifest.json"))
                     runs.append({
                         "run_id": p.name,
                         "path": str(p),
                         "acquired_at": acquired_at,
                         "files": files,
-                        "has_value_manifest": "value_manifest.json" in files,
+                        "has_value_manifest": "value_manifest.json" in files or has_shard_value_manifest,
                     })
         return runs
 
@@ -123,6 +124,40 @@ class PreviewServer:
             return target.read_bytes()
         except Exception:
             return None
+
+    def _read_value_manifest(self, run_id: str) -> bytes | None:
+        root_manifest = self._read_file(run_id, "value_manifest.json")
+        if root_manifest is not None:
+            return root_manifest
+        run_dir = self._run_dir(run_id)
+        if run_dir is None:
+            return None
+        shard_manifests = sorted((run_dir / "shards").glob("*/value_manifest.json"))
+        loaded = []
+        for path in shard_manifests:
+            try:
+                body = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return None
+            if isinstance(body, dict):
+                loaded.append(body)
+        if not loaded:
+            return None
+        merged = dict(loaded[0])
+        entries: list[dict] = []
+        seen: set[str] = set()
+        frameworks: dict = {}
+        for body in loaded:
+            frameworks.update(body.get("frameworks") or {})
+            for entry in body.get("game_entries") or []:
+                key = json.dumps(entry, ensure_ascii=False, sort_keys=True)
+                if key not in seen:
+                    seen.add(key)
+                    entries.append(entry)
+        merged["frameworks"] = frameworks
+        merged["game_entries"] = entries
+        merged["preview_merged_from_shards"] = True
+        return json.dumps(merged, ensure_ascii=False, sort_keys=True).encode("utf-8")
 
     def _make_handler(self):
         server = self
@@ -190,7 +225,7 @@ class PreviewServer:
                                 self._text_response(200, data, "application/json; charset=utf-8")
                             return
                         if rest == "value-manifest":
-                            data = server._read_file(run_id, "value_manifest.json")
+                            data = server._read_value_manifest(run_id)
                             if data is None:
                                 self._not_found("Value manifest not found")
                             else:

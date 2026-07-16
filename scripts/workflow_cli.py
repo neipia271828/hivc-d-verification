@@ -353,6 +353,8 @@ def _experiment_runner_args(
     ]
     if args.seed is not None:
         command.extend(["--seed", str(args.seed)])
+    if getattr(args, "role_value_mode", None) is not None:
+        command.extend(["--role-value-mode", args.role_value_mode])
     return command
 
 
@@ -378,6 +380,8 @@ def _parallel_runner_args(
     ]
     if args.seed is not None:
         command.extend(["--seed", str(args.seed)])
+    if getattr(args, "role_value_mode", None) is not None:
+        command.extend(["--role-value-mode", args.role_value_mode])
     gpus = getattr(args, "gpus", None)
     if gpus:
         command.extend(["--gpus", *[str(g) for g in gpus]])
@@ -476,12 +480,22 @@ def _run_status_command(cfg: dict[str, Any], run_id: str) -> str:
     )
 
 
-def experiment_main() -> None:
+def _build_experiment_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="GPUサーバーでrun単位の実験を開始・確認する。")
     parser.add_argument("--gpu-config", default=DEFAULT_GPU_CONFIG)
     parser.add_argument("--experiment-config", default=DEFAULT_EXPERIMENT_CONFIG)
     parser.add_argument("--run-id")
-    parser.add_argument("--conditions", nargs="+", default=["hivc_d"], choices=["control", "consulting", "hivc_d"])
+    parser.add_argument(
+        "--conditions",
+        nargs="+",
+        default=["hivc_d"],
+        choices=["control", "consulting", "hivc_d", "hivc_d_prescribed_v1"],
+    )
+    parser.add_argument(
+        "--role-value-mode",
+        choices=["legacy_hard", "soft_value", "expertise_only"],
+        default=None,
+    )
     parser.add_argument("--games", type=int, default=1)
     parser.add_argument("--seed", type=int)
     parser.add_argument("--parallel", action="store_true", help="shard並列モードを有効化")
@@ -495,6 +509,11 @@ def experiment_main() -> None:
     actions.add_argument("--logs", action="store_true")
     actions.add_argument("--stop", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    return parser
+
+
+def experiment_main() -> None:
+    parser = _build_experiment_parser()
     args = parser.parse_args()
 
     try:

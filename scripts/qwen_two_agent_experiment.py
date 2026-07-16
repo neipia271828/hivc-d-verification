@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import random
 import sys
 from pathlib import Path
 
@@ -98,6 +99,13 @@ CLI_DEFAULTS: dict[str, object] = {
     "decision_schedule_seed": 0,
     "max_decision_opportunities": 3,
 }
+
+
+def condition_order_for_seed(conditions: list[str], game_seed: int) -> list[str]:
+    """Return a deterministic per-seed permutation to remove fixed-order confounds."""
+    ordered = list(conditions)
+    random.Random(game_seed ^ 0x5EEDC0DE).shuffle(ordered)
+    return ordered
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -197,19 +205,20 @@ def main() -> None:
 
     all_rows: list[dict[str, object]] = []
     summary_rows: list[dict[str, object]] = []
+    condition_rows: dict[str, list[dict[str, object]]] = {condition: [] for condition in conditions}
 
-    for condition in conditions:
-        print(f"\n=== condition: {condition} ({cfg['games']} games) ===")
-        cond_rows: list[dict[str, object]] = []
-        for game_index in range(cfg["games"]):
-            game_seed = cfg["seed"] + game_index
-            # random_persona の場合、ゲームごとにペルソナを再抽選（再現性のため game_seed を使用）
-            if random_persona:
-                args.random_seed = cfg["random_seed"] if cfg["random_seed"] is not None else game_seed
-                personas, persona_params, role_keys = load_personas(args)
-                print(f"  [random_persona] alpha={role_keys['alpha']} beta={role_keys['beta']}")
-                append_profile_assignment(value_manifest, game_seed, personas, persona_params, role_keys)
-                write_value_manifest(value_manifest_path, value_manifest)
+    for game_index in range(cfg["games"]):
+        game_seed = cfg["seed"] + game_index
+        # random_persona の場合、同一seedの全条件で同じ割付けを使う。
+        if random_persona:
+            args.random_seed = cfg["random_seed"] if cfg["random_seed"] is not None else game_seed
+            personas, persona_params, role_keys = load_personas(args)
+            print(f"  [random_persona seed={game_seed}] alpha={role_keys['alpha']} beta={role_keys['beta']}")
+            append_profile_assignment(value_manifest, game_seed, personas, persona_params, role_keys)
+            write_value_manifest(value_manifest_path, value_manifest)
+        seed_conditions = condition_order_for_seed(list(conditions), game_seed)
+        print(f"\n=== seed: {game_seed}; condition order: {seed_conditions} ===")
+        for condition in seed_conditions:
             rows = run_one_game(
                 model,
                 tokenizer,
@@ -229,9 +238,11 @@ def main() -> None:
                 max_decision_opportunities=cfg["max_decision_opportunities"],
                 role_value_mode=cfg["role_value_mode"],
             )
-            cond_rows.extend(rows)
+            condition_rows[condition].extend(rows)
             all_rows.extend(rows)
 
+    for condition in conditions:
+        cond_rows = condition_rows[condition]
         _write_csv(output_dir / f"{condition}_games.csv", cond_rows)
         metrics = compute_summary_metrics(cond_rows)
         summary_rows.append({"condition": condition, "games": cfg["games"], **metrics})

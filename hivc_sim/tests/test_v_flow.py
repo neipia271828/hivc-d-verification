@@ -204,5 +204,40 @@ def test_run_one_game_carries_v_state_and_measures_after_vote(monkeypatch) -> No
     )
     assert rows and all(row["v_star_status"] == "accepted" for row in rows)
     assert all(row["alpha_v_star_consistent"] is True for row in rows)
-    assert any("shared_v_before_and_actions" in prompt and '"alpha"' in prompt and '"beta"' in prompt for prompt in seen_discussion)
+    assert not any("shared_v_before_and_actions" in prompt for prompt in seen_discussion)
     assert seen_after and all("FINAL_VOTES" in prompt and "DISCUSSION_HISTORY" in prompt for prompt in seen_after)
+
+
+def test_control_prompts_never_disclose_opponent_private_v(monkeypatch) -> None:
+    from scripts.llm_turn_game_common import run_one_game
+
+    captured: list[str] = []
+
+    def fake_run_prompt(model, tokenizer, prompt, max_new_tokens, enable_thinking=False, thinking_budget=None):
+        if "id=v-measurement-before" in prompt:
+            marker = "alpha_private" if "エージェント alpha" in prompt else "beta_private"
+            return "", (
+                '{"v_before":{"ordered_criteria":["' + marker + '"],'
+                '"weights":{"' + marker + '":1.0},"confidence":0.7},'
+                '"action_before":"A","reason_before":"' + marker + '"}'
+            )
+        if "id=v-measurement-after" in prompt:
+            return "", '{"v_after":{"ordered_criteria":["final"],"weights":{"final":1.0},"confidence":0.7},"reason_after":"final"}'
+        captured.append(prompt)
+        if "id=decision-contract" in prompt:
+            return "", '{"action":"A","reason":"ok","ready":true}'
+        return "", '{"speech_act":"evidence","message":"ok","action":"A","reason":"ok","addressed_to":null,"reply_to_message_id":null}'
+
+    monkeypatch.setattr("scripts.llm_turn_game_common.run_prompt", fake_run_prompt)
+    run_one_game(
+        None, None, "control", 42,
+        {"alpha": "alpha persona", "beta": "beta persona"},
+        {"alpha": None, "beta": None}, {"alpha": "a", "beta": "b"},
+        max_discussion_turns=2, evaluator_rollouts=1,
+        max_decision_opportunities=1, role_value_mode="soft_value",
+        scenario_id="comms_favored",
+    )
+    alpha_prompts = [p for p in captured if "alpha_private" in p]
+    beta_prompts = [p for p in captured if "beta_private" in p]
+    assert alpha_prompts and all("beta_private" not in p for p in alpha_prompts)
+    assert beta_prompts and all("alpha_private" not in p for p in beta_prompts)

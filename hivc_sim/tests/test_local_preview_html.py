@@ -138,6 +138,28 @@ def test_preview_lists_and_serves_value_manifest(tmp_path: Path) -> None:
     assert json.loads(server._read_file("run-1", "value_manifest.json")) == manifest
 
 
+def test_preview_serves_merged_parallel_shard_value_manifests(tmp_path: Path) -> None:
+    module_path = REPO_ROOT / "scripts" / "local_preview.py"
+    spec = importlib.util.spec_from_file_location("local_preview_parallel_test", module_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    run_dir = tmp_path / "parallel-run"
+    for name, condition, seed in (("s1", "control", 42), ("s2", "hivc_d", 43)):
+        shard_dir = run_dir / "shards" / name
+        shard_dir.mkdir(parents=True)
+        (shard_dir / "value_manifest.json").write_text(
+            json.dumps({"frameworks": {condition: {}}, "game_entries": [{"seed": seed}]}),
+            encoding="utf-8",
+        )
+    server = module.PreviewServer(tmp_path, 0, "127.0.0.1")
+    assert server._list_runs()[0]["has_value_manifest"] is True
+    merged = json.loads(server._read_value_manifest("parallel-run"))
+    assert set(merged["frameworks"]) == {"control", "hivc_d"}
+    assert {entry["seed"] for entry in merged["game_entries"]} == {42, 43}
+
+
 def test_comparison_is_keyed_by_exact_seed_and_turn() -> None:
     source = HTML_PATH.read_text(encoding="utf-8")
     assert "row.seed === r.seed && row.turn === r.turn" in source

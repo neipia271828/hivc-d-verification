@@ -126,3 +126,16 @@ def test_load_legacy_hard_keeps_explicit_mode_and_warns(tmp_path: Path) -> None:
     assert profile.role_value_mode == "legacy_hard"
     assert profile.value is not None and profile.value.negotiable is False
     assert profile.warnings and "do not pool" in profile.warnings[0]
+
+
+def test_repository_separated_profile_files_load_and_soft_weights_are_normalized() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    soft = load_profiles(repo_root / "configs/profiles_soft_value.yaml", "soft_value")
+    expertise = load_profiles(repo_root / "configs/profiles_expertise_only.yaml", "expertise_only")
+    assert set(soft) >= {"alpha", "beta"}
+    assert set(expertise) >= {"alpha", "beta"}
+    for profile in soft.values():
+        assert profile.role.schema_version == "2.0"
+        assert profile.value is not None and profile.value.negotiable is True
+        assert sum(profile.value.initial_priority_weights.values()) == pytest.approx(1.0)
+    assert all(profile.value is None for profile in expertise.values())

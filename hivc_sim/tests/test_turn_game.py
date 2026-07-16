@@ -217,6 +217,24 @@ def test_format_state_beta_hides_hull_and_flooding_values() -> None:
     assert "不明（パートナーに問い合わせ）" in text
 
 
+def test_format_state_uses_role_observation_scope_instead_of_agent_name() -> None:
+    state = initial_state(seed=42)
+    role = {
+        "expertise_domains": ["communications"],
+        "observation_scope": ["communication", "pod_integrity"],
+        "responsibility": "通信情報を共有する",
+    }
+    alpha_view = format_state(state, "alpha", role)
+    assert f"communication: {state.communication}" in alpha_view
+    assert f"pod_integrity: {state.pod_integrity}" in alpha_view
+    assert "oxygen: 不明" in alpha_view
+    assert "hull_damage: 不明" in alpha_view
+
+    prompt = discussion_prompt("alpha", "persona", None, state, [], 2, role=role)
+    assert 'expertise_domains: ["communications"]' in prompt
+    assert "responsibility: 通信情報を共有する" in prompt
+
+
 def test_escape_outcome_differs_by_flooding_only() -> None:
     rng = np.random.default_rng(0)
     common = {

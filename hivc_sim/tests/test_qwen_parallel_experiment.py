@@ -49,6 +49,23 @@ def test_compute_shards_workers_per_gpu_two() -> None:
     assert [s.seed_start for s in shards] == [42, 43, 44, 45]
 
 
+def test_counterbalanced_shard_rounds_are_deterministic_and_vary_by_seed_range() -> None:
+    shards = qp.compute_shards(
+        ["control", "consulting", "hivc_d"], seed=42, games=2,
+        gpu_ids=[0, 1], workers_per_gpu=1,
+    )
+    first = [[s.condition for s in round_] for round_ in qp.counterbalanced_shard_rounds(shards)]
+    second = [[s.condition for s in round_] for round_ in qp.counterbalanced_shard_rounds(shards)]
+    assert first == second
+    per_range: dict[int, list[str]] = {}
+    for round_ in qp.counterbalanced_shard_rounds(shards):
+        for shard in round_:
+            per_range.setdefault(shard.seed_start, []).append(shard.condition)
+    assert set(per_range) == {42, 43}
+    assert all(set(order) == {"control", "consulting", "hivc_d"} for order in per_range.values())
+    assert per_range[42] != per_range[43]
+
+
 def _make_row(condition: str, seed: int, turn: int) -> dict[str, str]:
     return {
         "condition": condition,
@@ -143,6 +160,10 @@ def test_merge_results_generates_master_csvs_and_report(tmp_path: Path) -> None:
         "framework_info": {"python_version": "3.11"},
     }
     (shard.shard_dir / "shard_manifest.json").write_text(json.dumps(shard_manifest), encoding="utf-8")
+    (shard.shard_dir / "value_manifest.json").write_text(
+        json.dumps({"schema_version": "value-manifest-1", "frameworks": {"control": {}}, "game_entries": [{"seed": 42}]}),
+        encoding="utf-8",
+    )
     qp._write_csv(shard.shard_dir / "control_games.csv", [_make_row("control", 42, 1)])
 
     logger = qp.MasterLogger(master_dir)
@@ -152,6 +173,10 @@ def test_merge_results_generates_master_csvs_and_report(tmp_path: Path) -> None:
     assert (master_dir / "all_games.csv").is_file()
     assert (master_dir / "summary.csv").is_file()
     assert (master_dir / "merge_report.json").is_file()
+    assert (master_dir / "value_manifest.json").is_file()
+    value_manifest = json.loads((master_dir / "value_manifest.json").read_text(encoding="utf-8"))
+    assert value_manifest["game_entries"] == [{"seed": 42}]
+    assert value_manifest["framework_ids"] == ["control"]
 
     report = json.loads((master_dir / "merge_report.json").read_text(encoding="utf-8"))
     assert report["status"] == "merged"
@@ -222,6 +247,10 @@ def test_merge_results_fails_when_duplicate_turn(tmp_path: Path) -> None:
         "framework_info": {},
     }
     (shard.shard_dir / "shard_manifest.json").write_text(json.dumps(shard_manifest), encoding="utf-8")
+    (shard.shard_dir / "value_manifest.json").write_text(
+        json.dumps({"schema_version": "value-manifest-1", "frameworks": {"control": {}}}),
+        encoding="utf-8",
+    )
     qp._write_csv(shard.shard_dir / "control_games.csv", [_make_row("control", 42, 1), _make_row("control", 42, 1)])
 
     logger = qp.MasterLogger(master_dir)

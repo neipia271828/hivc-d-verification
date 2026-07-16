@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 import platform
+import random
 import subprocess
 import sys
 import threading
@@ -299,6 +300,21 @@ def compute_shards(
     return shards
 
 
+def counterbalanced_shard_rounds(shards: list[Shard]) -> list[list[Shard]]:
+    """Order each worker seed range independently, then return parallel launch rounds."""
+    queues: list[list[Shard]] = []
+    grouped: dict[tuple[int, int, int], list[Shard]] = {}
+    for shard in shards:
+        grouped.setdefault((shard.gpu_id, shard.seed_start, shard.seed_count), []).append(shard)
+    for (_gpu_id, seed_start, _seed_count), group in sorted(grouped.items()):
+        random.Random(seed_start ^ 0x5EEDC0DE).shuffle(group)
+        queues.append(group)
+    return [
+        [queue[index] for queue in queues if index < len(queue)]
+        for index in range(max((len(queue) for queue in queues), default=0))
+    ]
+
+
 def _write_csv(path: Path, rows: list[dict[str, object]]) -> None:
     if not rows:
         path.write_text("", encoding="utf-8")
@@ -332,6 +348,48 @@ def _read_json(path: Path) -> Any:
 
 def _load_shard_manifest(shard_dir: Path) -> dict[str, Any] | None:
     return _read_json(shard_dir / "shard_manifest.json")
+
+
+def _merge_value_manifests(shards: list[Shard], cfg: dict[str, Any]) -> dict[str, Any] | None:
+    manifests: list[tuple[Shard, dict[str, Any]]] = []
+    for shard in shards:
+        body = _read_json(shard.shard_dir / "value_manifest.json")
+        if not isinstance(body, dict):
+            return None
+        manifests.append((shard, body))
+    if not manifests:
+        return None
+
+    merged = dict(manifests[0][1])
+    frameworks: dict[str, Any] = {}
+    game_entries: list[dict[str, Any]] = []
+    seen_entries: set[str] = set()
+    sources: list[dict[str, Any]] = []
+    for shard, body in manifests:
+        frameworks.update(body.get("frameworks") or {})
+        for entry in body.get("game_entries") or []:
+            if not isinstance(entry, dict):
+                continue
+            key = json.dumps(entry, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            if key not in seen_entries:
+                seen_entries.add(key)
+                game_entries.append(entry)
+        sources.append(
+            {
+                "shard_id": shard.shard_id,
+                "condition": shard.condition,
+                "seed_start": shard.seed_start,
+                "seed_count": shard.seed_count,
+            }
+        )
+    merged["frameworks"] = frameworks
+    merged["game_entries"] = sorted(game_entries, key=lambda item: (item.get("seed", -1), json.dumps(item, sort_keys=True)))
+    merged["seed_range"] = {"start": cfg["seed"], "count": cfg["games"]}
+    merged["framework_ids"] = list(cfg["conditions"])
+    merged["runner_version"] = "qwen_parallel_experiment-merged-v2"
+    merged["merged_at"] = _now_iso()
+    merged["shard_sources"] = sources
+    return merged
 
 
 class MasterLogger:
@@ -875,6 +933,12 @@ def _merge_results(
             logger.log(f"{shard.shard_id} framework_info mismatch")
     checks.append({"name": "shard_hashes_match_master", "passed": hash_ok})
 
+    merged_value_manifest = _merge_value_manifests(shards, cfg) if all_completed else None
+    value_manifest_ok = merged_value_manifest is not None
+    checks.append({"name": "value_manifests_mergeable", "passed": value_manifest_ok})
+    if all_completed and not value_manifest_ok:
+        logger.log("shard value_manifest.json の読込みまたは結合に失敗")
+
     all_checks_pass = all(c["passed"] for c in checks)
     merge_status = "merged" if (all_completed and all_checks_pass) else "failed"
 
@@ -902,6 +966,10 @@ def _merge_results(
         summary_path = master_dir / "summary.csv"
         _write_csv(summary_path, summary_rows)
         output_files["summary.csv"] = _sha256_file(summary_path)
+
+        value_manifest_path = master_dir / "value_manifest.json"
+        _write_json(value_manifest_path, merged_value_manifest)
+        output_files["value_manifest.json"] = _sha256_file(value_manifest_path)
 
     merge_report = {
         "run_id": master_dir.name,
@@ -988,15 +1056,17 @@ def main() -> None:
     monitor_thread.start()
 
     try:
-        for condition in cfg["conditions"]:
+        for round_index, round_shards in enumerate(counterbalanced_shard_rounds(shards), start=1):
             if state.get("stop_scheduling"):
-                logger.log(f"stop_scheduling: {condition} をスキップ")
+                logger.log(f"stop_scheduling: launch round {round_index} をスキップ")
                 break
 
-            condition_shards = [s for s in shards if s.condition == condition]
-            logger.log(f"条件 {condition} の {len(condition_shards)} shard を起動")
+            logger.log(
+                f"counterbalanced round {round_index}: "
+                + ", ".join(f"{s.shard_id}({s.condition})" for s in round_shards)
+            )
 
-            for shard in condition_shards:
+            for shard in round_shards:
                 if state.get("stop_scheduling"):
                     logger.log("新規shard起動停止")
                     break
@@ -1008,7 +1078,7 @@ def main() -> None:
                     state["workers"].append(shard)
                 _update_manifest_shards(master_dir, manifest, shards)
 
-            _wait_for_shards(condition_shards, state, state_lock)
+            _wait_for_shards(round_shards, state, state_lock)
             _update_manifest_shards(master_dir, manifest, shards)
 
             if state.get("stop_scheduling"):

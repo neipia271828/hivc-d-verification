@@ -54,7 +54,8 @@ output_dir: hivc_sim/results/turn_game/experiment
 live_jsonl: null
 
 # ペルソナ指定（いずれか1つ。全て null ならデフォルトペルソナを使用）
-role_file: role.json          # role.json の agent_01/agent_02 を使う
+role_value_mode: soft_value
+role_file: configs/profiles_soft_value.yaml
 alpha_role_key: null          # role.json内の任意キー（例: agent_07）
 beta_role_key: null           # role.json内の任意キー（例: agent_24）
 personas_file: null           # {"alpha":..., "beta":...} 形式のJSON

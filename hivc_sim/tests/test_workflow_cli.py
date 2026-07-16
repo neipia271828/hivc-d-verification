@@ -9,6 +9,7 @@ import pytest
 from scripts.workflow_cli import (
     EXPECTED_ORIGIN,
     WorkflowError,
+    _build_experiment_parser,
     _local_commit_commands,
     _parallel_runner_args,
     _remote_project_shell,
@@ -122,6 +123,7 @@ def test_parallel_runner_args_passes_parallel_and_gpu_options() -> None:
         temperature_warning=80,
         temperature_stop_scheduling=83,
         resume=False,
+        role_value_mode="soft_value",
     )
     command = _parallel_runner_args(cfg, args, "hivc_sim/results/turn_game/experiment/runs/episode-test")
     assert "python" in command[0]
@@ -134,6 +136,16 @@ def test_parallel_runner_args_passes_parallel_and_gpu_options() -> None:
     assert "--temperature-warning" not in command  # 既定値は省略
     assert "--temperature-stop-scheduling" not in command  # 既定値は省略
     assert "--resume" not in command
+    mode_index = command.index("--role-value-mode")
+    assert command[mode_index + 1] == "soft_value"
+
+
+def test_experiment_parser_accepts_prescribed_condition_and_role_value_mode() -> None:
+    args = _build_experiment_parser().parse_args(
+        ["--conditions", "hivc_d_prescribed_v1", "--role-value-mode", "expertise_only", "--dry-run"]
+    )
+    assert args.conditions == ["hivc_d_prescribed_v1"]
+    assert args.role_value_mode == "expertise_only"
 
 
 def test_parallel_experiment_command_uses_parallel_runner_and_blocks_other_parallel_workers() -> None:

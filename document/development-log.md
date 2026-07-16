@@ -330,3 +330,17 @@
   - 対象Pythonファイルの `python3 -m py_compile`: 成功
   - `git diff --check`: 成功
   - GPU実験は実行していない
+
+## Role/Value実装レビュー7項目の修正
+
+- `soft_value` / `expertise_only` の分離プロファイルを追加し、既定実験設定を `soft_value` へ切り替え
+- 状態可視性と役割固有根拠を、固定agent名ではなく解決済みRoleの `observation_scope`、`expertise_domains`、`responsibility` から生成するよう変更
+- 議論前の個人V・行動・理由をprivateとして分離し、HIVC-Dで `share_v_before=true` が明示された場合だけ共有状態へ追加
+- 並列shardの `value_manifest.json` をmaster runへ結合し、ローカルプレビューでmasterおよび旧shard-only runを配信可能に変更
+- 単一runnerはgame seedごと、並列runnerはseed rangeごとに条件順を決定論的にランダム化
+- `legacy_hard` のプロンプトでは固定判断基準を明記し、更新可能という表現を除外
+- workflow CLIへ `hivc_d_prescribed_v1` と `--role-value-mode` を追加し、通常・並列runnerへ伝播
+- ローカル検証結果
+  - `pytest hivc_sim/tests -q`: 115 passed
+  - GPU実験は実行していない
+  - pushは実行していない

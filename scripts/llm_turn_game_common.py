@@ -650,33 +650,59 @@ def add_persona_args(parser: argparse.ArgumentParser) -> None:
                         help="random_persona の抽選シード（未指定時はゲーム seed を使用）。")
 
 
-def format_state(state, agent_name: str | None = None) -> str:
+def _role_body(role: Any | None) -> dict[str, Any] | None:
+    if role is None:
+        return None
+    if hasattr(role, "to_dict"):
+        role = role.to_dict()
+    return role if isinstance(role, dict) else None
+
+
+def _resolved_role_from_params(persona_params: dict[str, object] | None) -> dict[str, Any] | None:
+    if not persona_params:
+        return None
+    resolved = persona_params.get("_resolved_profile")
+    if not isinstance(resolved, dict):
+        return None
+    return _role_body(resolved.get("role"))
+
+
+def format_state(state, agent_name: str | None = None, role: Any | None = None) -> str:
     rescue = "未送信" if state.rescue_eta is None else f"救助到着まであと{state.rescue_eta}ターン"
 
     def _v(value, hidden: bool) -> str:
         return "不明（パートナーに問い合わせ）" if hidden else str(value)
 
-    # alpha: 安全管理。船体・浸水は可視、通信・艇健全性は不可視。
-    # beta: 通信・脱出艇。通信・艇状態は可視、船体・浸水は不可視。
-    hide = {
-        "alpha": {"communication": True, "pod_integrity": True, "pod_readiness": True},
-        "beta": {"hull_damage": True, "flooding": True},
-    }.get(agent_name, {})
+    role_mapping = _role_body(role)
+    if role_mapping is not None:
+        scope = {str(item) for item in role_mapping.get("observation_scope", [])}
+
+        def hidden(field: str, *aliases: str) -> bool:
+            return not any(name in scope for name in (field, *aliases))
+    else:
+        # Legacy fallback: historical alpha/beta visibility remains unchanged.
+        hide = {
+            "alpha": {"communication": True, "pod_integrity": True, "pod_readiness": True},
+            "beta": {"hull_damage": True, "flooding": True},
+        }.get(agent_name, {})
+
+        def hidden(field: str, *aliases: str) -> bool:
+            return hide.get(field, False)
 
     return "\n".join(
         [
-            f"turn: {state.turn}",
-            f"scenario: {state.scenario_id}",
-            f"event: {EVENT_LABELS[state.current_event]} ({state.current_event.value})",
-            f"oxygen: {state.oxygen}",
-            f"power: {state.power}",
-            f"hull_damage: {_v(state.hull_damage, hide.get('hull_damage', False))}",
-            f"flooding: {_v(state.flooding, hide.get('flooding', False))}",
-            f"communication: {_v(state.communication, hide.get('communication', False))}",
-            f"pod_readiness: {_v(state.pod_readiness, hide.get('pod_readiness', False))}",
-            f"pod_integrity: {_v(state.pod_integrity, hide.get('pod_integrity', False))}",
-            f"rescue_eta: {rescue}",
-            f"morale: {state.morale}",
+            f"turn: {_v(state.turn, hidden('turn'))}",
+            f"scenario: {_v(state.scenario_id, hidden('scenario_id', 'scenario'))}",
+            f"event: {_v(f'{EVENT_LABELS[state.current_event]} ({state.current_event.value})', hidden('current_event', 'event'))}",
+            f"oxygen: {_v(state.oxygen, hidden('oxygen'))}",
+            f"power: {_v(state.power, hidden('power'))}",
+            f"hull_damage: {_v(state.hull_damage, hidden('hull_damage'))}",
+            f"flooding: {_v(state.flooding, hidden('flooding'))}",
+            f"communication: {_v(state.communication, hidden('communication'))}",
+            f"pod_readiness: {_v(state.pod_readiness, hidden('pod_readiness'))}",
+            f"pod_integrity: {_v(state.pod_integrity, hidden('pod_integrity'))}",
+            f"rescue_eta: {_v(rescue, hidden('rescue_eta'))}",
+            f"morale: {_v(state.morale, hidden('morale'))}",
         ]
     )
 
@@ -862,6 +888,12 @@ def format_persona(agent_name: str, persona: str, persona_params: dict[str, obje
         presentation = resolved.get("persona") or {}
         value = resolved.get("value")
         value_text = "明示的な初期重みなし" if value is None else _canonical_json(value)
+        mode = str(resolved.get("role_value_mode", "soft_value"))
+        value_guidance = (
+            "priority_weights は固定された意思決定基準です。変更・再交渉しないでください。"
+            if mode == "legacy_hard"
+            else "初期Vは暫定基準であり、観測事実、相手の根拠、受諾済みV*により更新可能です。"
+        )
         return "\n".join(
             [
                 "【ROLE id=role-profile】",
@@ -870,7 +902,7 @@ def format_persona(agent_name: str, persona: str, persona_params: dict[str, obje
                 _canonical_json(presentation),
                 "【INITIAL_VALUE id=initial-v】",
                 value_text,
-                "初期Vは暫定基準であり、観測事実、相手の根拠、受諾済みV*により更新可能です。",
+                value_guidance,
             ]
         )
     priority_weights = persona_params.get("priority_weights", {})
@@ -916,8 +948,25 @@ def _win_loss_block() -> str:
     )
 
 
-def _role_evidence(agent_name: str, state) -> str:
-    return role_specific_evidence(agent_name, state)
+def _role_evidence(agent_name: str, state, role: Any | None = None) -> str:
+    role_mapping = _role_body(role)
+    if role_mapping is None:
+        return role_specific_evidence(agent_name, state)
+    scope = [str(item) for item in role_mapping.get("observation_scope", [])]
+    state_values = state.as_dict() if hasattr(state, "as_dict") else vars(state)
+    observations = {
+        field: state_values.get(field)
+        for field in scope
+        if field in state_values
+    }
+    return "\n".join(
+        [
+            f"expertise_domains: {_canonical_json(role_mapping.get('expertise_domains', []))}",
+            f"responsibility: {role_mapping.get('responsibility', '')}",
+            f"observation_scope: {_canonical_json(scope)}",
+            f"role_observations: {_canonical_json(observations)}",
+        ]
+    )
 
 
 def _question_context(open_question: dict[str, Any] | None, can_ask_question: bool, remaining_messages: int, remaining_tokens: int) -> str:
@@ -996,6 +1045,7 @@ def v_measurement_prompt(
     transcript: list[dict[str, Any]] | None = None,
     final_vote: dict[str, Any] | None = None,
     v_state: dict[str, Any] | None = None,
+    role: Any | None = None,
 ) -> str:
     """Condition-symmetric V measurement. It intentionally contains no framework hint."""
     if phase not in {"before", "after"}:
@@ -1028,7 +1078,7 @@ def v_measurement_prompt(
 これは測定であり、合意やV*形成を指示するものではありません。
 
 【CURRENT_OBSERVATION id=state】
-{format_state(state, agent_name)}
+{format_state(state, agent_name, role)}
 
 【ROLE_PERSONA_INITIAL_VALUE id=agent-profile】
 {format_persona(agent_name, persona, persona_params)}{current}
@@ -1077,6 +1127,7 @@ def discussion_prompt(
     remaining_messages: int = 0,
     remaining_tokens: int = 0,
     v_state: dict[str, Any] | None = None,
+    role: Any | None = None,
 ) -> str:
     context = _question_context(open_question, can_ask_question, remaining_messages, remaining_tokens)
     json_contract = _discussion_json_contract(agent_name, open_question)
@@ -1095,10 +1146,10 @@ def discussion_prompt(
 {format_persona(agent_name, persona, persona_params)}
 
 現在状態（あなたの担当分野のみ可視）:
-{format_state(state, agent_name)}
+{format_state(state, agent_name, role)}
 
 あなたの役割固有情報:
-{_role_evidence(agent_name, state)}
+{_role_evidence(agent_name, state, role)}
 
 選択可能な行動:
 {action_list()}
@@ -1116,6 +1167,7 @@ def discussion_prompt(
 行動案を述べたい場合は action（A-F）と reason を含めてください。
 ready は不要です。
 HIVC-D条件では必要に応じ v_proposal と v_star_response を追加できます。
+HIVC-D条件で自分の事前V測定を明示共有する場合だけ share_v_before=true を追加できます。
 v_proposal={{"proposal_id":"一意ID","ordered_criteria":["基準1","基準2"],"scope":"turn"}}
 v_star_response={{"response":"accept|reject|counter","proposal_id":"対象ID"}}。対象IDなしの応答は無効です。
 counterの場合は v_star_response.counter_proposal に proposal_id、ordered_criteria、scope、任意のweightsを含む完全な代替案を必ず入れてください。
@@ -1135,6 +1187,7 @@ def decision_opportunity_prompt(
     opportunity_index: int,
     opportunity_count: int,
     v_state: dict[str, Any] | None = None,
+    role: Any | None = None,
 ) -> str:
     accepted = bool(v_state and v_state.get("v_star_status") == "accepted")
     v_contract = (
@@ -1156,10 +1209,10 @@ def decision_opportunity_prompt(
 {format_persona(agent_name, persona, persona_params)}
 
 現在状態（あなたの担当分野のみ可視）:
-{format_state(state, agent_name)}
+{format_state(state, agent_name, role)}
 
 あなたの役割固有情報:
-{_role_evidence(agent_name, state)}
+{_role_evidence(agent_name, state, role)}
 
 選択可能な行動:
 {action_list()}
@@ -1352,6 +1405,14 @@ def run_one_game(
     persistent_v_star: dict[str, Any] | None = None
     persistent_v_star_id = ""
 
+    def resolved_role_for(agent: str) -> Any | None:
+        if isinstance(resolved_profiles, dict):
+            resolved = resolved_profiles.get(agent)
+            role = getattr(resolved, "role", None)
+            if role is not None:
+                return role
+        return _resolved_role_from_params(persona_params.get(agent))
+
     # 少なくとも各エージェント1回ずつ発言できるよう実効値を確保
     effective_max_discussion_turns = max(max_discussion_turns, n_speakers)
     if effective_max_discussion_turns != max_discussion_turns:
@@ -1418,6 +1479,7 @@ def run_one_game(
                         phase="before",
                         persona=personas[agent],
                         persona_params=persona_params[agent],
+                        role=resolved_role_for(agent),
                     ),
                     max_new_tokens,
                     enable_thinking=enable_thinking,
@@ -1434,6 +1496,7 @@ def run_one_game(
 
         v_proposals: list[dict[str, Any]] = []
         v_responses: dict[str, list[dict[str, Any]]] = {"alpha": [], "beta": []}
+        explicitly_shared_v_before: dict[str, dict[str, Any]] = {}
         inherited_game_v = persistent_v_star is not None
         v_star_status = "accepted" if inherited_game_v else ("unresolved" if enable_v_flow else "not_recorded")
         v_star_id = persistent_v_star_id if inherited_game_v else ""
@@ -1455,14 +1518,7 @@ def run_one_game(
                 return None
             return {
                 "current_v": v_before[agent],
-                "shared_v_before": {
-                    name: {
-                        "v_before": v_before[name],
-                        "action_before": action_before[name].value if action_before[name] else None,
-                        "reason_before": reason_before[name],
-                    }
-                    for name in speakers
-                },
+                "shared_v_before": explicitly_shared_v_before,
                 "pending_proposals": v_proposals,
                 "v_star_status": v_star_status,
                 "v_star_id": v_star_id,
@@ -1515,6 +1571,7 @@ def run_one_game(
                     remaining_messages=turn_remaining_messages,
                     remaining_tokens=turn_remaining_tokens,
                     v_state=current_v_state(speaker),
+                    role=resolved_role_for(speaker),
                 )
 
                 response = get_discussion_message(
@@ -1630,6 +1687,19 @@ def run_one_game(
                         "v_star_response": v_response,
                     }
                 )
+                raw_payload = response.get("raw_payload")
+                if (
+                    enable_v_flow
+                    and condition in {"hivc_d", "hivc_d_prescribed_v1"}
+                    and isinstance(raw_payload, dict)
+                    and raw_payload.get("share_v_before") is True
+                ):
+                    explicitly_shared_v_before[speaker] = {
+                        "v_before": v_before[speaker],
+                        "action_before": action_before[speaker].value if action_before[speaker] else None,
+                        "reason_before": reason_before[speaker],
+                    }
+                    transcript[-1]["shared_v_before"] = explicitly_shared_v_before[speaker]
                 if proposal is not None:
                     proposal = {**proposal, "speaker": speaker, "message_id": this_message_id}
                     v_proposals.append(proposal)
@@ -1716,6 +1786,7 @@ def run_one_game(
                     opp_idx,
                     opportunity_count,
                     v_state=current_v_state("alpha"),
+                    role=resolved_role_for("alpha"),
                 ),
                 max_new_tokens,
                 fallback,
@@ -1738,6 +1809,7 @@ def run_one_game(
                     opp_idx,
                     opportunity_count,
                     v_state=current_v_state("beta"),
+                    role=resolved_role_for("beta"),
                 ),
                 max_new_tokens,
                 fallback,
@@ -1859,6 +1931,7 @@ def run_one_game(
                             "group_action": group_action.value,
                         },
                         v_state=current_v_state(agent),
+                        role=resolved_role_for(agent),
                     ),
                     max_new_tokens,
                     enable_thinking=enable_thinking,
@@ -1901,8 +1974,8 @@ def run_one_game(
             {"alpha": alpha_vote_reason, "beta": beta_vote_reason}, ensure_ascii=False
         )
         role_evidence = {
-            "alpha": role_specific_evidence("alpha", state),
-            "beta": role_specific_evidence("beta", state),
+            "alpha": _role_evidence("alpha", state, resolved_role_for("alpha")),
+            "beta": _role_evidence("beta", state, resolved_role_for("beta")),
         }
 
         unanswered_question_count = len(open_questions)
