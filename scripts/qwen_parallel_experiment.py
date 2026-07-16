@@ -138,7 +138,12 @@ def _nvidia_smi_query(gpu_ids: list[int] | None, fields: list[str]) -> list[dict
     except Exception as exc:
         raise RuntimeError(f"nvidia-smi 実行失敗: {exc}") from exc
     if result.returncode != 0:
-        raise RuntimeError(f"nvidia-smi エラー: {result.stderr.strip()}")
+        stdout = result.stdout.strip()
+        stderr = result.stderr.strip()
+        raise RuntimeError(
+            "nvidia-smi エラー "
+            f"(exit={result.returncode}, stdout={stdout!r}, stderr={stderr!r})"
+        )
     rows: list[dict[str, str]] = []
     for line in result.stdout.strip().splitlines():
         if not line:
@@ -182,7 +187,7 @@ def get_gpu_snapshot(gpu_ids: list[int]) -> list[dict[str, object]]:
         "utilization.gpu",
         "utilization.memory",
         "pstate",
-        "clocks_throttle_reasons.thermal",
+        "clocks_throttle_reasons.sw_thermal_slowdown",
         "clocks_throttle_reasons.hw_thermal_slowdown",
         "clocks_throttle_reasons.hw_slowdown",
     ]
@@ -205,7 +210,9 @@ def get_gpu_snapshot(gpu_ids: list[int]) -> list[dict[str, object]]:
             mem_total = int(row["memory.total"])
         except ValueError:
             mem_total = None
-        thermal_active = "Active" in (row.get("clocks_throttle_reasons.thermal") or "")
+        thermal_active = "Active" in (
+            row.get("clocks_throttle_reasons.sw_thermal_slowdown") or ""
+        )
         hw_thermal_active = "Active" in (row.get("clocks_throttle_reasons.hw_thermal_slowdown") or "")
         hw_slowdown_active = "Active" in (row.get("clocks_throttle_reasons.hw_slowdown") or "")
         out.append(

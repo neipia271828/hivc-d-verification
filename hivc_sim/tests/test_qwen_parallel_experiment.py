@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,6 +11,58 @@ from scripts import qwen_parallel_experiment as qp
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_nvidia_smi_query_reports_stdout_stderr_and_exit_code(monkeypatch) -> None:
+    monkeypatch.setattr(
+        qp.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=2,
+            stdout='Field "invalid.field" is not a valid field to query.\n',
+            stderr="",
+        ),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        qp._nvidia_smi_query([0], ["invalid.field"])
+
+    message = str(exc_info.value)
+    assert "exit=2" in message
+    assert "invalid.field" in message
+    assert "stderr=''" in message
+
+
+def test_gpu_snapshot_uses_supported_software_thermal_slowdown_field(monkeypatch) -> None:
+    captured_fields: list[str] = []
+
+    def fake_query(gpu_ids, fields):
+        assert gpu_ids == [0]
+        captured_fields.extend(fields)
+        return [
+            {
+                field: {
+                    "index": "0",
+                    "uuid": "GPU-test",
+                    "name": "NVIDIA RTX A5000",
+                    "compute_mode": "Default",
+                    "memory.free": "24000",
+                    "memory.used": "1",
+                    "memory.total": "24564",
+                    "temperature.gpu": "35",
+                    "clocks_throttle_reasons.sw_thermal_slowdown": "Active",
+                }.get(field, "Not Active")
+                for field in fields
+            }
+        ]
+
+    monkeypatch.setattr(qp, "_nvidia_smi_query", fake_query)
+
+    snapshot = qp.get_gpu_snapshot([0])
+
+    assert "clocks_throttle_reasons.sw_thermal_slowdown" in captured_fields
+    assert "clocks_throttle_reasons.thermal" not in captured_fields
+    assert snapshot[0]["thermal_throttle"] is True
 
 
 def test_compute_shards_even_split_two_gpus() -> None:

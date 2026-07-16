@@ -367,3 +367,16 @@
   - `uv run pytest -q`: 115 passed
   - GPU実験は実行していない
   - pushは実行していない
+
+## GPU事前検査の nvidia-smi クエリ互換性修正
+
+- GPUサーバーのNVIDIAドライバで未対応の `clocks_throttle_reasons.thermal` を、対応済みの `clocks_throttle_reasons.sw_thermal_slowdown` に変更
+- `nvidia-smi` が非0終了した場合、終了コード、stdout、stderrをすべてエラーに記録するよう改善
+  - 従来はstderrのみ記録していたため、stdoutに出力された無効フィールドエラーが空文字として表示されていた
+- `hivc_sim/tests/test_qwen_parallel_experiment.py` に、対応フィールドの使用とエラー詳細保存の回帰テストを追加
+- ローカル検証結果
+  - `uv run pytest hivc_sim/tests -q`: 117 passed
+  - `python3 -m py_compile scripts/qwen_parallel_experiment.py`: 成功
+  - `git diff --check`: 成功
+- GPUサーバー上で修正後と同一の `nvidia-smi` クエリが2 GPUとも成功することを確認
+- GPU実験本体は実行していない
