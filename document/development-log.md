@@ -344,3 +344,26 @@
   - `pytest hivc_sim/tests -q`: 115 passed
   - GPU実験は実行していない
   - pushは実行していない
+
+## レビュー指摘5件の修正
+
+- `scripts/qwen_parallel_experiment.py` と `scripts/local_preview.py` の value manifest 結合キーを、生成側の `game_profile_assignments` に統一
+  - 結合側・プレビュー側が存在しない `game_entries` を読んでいたため、shard 2以降の割付けが失われていた
+  - テストも `game_profile_assignments` を使うよう更新
+- `scripts/qwen_parallel_experiment.py` の shard 生成を条件単位から worker（GPU）単位へ変更
+  - 各 worker は担当 seed 範囲内の全条件を、seed ごとに `condition_order_for_seed` でシャッフルされた順序で実行
+  - `counterbalanced_shard_rounds` は per-seed シャッフル済みの shard リストを1ラウンドとして返す
+  - `condition_order_for_seed` を `scripts/llm_turn_game_common.py` に移動し、単一 runner と並列 worker で共有
+- `--role-value-mode` 単独指定時の role_file 自動選択を追加
+  - `scripts/llm_turn_game_common.py` に `resolve_role_file_path` を追加
+  - `qwen_two_agent_experiment.py`、`qwen_parallel_worker.py`、`qwen_parallel_experiment.py` で config 読み込み後に解決
+  - workflow CLI へ `--role-file` 引数を追加し、runner へ転送
+- `pyproject.toml` の `dependencies` に `requirements.txt` と同じ実行・テスト依存を追加
+  - `uv run pytest -q` で 115 passed を確認
+- `scripts/llm_turn_game_common.py` の自由議論プロンプトから、HIVC-D 固有の V 共有契約を control/consulting へ提示していた部分を除去
+  - `hivc_d` / `hivc_d_prescribed_v1` 条件でのみ V 提案・V*応答・`share_v_before=true` の説明を含める
+- ローカル検証結果
+  - `pytest -q`: 115 passed
+  - `uv run pytest -q`: 115 passed
+  - GPU実験は実行していない
+  - pushは実行していない

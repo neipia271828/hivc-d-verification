@@ -27,12 +27,12 @@ def test_compute_shards_even_split_two_gpus() -> None:
 
 def test_compute_shards_three_conditions_share_same_split() -> None:
     shards = qp.compute_shards(["control", "consulting", "hivc_d"], seed=42, games=30, gpu_ids=[0, 1], workers_per_gpu=1)
-    assert len(shards) == 6
-    for cond in ("control", "consulting", "hivc_d"):
-        cond_shards = [s for s in shards if s.condition == cond]
-        assert len(cond_shards) == 2
-        assert cond_shards[0].seed_start == 42
-        assert cond_shards[1].seed_start == 57
+    assert len(shards) == 2
+    for s in shards:
+        assert set(s.conditions) == {"control", "consulting", "hivc_d"}
+        assert s.seed_count == 15
+    assert shards[0].seed_start == 42
+    assert shards[1].seed_start == 57
 
 
 def test_compute_shards_uneven_one_game_no_empty_shard() -> None:
@@ -54,16 +54,18 @@ def test_counterbalanced_shard_rounds_are_deterministic_and_vary_by_seed_range()
         ["control", "consulting", "hivc_d"], seed=42, games=2,
         gpu_ids=[0, 1], workers_per_gpu=1,
     )
-    first = [[s.condition for s in round_] for round_ in qp.counterbalanced_shard_rounds(shards)]
-    second = [[s.condition for s in round_] for round_ in qp.counterbalanced_shard_rounds(shards)]
-    assert first == second
-    per_range: dict[int, list[str]] = {}
-    for round_ in qp.counterbalanced_shard_rounds(shards):
-        for shard in round_:
-            per_range.setdefault(shard.seed_start, []).append(shard.condition)
-    assert set(per_range) == {42, 43}
-    assert all(set(order) == {"control", "consulting", "hivc_d"} for order in per_range.values())
-    assert per_range[42] != per_range[43]
+    rounds1 = qp.counterbalanced_shard_rounds(shards)
+    rounds2 = qp.counterbalanced_shard_rounds(shards)
+    assert len(rounds1) == 1
+    assert [[s.shard_id for s in r] for r in rounds1] == [[s.shard_id for s in r] for r in rounds2]
+
+    per_seed: dict[int, list[str]] = {}
+    for s in shards:
+        for cond, game_seed in s.tasks:
+            per_seed.setdefault(game_seed, []).append(cond)
+    assert set(per_seed) == {42, 43}
+    assert all(set(order) == {"control", "consulting", "hivc_d"} for order in per_seed.values())
+    assert per_seed[42] != per_seed[43]
 
 
 def _make_row(condition: str, seed: int, turn: int) -> dict[str, str]:
@@ -161,7 +163,7 @@ def test_merge_results_generates_master_csvs_and_report(tmp_path: Path) -> None:
     }
     (shard.shard_dir / "shard_manifest.json").write_text(json.dumps(shard_manifest), encoding="utf-8")
     (shard.shard_dir / "value_manifest.json").write_text(
-        json.dumps({"schema_version": "value-manifest-1", "frameworks": {"control": {}}, "game_entries": [{"seed": 42}]}),
+        json.dumps({"schema_version": "value-manifest-1", "frameworks": {"control": {}}, "game_profile_assignments": [{"seed": 42}]}),
         encoding="utf-8",
     )
     qp._write_csv(shard.shard_dir / "control_games.csv", [_make_row("control", 42, 1)])
@@ -175,7 +177,7 @@ def test_merge_results_generates_master_csvs_and_report(tmp_path: Path) -> None:
     assert (master_dir / "merge_report.json").is_file()
     assert (master_dir / "value_manifest.json").is_file()
     value_manifest = json.loads((master_dir / "value_manifest.json").read_text(encoding="utf-8"))
-    assert value_manifest["game_entries"] == [{"seed": 42}]
+    assert value_manifest["game_profile_assignments"] == [{"seed": 42}]
     assert value_manifest["framework_ids"] == ["control"]
 
     report = json.loads((master_dir / "merge_report.json").read_text(encoding="utf-8"))

@@ -149,13 +149,13 @@ class PreviewServer:
         frameworks: dict = {}
         for body in loaded:
             frameworks.update(body.get("frameworks") or {})
-            for entry in body.get("game_entries") or []:
+            for entry in body.get("game_profile_assignments") or []:
                 key = json.dumps(entry, ensure_ascii=False, sort_keys=True)
                 if key not in seen:
                     seen.add(key)
                     entries.append(entry)
         merged["frameworks"] = frameworks
-        merged["game_entries"] = entries
+        merged["game_profile_assignments"] = entries
         merged["preview_merged_from_shards"] = True
         return json.dumps(merged, ensure_ascii=False, sort_keys=True).encode("utf-8")
 

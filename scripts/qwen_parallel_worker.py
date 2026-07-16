@@ -29,8 +29,10 @@ from config_loader import merge_config_and_cli  # noqa: E402
 from llm_turn_game_common import (  # noqa: E402
     build_value_manifest,
     append_profile_assignment,
+    condition_order_for_seed,
     load_model,
     load_personas,
+    resolve_role_file_path,
     run_one_game,
     write_value_manifest,
 )
@@ -154,9 +156,9 @@ def _build_parser() -> argparse.ArgumentParser:
         description="GPU並列実験の1 shard worker。"
     )
     parser.add_argument("--config", default=None, help="YAML設定ファイル")
-    parser.add_argument("--condition", required=True, choices=list(CLI_DEFAULTS["conditions"]))
+    parser.add_argument("--condition", default=None, choices=list(CLI_DEFAULTS["conditions"]), help="単一条件を実行する場合の条件（未指定時はconfigのconditionsを使用）")
     parser.add_argument("--seed", type=int, required=True, help="shardの開始seed")
-    parser.add_argument("--games", type=int, required=True, help="shardのゲーム数")
+    parser.add_argument("--games", type=int, required=True, help="shardのseed数")
     parser.add_argument("--output-dir", required=True, help="shard出力ディレクトリ")
     parser.add_argument("--gpu-id", type=int, default=0, help="物理GPU ID")
     parser.add_argument("--pause-file", default=None, help="pause要求ファイルパス")
@@ -172,16 +174,20 @@ def main() -> None:
 
     # config 読み込み。condition / seed / games / output_dir は CLI で上書き
     cli_overrides: dict[str, object] = {
-        "conditions": [args.condition],
         "seed": args.seed,
         "games": args.games,
         "output_dir": args.output_dir,
         "live_jsonl": None,
     }
+    if args.condition is not None:
+        cli_overrides["conditions"] = [args.condition]
     cfg = merge_config_and_cli(args.config, cli_overrides, CLI_DEFAULTS, ARG_TYPES)
     cfg["model_path"] = str(Path(str(cfg["model_path"])).expanduser())
     # shard worker は独自の live stream を使わない
     cfg["live_jsonl"] = None
+
+    # role_value_mode と role_file の整合性を取る（--role-value-mode 単独指定時の自動選択）
+    cfg["role_file"] = resolve_role_file_path(cfg.get("role_file"), cfg.get("role_value_mode"))
 
     # load_personas 用の args 風 namespace を構築
     persona_args = argparse.Namespace()
@@ -200,7 +206,8 @@ def main() -> None:
         shard_manifest_path,
         {
             "shard_id": output_dir.name,
-            "condition": args.condition,
+            "condition": args.condition if args.condition is not None else ",".join(cfg.get("conditions", [])),
+            "conditions": list(cfg.get("conditions", [])),
             "seed_start": args.seed,
             "seed_count": args.games,
             "gpu_id": args.gpu_id,
@@ -227,6 +234,7 @@ def main() -> None:
         # Resolve and snapshot profiles before model loading so failed starts are reproducible.
         personas, persona_params, role_keys = load_personas(persona_args)
         random_persona = cfg["random_persona"]
+        conditions: list[str] = list(cfg["conditions"])
         value_manifest_path = output_dir / "value_manifest.json"
         value_manifest = build_value_manifest(
                 cfg,
@@ -234,7 +242,7 @@ def main() -> None:
                 persona_params,
                 role_keys,
                 role_value_mode=str(cfg["role_value_mode"]),
-                framework_ids=[args.condition],
+                framework_ids=conditions,
                 runner_version="qwen_parallel_worker-v2",
         )
         write_value_manifest(value_manifest_path, value_manifest)
@@ -246,26 +254,12 @@ def main() -> None:
         gpu_info = _query_gpu_info(args.gpu_id)
         _update_shard_manifest(shard_manifest_path, gpu_info)
 
-        rows: list[dict[str, object]] = []
+        condition_rows: dict[str, list[dict[str, object]]] = {c: [] for c in conditions}
         pause_file = Path(args.pause_file) if args.pause_file else None
 
         for game_index in range(cfg["games"]):
-            if pause_file is not None and pause_file.exists():
-                print(f"[worker {output_dir.name}] pause requested after {game_index} games")
-                _write_csv(output_dir / f"{args.condition}_games.csv", rows)
-                _update_shard_manifest(
-                    shard_manifest_path,
-                    {
-                        "status": "paused_thermal",
-                        "exit_code": PAUSED_EXIT_CODE,
-                        "row_count": len(rows),
-                        "finished_at": _now_iso(),
-                        "paused_after_game_index": game_index,
-                    },
-                )
-                sys.exit(PAUSED_EXIT_CODE)
-
             game_seed = cfg["seed"] + game_index
+            seed_conditions = condition_order_for_seed(conditions, game_seed)
             if random_persona:
                 persona_args.random_seed = cfg["random_seed"] if cfg["random_seed"] is not None else game_seed
                 personas, persona_params, role_keys = load_personas(persona_args)
@@ -273,37 +267,57 @@ def main() -> None:
                 append_profile_assignment(value_manifest, game_seed, personas, persona_params, role_keys)
                 write_value_manifest(value_manifest_path, value_manifest)
 
-            game_rows = run_one_game(
-                model,
-                tokenizer,
-                args.condition,
-                game_seed,
-                personas,
-                persona_params,
-                role_keys,
-                max_new_tokens=cfg["max_new_tokens"],
-                max_discussion_turns=cfg["max_discussion_turns"],
-                discussion_token_budget=cfg["discussion_token_budget"],
-                evaluator_rollouts=cfg["evaluator_rollouts"],
-                enable_thinking=cfg["enable_thinking"],
-                thinking_budget=cfg["thinking_budget"],
-                decision_schedule_seed=cfg["decision_schedule_seed"],
-                max_decision_opportunities=cfg["max_decision_opportunities"],
-                role_value_mode=cfg["role_value_mode"],
-            )
-            rows.extend(game_rows)
+            for cond_index, condition in enumerate(seed_conditions):
+                if pause_file is not None and pause_file.exists():
+                    print(f"[worker {output_dir.name}] pause requested after seed {game_seed} condition {condition}")
+                    for c, c_rows in condition_rows.items():
+                        if c_rows:
+                            _write_csv(output_dir / f"{c}_games.csv", c_rows)
+                    _update_shard_manifest(
+                        shard_manifest_path,
+                        {
+                            "status": "paused_thermal",
+                            "exit_code": PAUSED_EXIT_CODE,
+                            "row_count": sum(len(r) for r in condition_rows.values()),
+                            "finished_at": _now_iso(),
+                            "paused_after_game_index": game_index,
+                        },
+                    )
+                    sys.exit(PAUSED_EXIT_CODE)
 
-        output_csv = output_dir / f"{args.condition}_games.csv"
-        _write_csv(output_csv, rows)
-        print(f"[worker {output_dir.name}] Wrote {len(rows)} rows to {output_csv}")
+                game_rows = run_one_game(
+                    model,
+                    tokenizer,
+                    condition,
+                    game_seed,
+                    personas,
+                    persona_params,
+                    role_keys,
+                    max_new_tokens=cfg["max_new_tokens"],
+                    max_discussion_turns=cfg["max_discussion_turns"],
+                    discussion_token_budget=cfg["discussion_token_budget"],
+                    evaluator_rollouts=cfg["evaluator_rollouts"],
+                    enable_thinking=cfg["enable_thinking"],
+                    thinking_budget=cfg["thinking_budget"],
+                    decision_schedule_seed=cfg["decision_schedule_seed"],
+                    max_decision_opportunities=cfg["max_decision_opportunities"],
+                    role_value_mode=cfg["role_value_mode"],
+                )
+                condition_rows[condition].extend(game_rows)
+
+        output_csvs: dict[str, Path] = {}
+        for condition, rows in condition_rows.items():
+            output_csv = output_dir / f"{condition}_games.csv"
+            _write_csv(output_csv, rows)
+            output_csvs[condition] = output_csv
+        print(f"[worker {output_dir.name}] Wrote {sum(len(r) for r in condition_rows.values())} rows to {output_dir}")
 
         _update_shard_manifest(
             shard_manifest_path,
             {
                 "status": "completed",
                 "exit_code": 0,
-                "row_count": len(rows),
-                "output_file": str(output_csv),
+                "row_count": sum(len(r) for r in condition_rows.values()),
                 "finished_at": _now_iso(),
             },
         )

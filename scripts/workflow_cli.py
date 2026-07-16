@@ -355,6 +355,8 @@ def _experiment_runner_args(
         command.extend(["--seed", str(args.seed)])
     if getattr(args, "role_value_mode", None) is not None:
         command.extend(["--role-value-mode", args.role_value_mode])
+    if getattr(args, "role_file", None) is not None:
+        command.extend(["--role-file", args.role_file])
     return command
 
 
@@ -382,6 +384,8 @@ def _parallel_runner_args(
         command.extend(["--seed", str(args.seed)])
     if getattr(args, "role_value_mode", None) is not None:
         command.extend(["--role-value-mode", args.role_value_mode])
+    if getattr(args, "role_file", None) is not None:
+        command.extend(["--role-file", args.role_file])
     gpus = getattr(args, "gpus", None)
     if gpus:
         command.extend(["--gpus", *[str(g) for g in gpus]])
@@ -495,6 +499,11 @@ def _build_experiment_parser() -> argparse.ArgumentParser:
         "--role-value-mode",
         choices=["legacy_hard", "soft_value", "expertise_only"],
         default=None,
+    )
+    parser.add_argument(
+        "--role-file",
+        default=None,
+        help="使用するRoleプロファイルファイル（未指定時は--role-value-modeに応じたデフォルトを使用）",
     )
     parser.add_argument("--games", type=int, default=1)
     parser.add_argument("--seed", type=int)

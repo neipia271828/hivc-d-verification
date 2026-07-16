@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import random
 import sys
 from pathlib import Path
 
@@ -36,8 +35,10 @@ from llm_turn_game_common import (  # noqa: E402
     add_persona_args,
     append_profile_assignment,
     build_value_manifest,
+    condition_order_for_seed,
     load_model,
     load_personas,
+    resolve_role_file_path,
     run_one_game,
     write_value_manifest,
 )
@@ -101,13 +102,6 @@ CLI_DEFAULTS: dict[str, object] = {
 }
 
 
-def condition_order_for_seed(conditions: list[str], game_seed: int) -> list[str]:
-    """Return a deterministic per-seed permutation to remove fixed-order confounds."""
-    ordered = list(conditions)
-    random.Random(game_seed ^ 0x5EEDC0DE).shuffle(ordered)
-    return ordered
-
-
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run 3-condition HIVC-D turn-game batch experiment."
@@ -151,6 +145,9 @@ def main() -> None:
     # YAML 内の ~/... はシェルを経由しないため自動展開されない。
     # ローカルモデルを指定する設定でも Transformers に正しい絶対パスを渡す。
     cfg["model_path"] = str(Path(str(cfg["model_path"])).expanduser())
+
+    # role_value_mode と role_file の整合性を取る（--role-value-mode 単独指定時の自動選択）
+    cfg["role_file"] = resolve_role_file_path(cfg.get("role_file"), cfg.get("role_value_mode"))
 
     # conditions の "all" 処理
     conditions = cfg["conditions"]

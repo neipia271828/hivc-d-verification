@@ -150,14 +150,14 @@ def test_preview_serves_merged_parallel_shard_value_manifests(tmp_path: Path) ->
         shard_dir = run_dir / "shards" / name
         shard_dir.mkdir(parents=True)
         (shard_dir / "value_manifest.json").write_text(
-            json.dumps({"frameworks": {condition: {}}, "game_entries": [{"seed": seed}]}),
+            json.dumps({"frameworks": {condition: {}}, "game_profile_assignments": [{"seed": seed}]}),
             encoding="utf-8",
         )
     server = module.PreviewServer(tmp_path, 0, "127.0.0.1")
     assert server._list_runs()[0]["has_value_manifest"] is True
     merged = json.loads(server._read_value_manifest("parallel-run"))
     assert set(merged["frameworks"]) == {"control", "hivc_d"}
-    assert {entry["seed"] for entry in merged["game_entries"]} == {42, 43}
+    assert {entry["seed"] for entry in merged["game_profile_assignments"]} == {42, 43}
 
 
 def test_comparison_is_keyed_by_exact_seed_and_turn() -> None:

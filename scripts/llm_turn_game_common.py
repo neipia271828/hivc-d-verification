@@ -9,6 +9,7 @@ import datetime as dt
 import hashlib
 import json
 import math
+import random
 import re
 import subprocess
 import sys
@@ -24,6 +25,7 @@ _HIVC_SIM_PATH = _REPO_ROOT / "hivc_sim"
 if str(_HIVC_SIM_PATH) not in sys.path:
     sys.path.insert(0, str(_HIVC_SIM_PATH))
 
+from profiles import ROLE_VALUE_MODES  # noqa: E402
 from turn_game import (
     ACTION_LABELS,
     ALL_ACTIONS,
@@ -151,6 +153,68 @@ class SpeechAct(str, Enum):
 V_STAR_RESPONSE_TYPES = frozenset({"accept", "reject", "counter"})
 
 
+def _read_declared_role_value_mode(path: Path) -> str | None:
+    """Return the top-level role_value_mode declared in a JSON/YAML profile file."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return None
+    suffix = path.suffix.lower()
+    try:
+        if suffix == ".json":
+            data = json.loads(text)
+        elif suffix in {".yaml", ".yml"}:
+            from profiles import yaml as _yaml
+
+            if _yaml is None:
+                return None
+            data = _yaml.safe_load(text)
+        else:
+            return None
+    except Exception:
+        return None
+    if isinstance(data, dict):
+        return data.get("role_value_mode")
+    return None
+
+
+_DEFAULT_ROLE_FILES: dict[str, str | None] = {
+    "soft_value": str(_REPO_ROOT / "configs" / "profiles_soft_value.yaml"),
+    "expertise_only": str(_REPO_ROOT / "configs" / "profiles_expertise_only.yaml"),
+    "legacy_hard": None,
+}
+_KNOWN_ROLE_FILES: set[str] = {p for p in _DEFAULT_ROLE_FILES.values() if p is not None}
+
+
+def resolve_role_file_path(role_file: str | Path | None, role_value_mode: str | None) -> str | None:
+    """Select a role_file compatible with the requested role_value_mode.
+
+    If the requested mode is unknown, the original path is returned unchanged.
+    If no path is given, the canonical default for the mode is used.
+    If one of the known default files is supplied but does not match the mode,
+    the correct default file is substituted automatically (this covers the
+    common case of overriding only --role-value-mode via CLI).
+    Custom files are left as-is; mismatches will be caught by load_profiles.
+    """
+    if role_value_mode not in ROLE_VALUE_MODES:
+        return str(role_file) if role_file is not None else None
+    default = _DEFAULT_ROLE_FILES.get(role_value_mode)
+    if not role_file:
+        return default
+    path = Path(str(role_file)).expanduser()
+    if not path.is_absolute():
+        path = _REPO_ROOT / path
+    normalized = str(path)
+    if normalized in _KNOWN_ROLE_FILES:
+        return default
+    declared = _read_declared_role_value_mode(path)
+    if declared is not None and declared != role_value_mode:
+        # Keep custom files as the user supplied them; the validation error
+        # from load_profiles will make a mismatch explicit.
+        return normalized
+    return normalized
+
+
 def _canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -164,6 +228,13 @@ def _git_commit() -> str | None:
         ["git", "rev-parse", "HEAD"], cwd=_REPO_ROOT, capture_output=True, text=True, check=False
     )
     return result.stdout.strip() if result.returncode == 0 else None
+
+
+def condition_order_for_seed(conditions: list[str], game_seed: int) -> list[str]:
+    """Return a deterministic per-seed permutation to remove fixed-order confounds."""
+    ordered = list(conditions)
+    random.Random(game_seed ^ 0x5EEDC0DE).shuffle(ordered)
+    return ordered
 
 
 def build_value_manifest(
@@ -533,8 +604,15 @@ def load_personas(args: argparse.Namespace) -> tuple[dict[str, str], dict[str, d
     random_persona = getattr(args, "random_persona", False)
     random_seed = getattr(args, "random_seed", None)
 
-    role_file = args.role_file or args.personas_file
     role_value_mode = getattr(args, "role_value_mode", None)
+    role_file = resolve_role_file_path(
+        getattr(args, "role_file", None) or getattr(args, "personas_file", None),
+        role_value_mode,
+    )
+    if role_file is not None and getattr(args, "role_file", None) is None and getattr(args, "personas_file", None) is not None:
+        args.personas_file = role_file
+    elif role_file is not None:
+        args.role_file = role_file
     if role_file and role_value_mode in {"legacy_hard", "soft_value", "expertise_only"}:
         from profiles import load_profiles
 
@@ -1131,6 +1209,15 @@ def discussion_prompt(
 ) -> str:
     context = _question_context(open_question, can_ask_question, remaining_messages, remaining_tokens)
     json_contract = _discussion_json_contract(agent_name, open_question)
+    v_sharing_guide = (
+        "HIVC-D条件では必要に応じ v_proposal と v_star_response を追加できます。\n"
+        "HIVC-D条件で自分の事前V測定を明示共有する場合だけ share_v_before=true を追加できます。\n"
+        'v_proposal={"proposal_id":"一意ID","ordered_criteria":["基準1","基準2"],"scope":"turn"}\n'
+        'v_star_response={"response":"accept|reject|counter","proposal_id":"対象ID"}。対象IDなしの応答は無効です。\n'
+        "counterの場合は v_star_response.counter_proposal に proposal_id、ordered_criteria、scope、任意のweightsを含む完全な代替案を必ず入れてください。"
+        if condition in {"hivc_d", "hivc_d_prescribed_v1"}
+        else ""
+    )
     return f"""【GAME_RULES_AND_JSON_CONTRACT id=discussion-contract】
 あなたは深海研究施設トラブルの意思決定エージェントです。
 
@@ -1166,11 +1253,7 @@ def discussion_prompt(
 この自由議論フェーズでは最大 {max_discussion_turns} 発言までです。
 行動案を述べたい場合は action（A-F）と reason を含めてください。
 ready は不要です。
-HIVC-D条件では必要に応じ v_proposal と v_star_response を追加できます。
-HIVC-D条件で自分の事前V測定を明示共有する場合だけ share_v_before=true を追加できます。
-v_proposal={{"proposal_id":"一意ID","ordered_criteria":["基準1","基準2"],"scope":"turn"}}
-v_star_response={{"response":"accept|reject|counter","proposal_id":"対象ID"}}。対象IDなしの応答は無効です。
-counterの場合は v_star_response.counter_proposal に proposal_id、ordered_criteria、scope、任意のweightsを含む完全な代替案を必ず入れてください。
+{v_sharing_guide}
 質問をする場合は speech_act に "question_objection" を使い、addressed_to を指定してください。
 必ず次のJSONだけを返してください。説明文やMarkdownは不要です。
 {json_contract}

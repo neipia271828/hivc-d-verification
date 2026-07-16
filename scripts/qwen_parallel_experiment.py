@@ -21,7 +21,6 @@ import hashlib
 import json
 import os
 import platform
-import random
 import subprocess
 import sys
 import threading
@@ -37,7 +36,7 @@ sys.path.insert(0, str(REPO_ROOT / "hivc_sim"))
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from config_loader import merge_config_and_cli  # noqa: E402
-from llm_turn_game_common import CONDITIONS  # noqa: E402
+from llm_turn_game_common import CONDITIONS, condition_order_for_seed, resolve_role_file_path  # noqa: E402
 from qwen_two_agent_experiment import ARG_TYPES, CLI_DEFAULTS  # noqa: E402
 from turn_game_metrics import compute_summary_metrics  # noqa: E402
 
@@ -124,6 +123,8 @@ class Shard:
     started_at: str | None = None
     finished_at: str | None = None
     skip: bool = False
+    conditions: list[str] = field(default_factory=list)
+    tasks: list[tuple[str, int]] = field(default_factory=list)
 
 
 def _nvidia_smi_query(gpu_ids: list[int] | None, fields: list[str]) -> list[dict[str, str]]:
@@ -268,51 +269,56 @@ def compute_shards(
     gpu_ids: list[int],
     workers_per_gpu: int,
 ) -> list[Shard]:
-    """条件ごとに同一のseed分割をGPU workerに割り当てる。"""
+    """Assign a contiguous seed range to each GPU worker and precompute per-seed condition order.
+
+    Each worker runs all conditions for every seed in its range, with condition order
+    shuffled per seed using condition_order_for_seed. This satisfies the requirement that
+    condition order be randomized/counterbalanced per seed rather than fixed per shard.
+    """
     worker_gpus = [gpu for gpu in gpu_ids for _ in range(workers_per_gpu)]
     total_workers = len(worker_gpus)
     base = games // total_workers
     remainder = games % total_workers
     counts = [base + (1 if i < remainder else 0) for i in range(total_workers)]
 
+    condition_list = list(conditions)
     shards: list[Shard] = []
-    shards_dir = None  # 後で設定
-    for condition in conditions:
-        start = seed
-        for i, count in enumerate(counts):
-            if count == 0:
-                continue
-            end = start + count - 1
-            gpu_id = worker_gpus[i]
-            shard_id = f"{condition}-gpu{gpu_id}-seed{start}-{end}"
-            shards.append(
-                Shard(
-                    shard_id=shard_id,
-                    condition=condition,
-                    gpu_id=gpu_id,
-                    seed_start=start,
-                    seed_count=count,
-                    shard_dir=Path(),
-                    pause_file=Path(),
-                )
-            )
+    start = seed
+    for i, count in enumerate(counts):
+        if count == 0:
             start += count
+            continue
+        end = start + count - 1
+        gpu_id = worker_gpus[i]
+        tasks: list[tuple[str, int]] = []
+        for game_seed in range(start, start + count):
+            tasks.extend((cond, game_seed) for cond in condition_order_for_seed(condition_list, game_seed))
+        if len(condition_list) == 1:
+            condition_label = condition_list[0]
+            shard_id = f"{condition_label}-gpu{gpu_id}-seed{start}-{end}"
+        else:
+            condition_label = "mixed"
+            shard_id = f"multi-gpu{gpu_id}-seed{start}-{end}"
+        shards.append(
+            Shard(
+                shard_id=shard_id,
+                condition=condition_label,
+                conditions=condition_list,
+                gpu_id=gpu_id,
+                seed_start=start,
+                seed_count=count,
+                shard_dir=Path(),
+                pause_file=Path(),
+                tasks=tasks,
+            )
+        )
+        start += count
     return shards
 
 
 def counterbalanced_shard_rounds(shards: list[Shard]) -> list[list[Shard]]:
-    """Order each worker seed range independently, then return parallel launch rounds."""
-    queues: list[list[Shard]] = []
-    grouped: dict[tuple[int, int, int], list[Shard]] = {}
-    for shard in shards:
-        grouped.setdefault((shard.gpu_id, shard.seed_start, shard.seed_count), []).append(shard)
-    for (_gpu_id, seed_start, _seed_count), group in sorted(grouped.items()):
-        random.Random(seed_start ^ 0x5EEDC0DE).shuffle(group)
-        queues.append(group)
-    return [
-        [queue[index] for queue in queues if index < len(queue)]
-        for index in range(max((len(queue) for queue in queues), default=0))
-    ]
+    """Return parallel launch rounds. Per-seed condition order is already encoded in shards."""
+    return [shards] if shards else []
 
 
 def _write_csv(path: Path, rows: list[dict[str, object]]) -> None:
@@ -362,28 +368,29 @@ def _merge_value_manifests(shards: list[Shard], cfg: dict[str, Any]) -> dict[str
 
     merged = dict(manifests[0][1])
     frameworks: dict[str, Any] = {}
-    game_entries: list[dict[str, Any]] = []
-    seen_entries: set[str] = set()
+    assignments: list[dict[str, Any]] = []
+    seen_assignments: set[str] = set()
     sources: list[dict[str, Any]] = []
     for shard, body in manifests:
         frameworks.update(body.get("frameworks") or {})
-        for entry in body.get("game_entries") or []:
+        for entry in body.get("game_profile_assignments") or []:
             if not isinstance(entry, dict):
                 continue
             key = json.dumps(entry, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-            if key not in seen_entries:
-                seen_entries.add(key)
-                game_entries.append(entry)
+            if key not in seen_assignments:
+                seen_assignments.add(key)
+                assignments.append(entry)
         sources.append(
             {
                 "shard_id": shard.shard_id,
                 "condition": shard.condition,
+                "conditions": shard.conditions,
                 "seed_start": shard.seed_start,
                 "seed_count": shard.seed_count,
             }
         )
     merged["frameworks"] = frameworks
-    merged["game_entries"] = sorted(game_entries, key=lambda item: (item.get("seed", -1), json.dumps(item, sort_keys=True)))
+    merged["game_profile_assignments"] = sorted(assignments, key=lambda item: (item.get("seed", -1), json.dumps(item, sort_keys=True)))
     merged["seed_range"] = {"start": cfg["seed"], "count": cfg["games"]}
     merged["framework_ids"] = list(cfg["conditions"])
     merged["runner_version"] = "qwen_parallel_experiment-merged-v2"
@@ -452,6 +459,8 @@ def _load_config(args: argparse.Namespace) -> dict[str, Any]:
     cfg["model_path"] = str(Path(str(cfg["model_path"])).expanduser())
     # 並列実行では live stream は無効（shard worker も上書きする）
     cfg["live_jsonl"] = None
+    # role_value_mode と role_file の整合性を取る（--role-value-mode 単独指定時の自動選択）
+    cfg["role_file"] = resolve_role_file_path(cfg.get("role_file"), cfg.get("role_value_mode"))
     conditions = cfg["conditions"]
     if "all" in conditions:
         conditions = list(CONDITIONS)
@@ -541,13 +550,17 @@ def _pre_check(
     # shard 一意性・カバレッジ検査
     expected_seeds = set(range(cfg["seed"], cfg["seed"] + cfg["games"]))
     for condition in conditions:
-        cond_shards = [s for s in shards if s.condition == condition]
         actual_seeds: set[int] = set()
-        for s in cond_shards:
+        for s in shards:
             actual_seeds.update(range(s.seed_start, s.seed_start + s.seed_count))
         if actual_seeds != expected_seeds:
             raise RuntimeError(
                 f"condition {condition} のseedカバレッジが不正: {sorted(actual_seeds)} != {sorted(expected_seeds)}"
+            )
+    for s in shards:
+        if set(s.conditions) != set(conditions):
+            raise RuntimeError(
+                f"shard {s.shard_id} conditions {s.conditions} do not match {conditions}"
             )
 
     return snapshot, shards
@@ -601,6 +614,7 @@ def _shard_entry(shard: Shard, include_status: bool = True) -> dict[str, Any]:
     entry: dict[str, Any] = {
         "shard_id": shard.shard_id,
         "condition": shard.condition,
+        "conditions": shard.conditions,
         "gpu_id": shard.gpu_id,
         "seed_start": shard.seed_start,
         "seed_count": shard.seed_count,
@@ -655,8 +669,6 @@ def _launch_worker(shard: Shard, cfg: dict[str, Any], args: argparse.Namespace) 
         sys.executable,
         "-u",
         str(SCRIPT_DIR / "qwen_parallel_worker.py"),
-        "--condition",
-        shard.condition,
         "--seed",
         str(shard.seed_start),
         "--games",
@@ -869,9 +881,10 @@ def _merge_results(
     # 読み込み
     if all_completed:
         for shard in shards:
-            csv_path = shard.shard_dir / f"{shard.condition}_games.csv"
-            rows = _read_csv(csv_path)
-            condition_rows[shard.condition].extend(rows)
+            for condition in cfg["conditions"]:
+                csv_path = shard.shard_dir / f"{condition}_games.csv"
+                rows = _read_csv(csv_path)
+                condition_rows[condition].extend(rows)
 
     # 行スキーマ一致
     all_rows: list[dict[str, str]] = []
