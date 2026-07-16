@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -21,6 +22,8 @@ from turn_game_metrics import (  # noqa: E402
     route_switch_quality,
     conflict_resolution_quality,
     unanswered_question_rate,
+    normalized_l1_distance,
+    v_process_metrics,
 )
 
 
@@ -298,3 +301,137 @@ def test_compute_summary_metrics_includes_question_metrics() -> None:
     assert summary["unanswered_question_rate"] == 0.0
     assert summary["question_response_latency"] == 1.0
     assert summary["forced_decision_with_open_question_rate"] == 0.0
+
+
+def test_normalized_l1_distance_normalizes_vectors() -> None:
+    assert normalized_l1_distance({"a": 3, "b": 1}, {"a": 1, "b": 1}) == 0.5
+    assert np.isnan(normalized_l1_distance({"a": 1}, {"b": 1}))
+    assert np.isnan(normalized_l1_distance({"a": 0}, {"a": 0}))
+
+
+def test_v_process_metrics_rates_distances_and_denominators() -> None:
+    rows = [
+        {
+            "alpha_v_before": {"weights": {"safety": 0.8, "progress": 0.2}},
+            "beta_v_before": {"weights": {"safety": 0.2, "progress": 0.8}},
+            "alpha_v_after": {"weights": {"safety": 0.6, "progress": 0.4}},
+            "beta_v_after": {"weights": {"safety": 0.5, "progress": 0.5}},
+            "v_proposals": [{"id": "v1"}],
+            "v_star_id": "v1",
+            "v_star_status": "accepted",
+            "alpha_action_before": "A",
+            "beta_action_before": "B",
+            "alpha_vote": "B",
+            "beta_vote": "B",
+            "alpha_v_star_consistent": True,
+            "beta_v_star_consistent": True,
+        },
+        {
+            "alpha_v_before": {"weights": {"safety": 0.7, "progress": 0.3}},
+            "beta_v_before": {"weights": {"safety": 0.4, "progress": 0.6}},
+            "alpha_v_after": {"weights": {"safety": 0.7, "progress": 0.3}},
+            "beta_v_after": {"weights": {"safety": 0.4, "progress": 0.6}},
+            "v_proposals": [],
+            "v_star_status": "unresolved",
+            "alpha_action_before": "A",
+            "beta_action_before": "B",
+            "alpha_vote": "A",
+            "beta_vote": "B",
+        },
+    ]
+    metrics = v_process_metrics(rows)
+    assert metrics["v_proposal_rate"] == 0.5
+    assert metrics["v_proposal_rate_numerator"] == 1
+    assert metrics["v_proposal_rate_denominator"] == 2
+    assert metrics["v_star_acceptance_rate"] == 1.0
+    assert metrics["unresolved_v_rate"] == 0.5
+    assert metrics["vote_revision_rate"] == 0.25
+    assert metrics["v_star_action_consistency"] == 1.0
+    assert metrics["v_alignment_distance_before"] == pytest.approx(0.9)
+    assert metrics["v_alignment_distance_after"] == pytest.approx(0.4)
+    assert metrics["v_alignment_gain"] == pytest.approx(0.5)
+
+
+def test_v_process_metrics_no_opportunities_are_nan() -> None:
+    metrics = v_process_metrics([{"group_action": "A"}])
+    for name in (
+        "v_proposal_rate",
+        "v_star_acceptance_rate",
+        "vote_revision_rate",
+        "v_star_action_consistency",
+        "unresolved_v_rate",
+    ):
+        assert np.isnan(metrics[name])
+        assert metrics[f"{name}_denominator"] == 0
+
+
+def test_v_process_missing_status_is_unresolved_not_implicit_agreement() -> None:
+    metrics = v_process_metrics(
+        [
+            {
+                "alpha_v_before": {"weights": {"a": 1, "b": 0}},
+                "beta_v_before": {"weights": {"a": 0, "b": 1}},
+                "v_proposals": [{"id": "v1"}],
+                "v_star_action_consistency": False,
+            }
+        ]
+    )
+    assert metrics["unresolved_v_rate"] == 1.0
+    assert np.isnan(metrics["v_star_action_consistency"])
+    assert metrics["v_star_action_consistency_denominator"] == 0
+
+
+def test_compute_summary_metrics_includes_v_metrics() -> None:
+    summary = compute_summary_metrics(
+        [
+            {
+                "alpha_v_before": {"weights": {"a": 1, "b": 0}},
+                "beta_v_before": {"weights": {"a": 0, "b": 1}},
+                "v_proposals": [{"id": "v1"}],
+                "v_star_id": "v1",
+                "v_star_status": "accepted",
+                "v_star_action_consistency": True,
+            }
+        ]
+    )
+    assert summary["v_proposal_rate"] == 1.0
+    assert summary["v_star_acceptance_rate"] == 1.0
+    assert summary["v_star_action_consistency"] == 1.0
+
+
+def test_v_star_acceptance_rate_counts_proposals_not_turns() -> None:
+    metrics = v_process_metrics(
+        [
+            {
+                "v_proposals": [
+                    {"proposal_id": "p1", "ordered_criteria": ["a", "b"]},
+                    {"proposal_id": "p2", "ordered_criteria": ["b", "a"]},
+                ],
+                "v_star_status": "accepted",
+                "v_star_id": "p2",
+            },
+            {
+                "v_proposals": [{"proposal_id": "p3"}],
+                "v_star_status": "unresolved",
+            },
+        ]
+    )
+    assert metrics["v_star_acceptance_rate"] == pytest.approx(1 / 3)
+    assert metrics["v_star_acceptance_rate_numerator"] == 1
+    assert metrics["v_star_acceptance_rate_denominator"] == 3
+
+
+def test_accepted_status_without_matching_proposal_is_not_acceptance() -> None:
+    metrics = v_process_metrics(
+        [
+            {
+                "v_proposals": [{"proposal_id": "p1"}],
+                "v_star_status": "accepted",
+                "v_star_id": "missing",
+            },
+            {"v_proposals": [], "v_star_status": "accepted", "v_star_id": "p2"},
+        ]
+    )
+    assert metrics["v_star_acceptance_rate"] == 0.0
+    assert metrics["v_star_acceptance_rate_numerator"] == 0
+    assert metrics["v_star_acceptance_rate_denominator"] == 1

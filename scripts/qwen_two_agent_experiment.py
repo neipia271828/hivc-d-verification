@@ -33,9 +33,12 @@ from config_loader import merge_config_and_cli, resolve_path  # noqa: E402
 from llm_turn_game_common import (  # noqa: E402
     CONDITIONS,
     add_persona_args,
+    append_profile_assignment,
+    build_value_manifest,
     load_model,
     load_personas,
     run_one_game,
+    write_value_manifest,
 )
 from turn_game_metrics import compute_summary_metrics  # noqa: E402
 
@@ -61,6 +64,7 @@ ARG_TYPES: dict[str, type] = {
     "beta_persona": str,
     "random_persona": bool,
     "random_seed": int,
+    "role_value_mode": str,
     "enable_thinking": bool,
     "thinking_budget": int,
     "decision_schedule_seed": int,
@@ -88,6 +92,7 @@ CLI_DEFAULTS: dict[str, object] = {
     "beta_persona": None,
     "random_persona": False,
     "random_seed": None,
+    "role_value_mode": "legacy_hard",
     "enable_thinking": False,
     "thinking_budget": None,
     "decision_schedule_seed": 0,
@@ -152,7 +157,7 @@ def main() -> None:
     for key in ("role_file", "alpha_role_key", "beta_role_key",
                 "personas_file", "persona_params_file",
                 "alpha_persona", "beta_persona",
-                "random_persona", "random_seed"):
+                "random_persona", "random_seed", "role_value_mode"):
         setattr(args, key, cfg[key])
     personas, persona_params, role_keys = load_personas(args)
     random_persona = cfg["random_persona"]
@@ -161,6 +166,17 @@ def main() -> None:
     if not output_dir.is_absolute():
         output_dir = REPO_ROOT / output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
+    value_manifest_path = output_dir / "value_manifest.json"
+    value_manifest = build_value_manifest(
+            cfg,
+            personas,
+            persona_params,
+            role_keys,
+            role_value_mode=str(cfg["role_value_mode"]),
+            framework_ids=list(conditions),
+            runner_version="qwen_two_agent_experiment-v2",
+    )
+    write_value_manifest(value_manifest_path, value_manifest)
 
     live_jsonl_path = cfg["live_jsonl"]
     if live_jsonl_path:
@@ -192,6 +208,8 @@ def main() -> None:
                 args.random_seed = cfg["random_seed"] if cfg["random_seed"] is not None else game_seed
                 personas, persona_params, role_keys = load_personas(args)
                 print(f"  [random_persona] alpha={role_keys['alpha']} beta={role_keys['beta']}")
+                append_profile_assignment(value_manifest, game_seed, personas, persona_params, role_keys)
+                write_value_manifest(value_manifest_path, value_manifest)
             rows = run_one_game(
                 model,
                 tokenizer,
@@ -209,6 +227,7 @@ def main() -> None:
                 thinking_budget=cfg["thinking_budget"],
                 decision_schedule_seed=cfg["decision_schedule_seed"],
                 max_decision_opportunities=cfg["max_decision_opportunities"],
+                role_value_mode=cfg["role_value_mode"],
             )
             cond_rows.extend(rows)
             all_rows.extend(rows)

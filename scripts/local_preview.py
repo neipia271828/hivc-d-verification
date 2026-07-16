@@ -1,7 +1,8 @@
 """ローカル実験ログプレビューサーバー。
 
 `hivc_sim/results/turn_game/downloads/` 以下のrunディレクトリをスキャンし、
-取得済みCSV（all_games.csv / {condition}_games.csv / summary.csv）を閲覧する。
+取得済みCSV（all_games.csv / {condition}_games.csv / summary.csv）と
+value_manifest.json を閲覧する。
 外部ネットワーク・GPU接続は不要。既定の待受は 127.0.0.1 のみ。
 
 使い方:
@@ -63,6 +64,7 @@ class PreviewServer:
                         "path": str(p),
                         "acquired_at": acquired_at,
                         "files": files,
+                        "has_value_manifest": "value_manifest.json" in files,
                     })
         return runs
 
@@ -184,6 +186,13 @@ class PreviewServer:
                             data = server._read_file(run_id, "manifest.json")
                             if data is None:
                                 self._not_found("Manifest not found")
+                            else:
+                                self._text_response(200, data, "application/json; charset=utf-8")
+                            return
+                        if rest == "value-manifest":
+                            data = server._read_file(run_id, "value_manifest.json")
+                            if data is None:
+                                self._not_found("Value manifest not found")
                             else:
                                 self._text_response(200, data, "application/json; charset=utf-8")
                             return

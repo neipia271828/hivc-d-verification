@@ -301,3 +301,32 @@
     - 既存の非並列実行、status/logs/stop、runディレクトリ管理を維持
   - `hivc_sim/tests/test_qwen_parallel_experiment.py` と `hivc_sim/tests/test_workflow_cli.py` に並列系テストを追加
   - `pytest hivc_sim/tests -q` が75テストで通過
+
+# 2026-07-16
+
+- RoleとValue分離によるV整合検証要件を策定
+  - `episode-20260715-210345` の90ゲームを診断根拠とし、情報利用は増えたが、固定Roleに対応する行動選好はほぼ変化しなかったことを記録
+  - `Role`、`Persona`、初期V、現在V、グループ判断用V*、交渉特性の責務分離を定義
+  - 個人Vの完全一致ではなく、個人Vを残したまま受諾できる共通基準V*を合意対象として定義
+  - 議論前V・行動、V提案、accept/reject/counter、受諾済みV*、最終投票の独立記録と状態永続化を要件化
+  - `legacy_hard`、`soft_value`、`expertise_only` の三モードと、control / consulting / hivc_d の対応あり比較を定義
+  - V*の優先順位を事前に与えない `hivc_d` version 2 を主検証とし、現行相当の固定V*手順を `hivc_d_prescribed_v1` 感度分析として分離
+  - 主検証を `soft_value` の100seed以上とし、V*成立、行動整合、regret・成果への因果連鎖を分解して評価する基準を定義
+  - 本フェーズでは要件定義のみを行い、実装とGPU再実験は未実施
+
+## RoleとValue分離によるV整合検証の実装・ローカル検証
+
+- `hivc_sim/profiles.py` に Role / Persona / Value の分離スキーマ、検証、SHA-256算出、`legacy_hard` / `soft_value` / `expertise_only` の読み込みを追加
+- `scripts/llm_turn_game_common.py` に議論前の `v_before`・`action_before`、V提案、`accept` / `reject` / `counter`、明示的な両者受諾によるV*成立、投票後の `v_after`、V*状態の同一ターン内引き継ぎを追加
+  - 未受諾の提案をV*として補完せず `unresolved` として記録する設計を採用
+  - `v_before` は全framework条件で同じ測定契約を使い、`v_after` は最終投票確定後に取得して既存の質問・応答closureを維持
+- `hivc_sim/turn_game_metrics.py` にV提案率、V*受諾率、V距離・gain、票変更率、V*行動整合率、未解決率と分子・分母を追加し、`compute_summary_metrics` に統合
+- `scripts/llm_turn_game_common.py` と `scripts/qwen_two_agent_turn_game_smoke.py` のCSV行を要件 §9.1 のV列へ対応
+- `scripts/qwen_two_agent_experiment.py` と `scripts/qwen_parallel_worker.py` に、実行時プロファイル・framework・設定・Git commitを保存する `value_manifest.json` 生成を追加
+- `scripts/local_preview.py` / `scripts/local_preview.html` にvalue manifest配信、Vタイムライン、同一seed・turnの条件比較、旧CSVの「記録なし」表示を追加
+- `hivc_sim/tests/` にプロファイル検証、V交渉・状態引き継ぎ、V指標、manifest、プレビュー互換性のテストを追加・更新
+- ローカル検証結果
+  - `pytest hivc_sim/tests -q`: 107 passed
+  - 対象Pythonファイルの `python3 -m py_compile`: 成功
+  - `git diff --check`: 成功
+  - GPU実験は実行していない

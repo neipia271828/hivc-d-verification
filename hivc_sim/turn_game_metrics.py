@@ -76,6 +76,185 @@ def _to_bool(value) -> bool:
     return str(value).lower() == "true"
 
 
+def normalized_l1_distance(left: object, right: object) -> float:
+    """Return L1 distance between normalized weight mappings.
+
+    Both mappings must contain the same criteria.  Missing/invalid vectors are
+    not measurement opportunities and therefore return NaN rather than zero.
+    """
+    left = _parse_json(left, left)
+    right = _parse_json(right, right)
+    if isinstance(left, dict) and isinstance(left.get("weights"), dict):
+        left = left["weights"]
+    if isinstance(right, dict) and isinstance(right.get("weights"), dict):
+        right = right["weights"]
+    if not isinstance(left, dict) or not isinstance(right, dict) or set(left) != set(right) or not left:
+        return float("nan")
+
+    def normalize(values: dict) -> dict[str, float] | None:
+        parsed: dict[str, float] = {}
+        for key, value in values.items():
+            number = _safe_float(value)
+            if np.isnan(number) or number < 0:
+                return None
+            parsed[str(key)] = number
+        total = sum(parsed.values())
+        if total <= 0:
+            return None
+        return {key: value / total for key, value in parsed.items()}
+
+    normalized_left = normalize(left)
+    normalized_right = normalize(right)
+    if normalized_left is None or normalized_right is None:
+        return float("nan")
+    return float(sum(abs(normalized_left[key] - normalized_right[key]) for key in normalized_left))
+
+
+def _rate_with_counts(numerator: int, denominator: int) -> tuple[float, int, int]:
+    rate = numerator / denominator if denominator else float("nan")
+    return rate, numerator, denominator
+
+
+def _v_proposal_count_and_ids(row: dict) -> tuple[int, set[str]]:
+    """Return proposal count and IDs from a turn row.
+
+    The current contract stores a list of proposals.  A single proposal object
+    is accepted for transitional CSV compatibility.  Malformed entries still
+    count as attempted proposals in the denominator, but cannot become the
+    accepted numerator without a matching ID.
+    """
+    proposals = _parse_json(row.get("v_proposals"), row.get("v_proposals"))
+    if isinstance(proposals, dict):
+        proposals = [proposals] if proposals else []
+    if not isinstance(proposals, list):
+        return (0, set())
+    ids: set[str] = set()
+    count = 0
+    for proposal in proposals:
+        count += 1
+        if isinstance(proposal, dict):
+            proposal_id = str(proposal.get("proposal_id", proposal.get("id", ""))).strip()
+        else:
+            proposal_id = str(proposal).strip()
+        if proposal_id:
+            ids.add(proposal_id)
+    return count, ids
+
+
+def _has_v_proposal(row: dict) -> bool:
+    count, _ = _v_proposal_count_and_ids(row)
+    return count > 0
+
+
+def _recorded_bool(value: object) -> bool | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    lowered = str(value).strip().lower()
+    if lowered in {"true", "1", "yes"}:
+        return True
+    if lowered in {"false", "0", "no"}:
+        return False
+    return None
+
+
+def v_process_metrics(rows: list[dict]) -> dict[str, float | int]:
+    """Compute §10.1 V-process metrics, including every rate denominator."""
+    disagreement_turns = 0
+    proposal_on_disagreement = 0
+    proposal_count = 0
+    accepted_proposals = 0
+    unresolved_disagreements = 0
+    vote_revisions = 0
+    vote_observations = 0
+    consistent_actions = 0
+    consistency_observations = 0
+    distances_before: list[float] = []
+    distances_after: list[float] = []
+    gains: list[float] = []
+
+    for row in rows:
+        before = _safe_float(row.get("v_alignment_distance_before"))
+        if np.isnan(before):
+            before = normalized_l1_distance(row.get("alpha_v_before"), row.get("beta_v_before"))
+        after = _safe_float(row.get("v_alignment_distance_after"))
+        if np.isnan(after):
+            after = normalized_l1_distance(row.get("alpha_v_after"), row.get("beta_v_after"))
+        if not np.isnan(before):
+            distances_before.append(before)
+        if not np.isnan(after):
+            distances_after.append(after)
+        if not np.isnan(before) and not np.isnan(after):
+            gains.append(before - after)
+
+        row_proposal_count, proposal_ids = _v_proposal_count_and_ids(row)
+        proposal = row_proposal_count > 0
+        status = str(row.get("v_star_status", "")).strip().lower()
+        v_star_id = str(row.get("v_star_id", "")).strip()
+        disagreed = not np.isnan(before) and before > 1e-12
+        if disagreed:
+            disagreement_turns += 1
+            proposal_on_disagreement += int(proposal)
+            # Missing/malformed completion is not silently treated as alignment.
+            unresolved_disagreements += int(status != "accepted")
+        if proposal:
+            proposal_count += row_proposal_count
+            accepted_proposals += int(
+                status == "accepted" and bool(v_star_id) and v_star_id in proposal_ids
+            )
+
+        for agent in ("alpha", "beta"):
+            changed = _recorded_bool(row.get(f"{agent}_vote_changed"))
+            if changed is None:
+                action_before = str(row.get(f"{agent}_action_before", "")).strip().upper()
+                vote = str(row.get(f"{agent}_vote", "")).strip().upper()
+                if action_before and vote:
+                    changed = action_before != vote
+            if changed is not None:
+                vote_observations += 1
+                vote_revisions += int(changed)
+
+        row_consistency = _recorded_bool(row.get("v_star_action_consistency"))
+        if status == "accepted" and row_consistency is not None:
+            consistency_observations += 1
+            consistent_actions += int(row_consistency)
+        elif status == "accepted":
+            # Older transitional rows may only have per-agent post-processed checks.
+            agent_checks = [
+                _recorded_bool(row.get(f"{agent}_v_star_consistent"))
+                for agent in ("alpha", "beta")
+            ]
+            recorded = [value for value in agent_checks if value is not None]
+            if recorded:
+                consistency_observations += 1
+                consistent_actions += int(len(recorded) == 2 and all(recorded))
+
+    result: dict[str, float | int] = {}
+    for name, numerator, denominator in (
+        ("v_proposal_rate", proposal_on_disagreement, disagreement_turns),
+        ("v_star_acceptance_rate", accepted_proposals, proposal_count),
+        ("vote_revision_rate", vote_revisions, vote_observations),
+        ("v_star_action_consistency", consistent_actions, consistency_observations),
+        ("unresolved_v_rate", unresolved_disagreements, disagreement_turns),
+    ):
+        rate, numerator, denominator = _rate_with_counts(numerator, denominator)
+        result[name] = rate
+        result[f"{name}_numerator"] = numerator
+        result[f"{name}_denominator"] = denominator
+    result["v_alignment_distance_before"] = (
+        float(np.mean(distances_before)) if distances_before else float("nan")
+    )
+    result["v_alignment_distance_before_n"] = len(distances_before)
+    result["v_alignment_distance_after"] = (
+        float(np.mean(distances_after)) if distances_after else float("nan")
+    )
+    result["v_alignment_distance_after_n"] = len(distances_after)
+    result["v_alignment_gain"] = float(np.mean(gains)) if gains else float("nan")
+    result["v_alignment_gain_n"] = len(gains)
+    return result
+
+
 def _game_key(row: dict) -> tuple[object, object]:
     """ゲーム識別子を (condition, seed_or_game_id) のタプルで返す。
 
@@ -528,7 +707,7 @@ def forced_decision_with_open_question_rate(rows: list[dict]) -> float:
     return forced / total
 
 
-def compute_summary_metrics(rows: list[dict], threshold: float = CONFLICT_THRESHOLD) -> dict[str, float]:
+def compute_summary_metrics(rows: list[dict], threshold: float = CONFLICT_THRESHOLD) -> dict[str, float | int]:
     """REQUIREMENTS §6 の主要評価指標を全て計算して返す。"""
     enriched = [enrich_turn_row(dict(row)) for row in rows]
     summary = terminal_metrics(enriched)
@@ -548,4 +727,5 @@ def compute_summary_metrics(rows: list[dict], threshold: float = CONFLICT_THRESH
     summary["unanswered_question_rate"] = unanswered_question_rate(enriched)
     summary["question_response_latency"] = question_response_latency_metric(enriched)
     summary["forced_decision_with_open_question_rate"] = forced_decision_with_open_question_rate(enriched)
+    summary.update(v_process_metrics(enriched))
     return summary

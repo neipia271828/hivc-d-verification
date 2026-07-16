@@ -153,6 +153,22 @@
   .summary-table td:first-child, .summary-table th:first-child { text-align: left; }
   .summary-table tr:hover { background: rgba(255,255,255,0.03); }
 
+  .v-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }
+  .v-stage { padding: 10px; border-radius: 8px; background: var(--panel2); border: 1px solid var(--border); }
+  .v-stage h3 { color: var(--accent2); font-size: 12px; margin-bottom: 6px; }
+  .v-row { display: grid; grid-template-columns: 110px 1fr; gap: 8px; padding: 3px 0; font-size: 12px; }
+  .v-row .key { color: var(--muted); }
+  .v-row .val { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+  .record-none { color: var(--muted); font-style: italic; }
+  .comparison-wrap { overflow-x: auto; }
+  .comparison-table { width: 100%; min-width: 1050px; border-collapse: collapse; font-size: 11px; }
+  .comparison-table th, .comparison-table td { border: 1px solid var(--border); padding: 6px; vertical-align: top; text-align: left; }
+  .comparison-table th { color: var(--muted); background: var(--panel2); white-space: nowrap; }
+  .comparison-table tr.current-condition { background: rgba(91,155,245,0.08); }
+  .identity-list { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  @media (max-width: 700px) { .identity-list { grid-template-columns: 1fr; } }
+  .hash { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; word-break: break-all; }
+
   .waiting { text-align: center; padding: 80px 20px; color: var(--muted); }
   .waiting .spinner { width: 40px; height: 40px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; margin: 0 auto 20px; animation: spin 1s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -230,6 +246,21 @@
     </div>
 
     <div class="card timeline-card">
+      <h2>Role・Persona・Value・Framework</h2>
+      <div id="identityArea"></div>
+    </div>
+
+    <div class="card timeline-card">
+      <h2>Vタイムライン</h2>
+      <div id="vTimelineArea"></div>
+    </div>
+
+    <div class="card timeline-card">
+      <h2>同一seed・turn 条件比較</h2>
+      <div id="conditionComparisonArea"></div>
+    </div>
+
+    <div class="card timeline-card">
       <h2>タイムライン</h2>
       <div class="timeline-controls">
         <button class="btn" id="btnPrev">前ターン</button>
@@ -256,6 +287,7 @@ let currentRun = null;
 let currentFileName = null;
 
 let summaryData = [];
+let valueManifest = null;
 
 const ACTION_NAMES = { A: '酸素安定化', B: '発電系修理', C: '通信修理', D: '浸水封鎖' };
 const EVENT_NAMES = { none: '異常なし', pressure_spike: '外圧上昇', leak_surge: '浸水増加', signal_window: '通信窓', crew_panic: '乗員動揺' };
@@ -265,6 +297,26 @@ function apiBase() { return window.location.origin; }
 function safeJSON(str, fallback) {
   if (!str || str === '') return fallback;
   try { return JSON.parse(str); } catch { return fallback; }
+}
+
+function optionalJSON(str) {
+  if (str === undefined || str === null || str === '') return null;
+  if (typeof str !== 'string') return str;
+  try { return JSON.parse(str); } catch { return str; }
+}
+
+function optionalBool(value) {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value === 'boolean') return value;
+  if (String(value).toLowerCase() === 'true' || value === '1' || value === 1) return true;
+  if (String(value).toLowerCase() === 'false' || value === '0' || value === 0) return false;
+  return null;
+}
+
+function optionalNumber(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function escapeHTML(s) {
@@ -347,7 +399,7 @@ function normalizeRecord(row) {
     decision_rule: row.decision_rule || '',
     best_action: row.best_action || '',
     acceptable_actions: row.acceptable_actions || '',
-    regret: parseFloat(row.regret || 0),
+    regret: optionalNumber(row.regret),
     q_values: safeJSON(row.q_values, {}),
     outcome: row.outcome || 'running',
     terminal_score: parseFloat(row.terminal_score || 0),
@@ -359,6 +411,38 @@ function normalizeRecord(row) {
     beta_vote_thinking: row.beta_vote_thinking || '',
     discussion_turns: parseInt(row.discussion_turns || 0),
     individual_actions: row.individual_actions || '',
+    role_value_mode: row.role_value_mode || null,
+    alpha_role_id: row.alpha_role_id || row.alpha_role_key || null,
+    beta_role_id: row.beta_role_id || row.beta_role_key || null,
+    alpha_persona_id: row.alpha_persona_id || null,
+    beta_persona_id: row.beta_persona_id || null,
+    alpha_value_profile_id: row.alpha_value_profile_id || null,
+    beta_value_profile_id: row.beta_value_profile_id || null,
+    alpha_value_profile_sha256: row.alpha_value_profile_sha256 || null,
+    beta_value_profile_sha256: row.beta_value_profile_sha256 || null,
+    alpha_v_before: optionalJSON(row.alpha_v_before),
+    beta_v_before: optionalJSON(row.beta_v_before),
+    alpha_action_before: row.alpha_action_before || null,
+    beta_action_before: row.beta_action_before || null,
+    v_proposals: optionalJSON(row.v_proposals),
+    v_star_id: row.v_star_id || null,
+    v_star: optionalJSON(row.v_star),
+    v_star_scope: row.v_star_scope || null,
+    v_star_status: row.v_star_status || null,
+    alpha_v_star_response: optionalJSON(row.alpha_v_star_response),
+    beta_v_star_response: optionalJSON(row.beta_v_star_response),
+    alpha_v_after: optionalJSON(row.alpha_v_after),
+    beta_v_after: optionalJSON(row.beta_v_after),
+    alpha_vote_changed: optionalBool(row.alpha_vote_changed),
+    beta_vote_changed: optionalBool(row.beta_vote_changed),
+    alpha_v_star_consistent: optionalBool(row.alpha_v_star_consistent),
+    beta_v_star_consistent: optionalBool(row.beta_v_star_consistent),
+    v_alignment_distance_before: optionalNumber(row.v_alignment_distance_before),
+    v_alignment_distance_after: optionalNumber(row.v_alignment_distance_after),
+    v_star_action_consistency: optionalBool(row.v_star_action_consistency),
+    framework_id: row.framework_id || row.condition || null,
+    framework_version: row.framework_version || null,
+    framework_sha256: row.framework_sha256 || null,
   };
 }
 
@@ -377,6 +461,13 @@ async function fetchRunFile(runId, filename) {
   const resp = await fetch(apiBase() + '/api/runs/' + encodeURIComponent(runId) + '/file/' + encodeURIComponent(filename) + '?t=' + Date.now(), { cache: 'no-store' });
   if (!resp.ok) throw new Error('HTTP ' + resp.status);
   return await resp.text();
+}
+
+async function fetchValueManifest(runId) {
+  const resp = await fetch(apiBase() + '/api/runs/' + encodeURIComponent(runId) + '/value-manifest?t=' + Date.now(), { cache: 'no-store' });
+  if (resp.status === 404) return null;
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  return await resp.json();
 }
 
 async function init() {
@@ -441,6 +532,12 @@ async function loadCurrentRunFile() {
   const saved = localStorage.getItem('preview_lastFile_' + currentRun);
   if (saved && displayFiles.includes(saved)) fileSelect.value = saved;
   fileSelect.onchange = () => { loadCSV(fileSelect.value); };
+
+  try {
+    valueManifest = await fetchValueManifest(currentRun);
+  } catch (e) {
+    valueManifest = null;
+  }
 
   await loadCSV(fileSelect.value);
 
@@ -541,10 +638,16 @@ function renderCondBar() {
     tab.className = 'cond-tab' + (c === currentCondition ? ' active' : '');
     tab.textContent = c;
     tab.onclick = () => {
+      const previous = getCurrentGame()[currentTurnIdx];
+      const wantedSeed = previous ? previous.seed : null;
+      const wantedTurn = previous ? previous.turn : null;
       currentCondition = c;
       const gks = Object.keys(byGame).filter(k => k.startsWith(c + '|')).sort((a, b) => parseInt(a.split('|')[1]) - parseInt(b.split('|')[1]));
-      currentGameKey = gks[0];
-      currentTurnIdx = 0;
+      const matchingGame = gks.find(k => String(k.split('|')[1]) === String(wantedSeed));
+      currentGameKey = matchingGame || gks[0];
+      const targetGame = byGame[currentGameKey] || [];
+      const matchingTurn = targetGame.findIndex(row => row.turn === wantedTurn);
+      currentTurnIdx = matchingTurn >= 0 ? matchingTurn : 0;
       renderCondBar();
       renderGameSelect();
       render();
@@ -593,6 +696,127 @@ function renderThinkingToggle(text) {
 
 const OUTCOME_SHORT = { win: '勝利', loss_oxygen: '敗北（酸素）', loss_power: '敗北（電力）', loss_hull: '敗北（船体）', loss_flooding: '敗北（浸水）', survived_timeout: '生存（時間切れ）' };
 
+function displayValue(value) {
+  if (value === null || value === undefined || value === '') return '<span class="record-none">記録なし</span>';
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  if (typeof value === 'object') return escapeHTML(JSON.stringify(value, null, 2));
+  return escapeHTML(String(value));
+}
+
+function manifestCandidates(kind) {
+  if (!valueManifest || typeof valueManifest !== 'object') return [];
+  const names = [kind, kind + 's', kind + '_profiles', 'resolved_' + kind + 's'];
+  const found = [];
+  for (const name of names) {
+    const value = valueManifest[name];
+    if (Array.isArray(value)) found.push(...value);
+    else if (value && typeof value === 'object') {
+      for (const [key, item] of Object.entries(value)) {
+        if (item && typeof item === 'object') found.push({ _manifest_key: key, ...item });
+      }
+    }
+  }
+  return found;
+}
+
+function manifestIdentity(kind, id) {
+  if (!id) return null;
+  const wanted = String(id);
+  return manifestCandidates(kind).find(item => {
+    return [item.id, item.role_id, item.persona_id, item.value_profile_id, item.framework_id, item._manifest_key]
+      .some(candidate => candidate !== undefined && String(candidate) === wanted);
+  }) || null;
+}
+
+function identityBlock(label, kind, id, csvHash, fallbackVersion) {
+  const entry = manifestIdentity(kind, id);
+  const version = (entry && (entry.version || entry.schema_version)) || fallbackVersion;
+  const hash = csvHash || (entry && (entry.sha256 || entry.hash));
+  return `<div class="v-stage"><h3>${escapeHTML(label)}</h3>
+    <div class="v-row"><span class="key">ID</span><span class="val">${displayValue(id)}</span></div>
+    <div class="v-row"><span class="key">version</span><span class="val">${displayValue(version)}</span></div>
+    <div class="v-row"><span class="key">SHA-256</span><span class="val hash">${displayValue(hash)}</span></div></div>`;
+}
+
+function identityInline(kind, id, csvHash, csvVersion) {
+  const entry = manifestIdentity(kind, id);
+  const version = csvVersion || (entry && (entry.version || entry.schema_version));
+  const hash = csvHash || (entry && (entry.sha256 || entry.hash));
+  return `ID=${displayValue(id)} / version=${displayValue(version)} / SHA-256=<span class="hash">${displayValue(hash)}</span>`;
+}
+
+function renderIdentity(r) {
+  const framework = manifestIdentity('framework', r.framework_id);
+  const frameworkVersion = r.framework_version || (framework && (framework.version || framework.schema_version));
+  const frameworkHash = r.framework_sha256 || (framework && (framework.sha256 || framework.hash));
+  document.getElementById('identityArea').innerHTML = `<div class="v-row"><span class="key">mode</span><span class="val">${displayValue(r.role_value_mode)}</span></div>
+    <div class="identity-list">
+      ${identityBlock('α Role', 'role', r.alpha_role_id, null, null)}
+      ${identityBlock('β Role', 'role', r.beta_role_id, null, null)}
+      ${identityBlock('α Persona', 'persona', r.alpha_persona_id, null, null)}
+      ${identityBlock('β Persona', 'persona', r.beta_persona_id, null, null)}
+      ${identityBlock('α Value', 'value', r.alpha_value_profile_id, r.alpha_value_profile_sha256, null)}
+      ${identityBlock('β Value', 'value', r.beta_value_profile_id, r.beta_value_profile_sha256, null)}
+      ${identityBlock('Framework', 'framework', r.framework_id, frameworkHash, frameworkVersion)}
+    </div>`;
+}
+
+function renderVTimeline(r) {
+  const proposals = Array.isArray(r.v_proposals) ? r.v_proposals : (r.v_proposals === null ? [] : [r.v_proposals]);
+  const proposalHTML = proposals.length
+    ? proposals.map((proposal, index) => `<div class="v-row"><span class="key">提案 ${index + 1}</span><span class="val">${displayValue(proposal)}</span></div>`).join('')
+    : '<div class="v-row"><span class="key">V提案</span><span class="val record-none">記録なし</span></div>';
+  document.getElementById('vTimelineArea').innerHTML = `<div class="v-grid">
+    <div class="v-stage"><h3>1. 議論前</h3>
+      <div class="v-row"><span class="key">α 初期V</span><span class="val">${displayValue(r.alpha_v_before)}</span></div>
+      <div class="v-row"><span class="key">β 初期V</span><span class="val">${displayValue(r.beta_v_before)}</span></div>
+      <div class="v-row"><span class="key">α 行動</span><span class="val">${displayValue(r.alpha_action_before)}</span></div>
+      <div class="v-row"><span class="key">β 行動</span><span class="val">${displayValue(r.beta_action_before)}</span></div>
+      <div class="v-row"><span class="key">V距離</span><span class="val">${displayValue(r.v_alignment_distance_before)}</span></div>
+    </div>
+    <div class="v-stage"><h3>2. 提案・応答</h3>${proposalHTML}
+      <div class="v-row"><span class="key">α 応答</span><span class="val">${displayValue(r.alpha_v_star_response)}</span></div>
+      <div class="v-row"><span class="key">β 応答</span><span class="val">${displayValue(r.beta_v_star_response)}</span></div>
+    </div>
+    <div class="v-stage"><h3>3. V*</h3>
+      <div class="v-row"><span class="key">V* ID</span><span class="val">${displayValue(r.v_star_id)}</span></div>
+      <div class="v-row"><span class="key">V*</span><span class="val">${displayValue(r.v_star)}</span></div>
+      <div class="v-row"><span class="key">scope</span><span class="val">${displayValue(r.v_star_scope)}</span></div>
+      <div class="v-row"><span class="key">status</span><span class="val">${displayValue(r.v_star_status)}</span></div>
+    </div>
+    <div class="v-stage"><h3>4. 決定後</h3>
+      <div class="v-row"><span class="key">α 現在V</span><span class="val">${displayValue(r.alpha_v_after)}</span></div>
+      <div class="v-row"><span class="key">β 現在V</span><span class="val">${displayValue(r.beta_v_after)}</span></div>
+      <div class="v-row"><span class="key">α 票変更</span><span class="val">${displayValue(r.alpha_vote_changed)}</span></div>
+      <div class="v-row"><span class="key">β 票変更</span><span class="val">${displayValue(r.beta_vote_changed)}</span></div>
+      <div class="v-row"><span class="key">α V*整合</span><span class="val">${displayValue(r.alpha_v_star_consistent)}</span></div>
+      <div class="v-row"><span class="key">β V*整合</span><span class="val">${displayValue(r.beta_v_star_consistent)}</span></div>
+      <div class="v-row"><span class="key">行動整合</span><span class="val">${displayValue(r.v_star_action_consistency)}</span></div>
+      <div class="v-row"><span class="key">V距離</span><span class="val">${displayValue(r.v_alignment_distance_after)}</span></div>
+    </div>
+  </div>`;
+}
+
+function renderConditionComparison(r) {
+  const matches = allRecords.filter(row => row.seed === r.seed && row.turn === r.turn)
+    .sort((a, b) => a.condition.localeCompare(b.condition));
+  let html = `<div style="color:var(--muted);font-size:12px;margin-bottom:8px;">seed=${r.seed}, turn=${r.turn} — 各行はそのcondition固有のV*です。</div>`;
+  html += '<div class="comparison-wrap"><table class="comparison-table"><thead><tr><th>condition</th><th>初期V / 議論前行動</th><th>提案 / 応答</th><th>V* / scope / status</th><th>最終投票 / 変更 / 整合</th><th>品質 / outcome</th><th>Role / Value / Framework</th></tr></thead><tbody>';
+  for (const row of matches) {
+    html += `<tr class="${row.condition === currentCondition ? 'current-condition' : ''}">
+      <td>${escapeHTML(row.condition)}</td>
+      <td>α ${displayValue(row.alpha_v_before)} → ${displayValue(row.alpha_action_before)}<br>β ${displayValue(row.beta_v_before)} → ${displayValue(row.beta_action_before)}</td>
+      <td>proposal: ${displayValue(row.v_proposals)}<br>α: ${displayValue(row.alpha_v_star_response)}<br>β: ${displayValue(row.beta_v_star_response)}</td>
+      <td>ID: ${displayValue(row.v_star_id)}<br>V*: ${displayValue(row.v_star)}<br>scope: ${displayValue(row.v_star_scope)}<br>status: ${displayValue(row.v_star_status)}</td>
+      <td>α ${displayValue(row.alpha_vote)} (changed=${displayValue(row.alpha_vote_changed)}, consistent=${displayValue(row.alpha_v_star_consistent)})<br>β ${displayValue(row.beta_vote)} (changed=${displayValue(row.beta_vote_changed)}, consistent=${displayValue(row.beta_v_star_consistent)})<br>group: ${displayValue(row.group_action)} / V*: ${displayValue(row.v_star_action_consistency)}</td>
+      <td>regret: ${displayValue(row.regret)}<br>best: ${displayValue(row.best_action)}<br>outcome: ${displayValue(row.outcome)}</td>
+      <td>Role α: ${identityInline('role', row.alpha_role_id, null, null)}<br>Role β: ${identityInline('role', row.beta_role_id, null, null)}<br>Value α: ${identityInline('value', row.alpha_value_profile_id, row.alpha_value_profile_sha256, null)}<br>Value β: ${identityInline('value', row.beta_value_profile_id, row.beta_value_profile_sha256, null)}<br>Framework: ${identityInline('framework', row.framework_id, row.framework_sha256, row.framework_version)}</td>
+    </tr>`;
+  }
+  html += '</tbody></table></div>';
+  document.getElementById('conditionComparisonArea').innerHTML = html;
+}
+
 function render() {
   const game = getCurrentGame();
   if (game.length === 0) return;
@@ -639,15 +863,15 @@ function render() {
   const qvals = r.q_values;
   const qEntries = Object.entries(qvals).sort((a, b) => b[1] - a[1]);
   const qMax = Math.max(...qEntries.map(e => Math.abs(e[1])), 1);
-  const regretPct = Math.min(100, Math.abs(r.regret) / 5);
-  const regretCls = r.regret < 25 ? 'good' : r.regret < 100 ? 'warn' : 'bad';
+  const regretPct = r.regret === null ? 0 : Math.min(100, Math.abs(r.regret) / 5);
+  const regretCls = r.regret === null ? 'info' : r.regret < 25 ? 'good' : r.regret < 100 ? 'warn' : 'bad';
   const accSet = new Set(String(r.acceptable_actions).split(',').map(s => s.trim()).filter(Boolean));
   const isBest = accSet.has(r.group_action);
   evalArea.innerHTML = `
     <div class="eval-row"><span class="key">最適行動</span><span class="val" style="color:var(--good)">${r.best_action} ${ACTION_NAMES[r.best_action] || ''}</span></div>
     <div class="eval-row"><span class="key">許容行動</span><span class="val">${escapeHTML(r.acceptable_actions)}</span></div>
     <div class="eval-row"><span class="key">合意一致</span><span class="val" style="color:${isBest ? 'var(--good)' : 'var(--bad)'}">${isBest ? '許容' : '乖離'}</span></div>
-    <div class="eval-row"><span class="key">regret</span><span class="val" style="color:var(--${regretCls})">${r.regret.toFixed(1)}</span></div>
+    <div class="eval-row"><span class="key">regret</span><span class="val" style="color:var(--${regretCls})">${r.regret === null ? '<span class="record-none">記録なし</span>' : r.regret.toFixed(1)}</span></div>
     <div class="regret-gauge"><div class="fill" style="width:${regretPct}%"></div></div>
     <div style="margin-top:10px;"><div style="font-size:11px;color:var(--muted);margin-bottom:6px;">Q値</div>
     ${qEntries.map(([a, v]) => {
@@ -705,6 +929,10 @@ function render() {
     voteThinking.style.display = 'none';
   }
 
+  renderIdentity(r);
+  renderVTimeline(r);
+  renderConditionComparison(r);
+
   renderTimeline();
   document.getElementById('turnLabel').textContent = `ターン ${r.turn} / ${game.length - 1}`;
 }
@@ -722,7 +950,7 @@ function renderTimeline() {
     if (r.outcome && r.outcome.startsWith('loss')) cls += ' loss';
     dot.className = cls;
     dot.textContent = r.turn;
-    dot.title = `Turn ${r.turn}: ${r.outcome}, regret=${r.regret}`;
+    dot.title = `Turn ${r.turn}: ${r.outcome}, regret=${r.regret === null ? '記録なし' : r.regret}`;
     dot.onclick = () => { currentTurnIdx = i; render(); };
     tl.appendChild(dot);
   }

@@ -26,7 +26,14 @@ sys.path.insert(0, str(REPO_ROOT / "hivc_sim"))
 sys.path.insert(0, str(WORKER_DIR))
 
 from config_loader import merge_config_and_cli  # noqa: E402
-from llm_turn_game_common import load_model, load_personas, run_one_game  # noqa: E402
+from llm_turn_game_common import (  # noqa: E402
+    build_value_manifest,
+    append_profile_assignment,
+    load_model,
+    load_personas,
+    run_one_game,
+    write_value_manifest,
+)
 from qwen_two_agent_experiment import ARG_TYPES, CLI_DEFAULTS  # noqa: E402
 
 
@@ -217,16 +224,27 @@ def main() -> None:
     )
 
     try:
+        # Resolve and snapshot profiles before model loading so failed starts are reproducible.
+        personas, persona_params, role_keys = load_personas(persona_args)
+        random_persona = cfg["random_persona"]
+        value_manifest_path = output_dir / "value_manifest.json"
+        value_manifest = build_value_manifest(
+                cfg,
+                personas,
+                persona_params,
+                role_keys,
+                role_value_mode=str(cfg["role_value_mode"]),
+                framework_ids=[args.condition],
+                runner_version="qwen_parallel_worker-v2",
+        )
+        write_value_manifest(value_manifest_path, value_manifest)
+
         print(f"[worker {output_dir.name}] Loading model: {cfg['model_path']} on GPU {args.gpu_id}")
         model, tokenizer = load_model(cfg["model_path"])
 
         # モデル読込み後のGPU情報を追記
         gpu_info = _query_gpu_info(args.gpu_id)
         _update_shard_manifest(shard_manifest_path, gpu_info)
-
-        # ペルソナ読み込み（random_persona=false なら1回で良い）
-        personas, persona_params, role_keys = load_personas(persona_args)
-        random_persona = cfg["random_persona"]
 
         rows: list[dict[str, object]] = []
         pause_file = Path(args.pause_file) if args.pause_file else None
@@ -252,6 +270,8 @@ def main() -> None:
                 persona_args.random_seed = cfg["random_seed"] if cfg["random_seed"] is not None else game_seed
                 personas, persona_params, role_keys = load_personas(persona_args)
                 print(f"[worker {output_dir.name}] random persona alpha={role_keys['alpha']} beta={role_keys['beta']}")
+                append_profile_assignment(value_manifest, game_seed, personas, persona_params, role_keys)
+                write_value_manifest(value_manifest_path, value_manifest)
 
             game_rows = run_one_game(
                 model,
@@ -269,6 +289,7 @@ def main() -> None:
                 thinking_budget=cfg["thinking_budget"],
                 decision_schedule_seed=cfg["decision_schedule_seed"],
                 max_decision_opportunities=cfg["max_decision_opportunities"],
+                role_value_mode=cfg["role_value_mode"],
             )
             rows.extend(game_rows)
 
