@@ -159,13 +159,48 @@ def _recorded_bool(value: object) -> bool | None:
     return None
 
 
+def _v_alignment_required_for_row(row: dict) -> bool:
+    """v_alignment_required 列があればそれを使い、なければ前ターンV距離・行動から推定する。"""
+    required = row.get("v_alignment_required")
+    if required is True or (isinstance(required, str) and required.strip().lower() == "true"):
+        return True
+    if required is False or (isinstance(required, str) and required.strip().lower() == "false"):
+        return False
+    before = normalized_l1_distance(row.get("alpha_v_before"), row.get("beta_v_before"))
+    if not np.isnan(before) and before > 1e-12:
+        return True
+    alpha_action = str(row.get("alpha_action_before", "")).strip().upper()
+    beta_action = str(row.get("beta_action_before", "")).strip().upper()
+    if alpha_action and beta_action and alpha_action != beta_action:
+        return True
+    return False
+
+
+def _v_schema_complete(row: dict) -> bool | None:
+    """共通Vオントロジーに完全に従った V before/after レコードがあるかを判定する。"""
+    errors = _parse_json(row.get("v_measurement_errors"), row.get("v_measurement_errors"))
+    if isinstance(errors, dict) and any(
+        isinstance(v, str) and v not in ("", "not_recorded") for v in errors.values()
+    ):
+        return False
+    alpha = _parse_json(row.get("alpha_v_before"), row.get("alpha_v_before"))
+    beta = _parse_json(row.get("beta_v_before"), row.get("beta_v_before"))
+    def valid(v: object) -> bool:
+        return isinstance(v, dict) and isinstance(v.get("weights"), dict) and isinstance(v.get("ordered_criteria"), (list, tuple))
+    alpha_valid = valid(alpha)
+    beta_valid = valid(beta)
+    if alpha_valid or beta_valid:
+        return alpha_valid and beta_valid
+    return None
+
+
 def v_process_metrics(rows: list[dict]) -> dict[str, float | int]:
     """Compute §10.1 V-process metrics, including every rate denominator."""
-    disagreement_turns = 0
-    proposal_on_disagreement = 0
+    required_turns = 0
+    proposal_on_required = 0
     proposal_count = 0
     accepted_proposals = 0
-    unresolved_disagreements = 0
+    unresolved_required = 0
     vote_revisions = 0
     vote_observations = 0
     consistent_actions = 0
@@ -173,6 +208,10 @@ def v_process_metrics(rows: list[dict]) -> dict[str, float | int]:
     distances_before: list[float] = []
     distances_after: list[float] = []
     gains: list[float] = []
+    prompted_required = 0
+    missing_after_prompt = 0
+    schema_complete = 0
+    schema_attempted = 0
 
     for row in rows:
         before = _safe_float(row.get("v_alignment_distance_before"))
@@ -192,12 +231,12 @@ def v_process_metrics(rows: list[dict]) -> dict[str, float | int]:
         proposal = row_proposal_count > 0
         status = str(row.get("v_star_status", "")).strip().lower()
         v_star_id = str(row.get("v_star_id", "")).strip()
-        disagreed = not np.isnan(before) and before > 1e-12
-        if disagreed:
-            disagreement_turns += 1
-            proposal_on_disagreement += int(proposal)
+        required = _v_alignment_required_for_row(row)
+        if required:
+            required_turns += 1
+            proposal_on_required += int(proposal)
             # Missing/malformed completion is not silently treated as alignment.
-            unresolved_disagreements += int(status != "accepted")
+            unresolved_required += int(status != "accepted")
         if proposal:
             proposal_count += row_proposal_count
             accepted_proposals += int(
@@ -230,13 +269,27 @@ def v_process_metrics(rows: list[dict]) -> dict[str, float | int]:
                 consistency_observations += 1
                 consistent_actions += int(len(recorded) == 2 and all(recorded))
 
+        prompted = _recorded_bool(row.get("v_proposal_required_prompt_issued"))
+        if prompted is True:
+            prompted_required += 1
+            missing = _recorded_bool(row.get("missing_v_proposal_after_required_prompt"))
+            if missing is True:
+                missing_after_prompt += 1
+
+        schema_status = _v_schema_complete(row)
+        if schema_status is not None:
+            schema_attempted += 1
+            schema_complete += int(schema_status)
+
     result: dict[str, float | int] = {}
     for name, numerator, denominator in (
-        ("v_proposal_rate", proposal_on_disagreement, disagreement_turns),
+        ("v_proposal_rate", proposal_on_required, required_turns),
         ("v_star_acceptance_rate", accepted_proposals, proposal_count),
         ("vote_revision_rate", vote_revisions, vote_observations),
         ("v_star_action_consistency", consistent_actions, consistency_observations),
-        ("unresolved_v_rate", unresolved_disagreements, disagreement_turns),
+        ("unresolved_v_rate", unresolved_required, required_turns),
+        ("missing_v_proposal_after_required_prompt_rate", missing_after_prompt, prompted_required),
+        ("v_schema_completeness_rate", schema_complete, schema_attempted),
     ):
         rate, numerator, denominator = _rate_with_counts(numerator, denominator)
         result[name] = rate
@@ -707,6 +760,49 @@ def forced_decision_with_open_question_rate(rows: list[dict]) -> float:
     return forced / total
 
 
+def question_answer_rate(rows: list[dict]) -> float:
+    """発行された質問に対する回答率。"""
+    total = 0
+    answered = 0
+    for row in rows:
+        q = _safe_float(row.get("question_count"), 0.0)
+        if q > 0:
+            total += int(q)
+            answered += _safe_float(row.get("answered_question_count"), 0.0)
+    return answered / total if total else float("nan")
+
+
+def duplicate_question_rate(rows: list[dict]) -> float:
+    """発行された質問のうち重複と判定された割合。"""
+    total = 0
+    dup = 0
+    for row in rows:
+        q = _safe_float(row.get("question_count"), 0.0)
+        if q > 0:
+            total += int(q)
+            dup += _safe_float(row.get("duplicate_question_count"), 0.0)
+    return dup / total if total else float("nan")
+
+
+def max_consecutive_duplicate_questions_metric(rows: list[dict]) -> int | float:
+    """1ゲーム内で記録された最大連続重複質問数。"""
+    if not rows:
+        return 0
+    return int(max(_safe_float(row.get("max_consecutive_duplicate_questions", 0.0), 0.0) for row in rows))
+
+
+def invalid_discussion_output_rate(rows: list[dict]) -> float:
+    """議論発話のうち JSON 契約違反または破損JSON断片だった割合。"""
+    total = 0
+    invalid = 0
+    for row in rows:
+        messages = _safe_float(row.get("discussion_turns", 0.0), 0.0)
+        if messages > 0:
+            total += int(messages)
+            invalid += _safe_float(row.get("invalid_discussion_output_count"), 0.0)
+    return invalid / total if total else float("nan")
+
+
 def compute_summary_metrics(rows: list[dict], threshold: float = CONFLICT_THRESHOLD) -> dict[str, float | int]:
     """REQUIREMENTS §6 の主要評価指標を全て計算して返す。"""
     enriched = [enrich_turn_row(dict(row)) for row in rows]
@@ -727,5 +823,9 @@ def compute_summary_metrics(rows: list[dict], threshold: float = CONFLICT_THRESH
     summary["unanswered_question_rate"] = unanswered_question_rate(enriched)
     summary["question_response_latency"] = question_response_latency_metric(enriched)
     summary["forced_decision_with_open_question_rate"] = forced_decision_with_open_question_rate(enriched)
+    summary["question_answer_rate"] = question_answer_rate(enriched)
+    summary["duplicate_question_rate"] = duplicate_question_rate(enriched)
+    summary["max_consecutive_duplicate_questions"] = max_consecutive_duplicate_questions_metric(enriched)
+    summary["invalid_discussion_output_rate"] = invalid_discussion_output_rate(enriched)
     summary.update(v_process_metrics(enriched))
     return summary

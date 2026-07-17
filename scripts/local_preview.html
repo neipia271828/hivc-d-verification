@@ -749,7 +749,13 @@ function renderIdentity(r) {
   const framework = manifestIdentity('framework', r.framework_id);
   const frameworkVersion = r.framework_version || (framework && (framework.version || framework.schema_version));
   const frameworkHash = r.framework_sha256 || (framework && (framework.sha256 || framework.hash));
+  const valueSchema = (valueManifest && valueManifest.value_criteria_schema) || {};
+  const valueSchemaId = r.value_criteria_schema_id || valueSchema.id || '';
+  const valueSchemaVersion = r.value_criteria_schema_version || valueSchema.version || valueSchema.schema_version || '';
+  const valueSchemaHash = valueSchema.sha256 || '';
+  const roleValueAssignmentId = r.role_value_assignment_id || '';
   document.getElementById('identityArea').innerHTML = `<div class="v-row"><span class="key">mode</span><span class="val">${displayValue(r.role_value_mode)}</span></div>
+    <div class="v-row"><span class="key">role/value assignment</span><span class="val hash">${displayValue(roleValueAssignmentId)}</span></div>
     <div class="identity-list">
       ${identityBlock('α Role', 'role', r.alpha_role_id, null, null)}
       ${identityBlock('β Role', 'role', r.beta_role_id, null, null)}
@@ -758,6 +764,7 @@ function renderIdentity(r) {
       ${identityBlock('α Value', 'value', r.alpha_value_profile_id, r.alpha_value_profile_sha256, null)}
       ${identityBlock('β Value', 'value', r.beta_value_profile_id, r.beta_value_profile_sha256, null)}
       ${identityBlock('Framework', 'framework', r.framework_id, frameworkHash, frameworkVersion)}
+      ${identityBlock('Value Criteria Schema', 'value_criteria_schema', valueSchemaId, valueSchemaHash, valueSchemaVersion)}
     </div>`;
 }
 
@@ -768,13 +775,19 @@ function renderVTimeline(r) {
     : '<div class="v-row"><span class="key">V提案</span><span class="val record-none">記録なし</span></div>';
   document.getElementById('vTimelineArea').innerHTML = `<div class="v-grid">
     <div class="v-stage"><h3>1. 議論前</h3>
+      <div class="v-row"><span class="key">V整合必要</span><span class="val">${displayValue(r.v_alignment_required)}</span></div>
+      <div class="v-row"><span class="key">v_alignment_requirement_reasons</span><span class="val">${displayValue(r.v_alignment_requirement_reasons)}</span></div>
       <div class="v-row"><span class="key">α 初期V</span><span class="val">${displayValue(r.alpha_v_before)}</span></div>
       <div class="v-row"><span class="key">β 初期V</span><span class="val">${displayValue(r.beta_v_before)}</span></div>
       <div class="v-row"><span class="key">α 行動</span><span class="val">${displayValue(r.alpha_action_before)}</span></div>
       <div class="v-row"><span class="key">β 行動</span><span class="val">${displayValue(r.beta_action_before)}</span></div>
       <div class="v-row"><span class="key">V距離</span><span class="val">${displayValue(r.v_alignment_distance_before)}</span></div>
     </div>
-    <div class="v-stage"><h3>2. 提案・応答</h3>${proposalHTML}
+    <div class="v-stage"><h3>2. 提案・応答</h3>
+      <div class="v-row"><span class="key">Vプロトコル状態</span><span class="val">${displayValue(r.v_protocol_state)}</span></div>
+      <div class="v-row"><span class="key">Vプロトコル遷移</span><span class="val">${displayValue(r.v_protocol_transition_history)}</span></div>
+      <div class="v-row"><span class="key">v_proposal_required_prompt_issued</span><span class="val">${displayValue(r.v_proposal_required_prompt_issued)}</span></div>
+      <div class="v-row"><span class="key">missing_v_proposal_after_required_prompt</span><span class="val">${displayValue(r.missing_v_proposal_after_required_prompt)}</span></div>${proposalHTML}
       <div class="v-row"><span class="key">α 応答</span><span class="val">${displayValue(r.alpha_v_star_response)}</span></div>
       <div class="v-row"><span class="key">β 応答</span><span class="val">${displayValue(r.beta_v_star_response)}</span></div>
     </div>
@@ -807,7 +820,7 @@ function renderConditionComparison(r) {
       <td>${escapeHTML(row.condition)}</td>
       <td>α ${displayValue(row.alpha_v_before)} → ${displayValue(row.alpha_action_before)}<br>β ${displayValue(row.beta_v_before)} → ${displayValue(row.beta_action_before)}</td>
       <td>proposal: ${displayValue(row.v_proposals)}<br>α: ${displayValue(row.alpha_v_star_response)}<br>β: ${displayValue(row.beta_v_star_response)}</td>
-      <td>ID: ${displayValue(row.v_star_id)}<br>V*: ${displayValue(row.v_star)}<br>scope: ${displayValue(row.v_star_scope)}<br>status: ${displayValue(row.v_star_status)}</td>
+      <td>required: ${displayValue(row.v_alignment_required)}<br>protocol: ${displayValue(row.v_protocol_state)}<br>ID: ${displayValue(row.v_star_id)}<br>V*: ${displayValue(row.v_star)}<br>scope: ${displayValue(row.v_star_scope)}<br>status: ${displayValue(row.v_star_status)}</td>
       <td>α ${displayValue(row.alpha_vote)} (changed=${displayValue(row.alpha_vote_changed)}, consistent=${displayValue(row.alpha_v_star_consistent)})<br>β ${displayValue(row.beta_vote)} (changed=${displayValue(row.beta_vote_changed)}, consistent=${displayValue(row.beta_v_star_consistent)})<br>group: ${displayValue(row.group_action)} / V*: ${displayValue(row.v_star_action_consistency)}</td>
       <td>regret: ${displayValue(row.regret)}<br>best: ${displayValue(row.best_action)}<br>outcome: ${displayValue(row.outcome)}</td>
       <td>Role α: ${identityInline('role', row.alpha_role_id, null, null)}<br>Role β: ${identityInline('role', row.beta_role_id, null, null)}<br>Value α: ${identityInline('value', row.alpha_value_profile_id, row.alpha_value_profile_sha256, null)}<br>Value β: ${identityInline('value', row.beta_value_profile_id, row.beta_value_profile_sha256, null)}<br>Framework: ${identityInline('framework', row.framework_id, row.framework_sha256, row.framework_version)}</td>

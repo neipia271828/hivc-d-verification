@@ -29,6 +29,29 @@ DEFAULT_VALUE_CRITERIA = (
     "flooding",
     "communication",
 )
+
+
+@dataclass(frozen=True)
+class ValueCriteriaSchema:
+    """共通Vオントロジー。全Vレコードはこのcriteria集合を完全に保持する。"""
+
+    id: str
+    version: str
+    criteria: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"id": self.id, "version": self.version, "criteria": list(self.criteria)}
+
+    @property
+    def sha256(self) -> str:
+        return canonical_sha256(self)
+
+
+DEFAULT_VALUE_CRITERIA_SCHEMA = ValueCriteriaSchema(
+    "submarine-survival-v1",
+    "1.0",
+    DEFAULT_VALUE_CRITERIA,
+)
 ROLE_FORBIDDEN_FIELDS = frozenset(
     {
         "priority_weights",
@@ -187,7 +210,7 @@ class Value:
         cls,
         data: Mapping[str, Any],
         *,
-        criteria: tuple[str, ...] = DEFAULT_VALUE_CRITERIA,
+        criteria: tuple[str, ...] | ValueCriteriaSchema = DEFAULT_VALUE_CRITERIA_SCHEMA,
         allow_hard_value: bool = False,
     ) -> "Value":
         if not isinstance(data, Mapping):
@@ -196,6 +219,8 @@ class Value:
         if not isinstance(raw_weights, Mapping):
             raise ProfileValidationError("initial_priority_weights must be an object")
 
+        if isinstance(criteria, ValueCriteriaSchema):
+            criteria = criteria.criteria
         expected = set(criteria)
         supplied = set(raw_weights)
         missing = sorted(expected - supplied)
@@ -316,7 +341,7 @@ def resolve_profile_entry(
     data: Mapping[str, Any],
     role_value_mode: str,
     *,
-    criteria: tuple[str, ...] = DEFAULT_VALUE_CRITERIA,
+    criteria: tuple[str, ...] | ValueCriteriaSchema = DEFAULT_VALUE_CRITERIA_SCHEMA,
     source_path: str | None = None,
     allow_hard_value: bool = False,
 ) -> ResolvedProfile:
@@ -366,7 +391,7 @@ def load_profiles(
     path: str | Path,
     role_value_mode: str,
     *,
-    criteria: tuple[str, ...] = DEFAULT_VALUE_CRITERIA,
+    criteria: tuple[str, ...] | ValueCriteriaSchema = DEFAULT_VALUE_CRITERIA_SCHEMA,
     allow_hard_value: bool = False,
 ) -> dict[str, ResolvedProfile]:
     """Load a JSON/YAML mapping of agent IDs to resolved profiles."""

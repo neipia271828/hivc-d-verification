@@ -211,8 +211,9 @@ def main() -> None:
             args.random_seed = cfg["random_seed"] if cfg["random_seed"] is not None else game_seed
             personas, persona_params, role_keys = load_personas(args)
             print(f"  [random_persona seed={game_seed}] alpha={role_keys['alpha']} beta={role_keys['beta']}")
-            append_profile_assignment(value_manifest, game_seed, personas, persona_params, role_keys)
-            write_value_manifest(value_manifest_path, value_manifest)
+        # 固定プロファイルでも seed ごとに明示的な割当レコードを生成する
+        append_profile_assignment(value_manifest, game_seed, personas, persona_params, role_keys)
+        write_value_manifest(value_manifest_path, value_manifest)
         seed_conditions = condition_order_for_seed(list(conditions), game_seed)
         print(f"\n=== seed: {game_seed}; condition order: {seed_conditions} ===")
         for condition in seed_conditions:

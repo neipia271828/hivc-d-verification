@@ -1,6 +1,8 @@
 import math
 
 from scripts.llm_turn_game_common import (
+    DEFAULT_VALUE_CRITERIA_SCHEMA,
+    _canonical_json,
     _profile_sha256,
     append_profile_assignment,
     build_value_manifest,
@@ -16,11 +18,20 @@ from scripts.llm_turn_game_common import (
 from turn_game import Action, Event, GameState
 
 
+# 共通Vオントロジーに合わせた完全criteria例
+_O = "oxygen"
+_P = "power"
+_H = "hull_damage"
+_F = "flooding"
+_C = "communication"
+FULL_CRITERIA = [_O, _P, _H, _F, _C]
+
+
 def test_nested_v_proposal_and_response_parse() -> None:
     raw = (
         '{"speech_act":"tradeoff","message":"基準案","action":"B","reason":"比較",'
         '"addressed_to":null,"reply_to_message_id":null,'
-        '"v_proposal":{"proposal_id":"p1","ordered_criteria":["power","oxygen"],"scope":"turn"},'
+        f'"v_proposal":{{"proposal_id":"p1","ordered_criteria":{_canonical_json(FULL_CRITERIA)},"scope":"turn"}},'
         '"v_star_response":{"response":"accept","proposal_id":"p1"}}'
     )
     speech_act, message, _, _, _, _, _ = extract_json_discussion(raw)
@@ -32,7 +43,7 @@ def test_nested_v_proposal_and_response_parse() -> None:
     proposal, response = parse_v_negotiation(json.loads(raw), "alpha", "1")
     assert proposal == {
         "proposal_id": "p1",
-        "ordered_criteria": ["power", "oxygen"],
+        "ordered_criteria": FULL_CRITERIA,
         "scope": "turn",
         "message_index": 1,
     }
@@ -40,7 +51,7 @@ def test_nested_v_proposal_and_response_parse() -> None:
 
 
 def test_v_star_requires_matching_explicit_acceptance() -> None:
-    proposal = {"proposal_id": "p1", "ordered_criteria": ["power", "oxygen"], "scope": "turn", "message_index": 1}
+    proposal = {"proposal_id": "p1", "ordered_criteria": FULL_CRITERIA, "scope": "turn", "message_index": 1}
     status, _, _, reason = resolve_v_star([proposal], {"alpha": [{"response": "accept", "proposal_id": "p1", "message_index": 2}], "beta": []})
     assert status == "unresolved"
     assert reason == "missing_matching_explicit_acceptance"
@@ -54,7 +65,7 @@ def test_v_star_requires_matching_explicit_acceptance() -> None:
     )
     assert (status, proposal_id, accepted, reason) == ("accepted", "p1", proposal, "")
 
-    conflicting = {**proposal, "ordered_criteria": ["oxygen", "power"]}
+    conflicting = {**proposal, "ordered_criteria": [_P, _O, _H, _F, _C]}
     status, _, _, reason = resolve_v_star(
         [proposal, conflicting],
         {
@@ -79,25 +90,27 @@ def test_v_transcript_counter_and_finite_weights() -> None:
     item = {
         "speaker": "alpha",
         "message": "counter",
-        "v_proposal": {"proposal_id": "p1", "ordered_criteria": ["power"]},
+        "v_proposal": {"proposal_id": "p1", "ordered_criteria": FULL_CRITERIA},
         "v_star_response": {
             "response": "counter",
             "proposal_id": "p0",
-            "counter_proposal": {"proposal_id": "p1", "ordered_criteria": ["power"]},
+            "counter_proposal": {"proposal_id": "p1", "ordered_criteria": FULL_CRITERIA},
         },
     }
     text = format_transcript_text([item])
     assert "v_proposal=" in text and "counter_proposal" in text
+    weights = {_O: 0.2, _P: 0.2, _H: 0.2, _F: 0.2, _C: 0.2}
+    weights[_P] = float("nan")
     assert _normalize_v_proposal(
-        {"proposal_id": "bad", "ordered_criteria": ["power"], "weights": {"power": float("nan")}},
+        {"proposal_id": "bad", "ordered_criteria": FULL_CRITERIA, "weights": weights},
         "fallback",
     ) is None
 
 
 def test_vote_consistency_requires_top_criterion_in_reason() -> None:
-    v_star = {"ordered_criteria": ["preserve_power", "oxygen"]}
+    v_star = {"ordered_criteria": [_P, _O, _H, _F, _C]}
     assert verify_vote_v_star_consistency(
-        Action.REPAIR_POWER, "preserve power を最優先する", "p1", True, "p1", v_star
+        Action.REPAIR_POWER, "power を最優先する", "p1", True, "p1", v_star
     )
     assert not verify_vote_v_star_consistency(
         Action.REPAIR_POWER, "安全だから", "p1", True, "p1", v_star
@@ -153,35 +166,39 @@ def test_run_one_game_carries_v_state_and_measures_after_vote(monkeypatch) -> No
     seen_discussion: list[str] = []
     seen_after: list[str] = []
 
+    before_v = (
+        f'{{"v_before":{{"ordered_criteria":{_canonical_json([_P, _O, _H, _F, _C])},'
+        f'"weights":{_canonical_json({_P:0.3, _O:0.25, _H:0.2, _F:0.15, _C:0.1})},"confidence":0.6}},'
+        f'"action_before":"B","reason_before":"power"}}'
+    )
+    after_v = (
+        f'{{"v_after":{{"ordered_criteria":{_canonical_json([_P, _O, _H, _F, _C])},'
+        f'"weights":{_canonical_json({_P:0.3, _O:0.25, _H:0.2, _F:0.15, _C:0.1})},"confidence":0.7}},'
+        f'"reason_after":"power"}}'
+    )
+    proposal_json = f'"v_proposal":{{"proposal_id":"p1","ordered_criteria":{_canonical_json([_P, _O, _H, _F, _C])},"scope":"turn"}}'
+
     def fake_run_prompt(model, tokenizer, prompt, max_new_tokens, enable_thinking=False, thinking_budget=None):
         if "id=v-measurement-before" in prompt:
-            return "", (
-                '{"v_before":{"ordered_criteria":["preserve_power","oxygen"],'
-                '"weights":{"preserve_power":0.7,"oxygen":0.3},"confidence":0.6},'
-                '"action_before":"B","reason_before":"preserve power"}'
-            )
+            return "", before_v
         if "id=v-measurement-after" in prompt:
             seen_after.append(prompt)
-            return "", (
-                '{"v_after":{"ordered_criteria":["preserve_power","oxygen"],'
-                '"weights":{"preserve_power":0.7,"oxygen":0.3},"confidence":0.7},'
-                '"reason_after":"preserve power"}'
-            )
+            return "", after_v
         if "id=decision-contract" in prompt:
             return "", (
-                '{"action":"B","reason":"preserve power を最優先",'
+                '{"action":"B","reason":"power を最優先",'
                 '"ready":true,"v_star_id":"p1","v_star_consistent":true}'
             )
         seen_discussion.append(prompt)
         if "name: alpha" in prompt or "alpha persona" in prompt:
             return "", (
-                '{"speech_act":"tradeoff","message":"proposal","action":"B","reason":"preserve power",'
+                '{"speech_act":"tradeoff","message":"proposal","action":"B","reason":"power",'
                 '"addressed_to":null,"reply_to_message_id":null,'
-                '"v_proposal":{"proposal_id":"p1","ordered_criteria":["preserve_power","oxygen"],"scope":"turn"},'
+                f'{proposal_json},'
                 '"v_star_response":{"response":"accept","proposal_id":"p1"}}'
             )
         return "", (
-            '{"speech_act":"concession_integration","message":"accept","action":"B","reason":"preserve power",'
+            '{"speech_act":"concession_integration","message":"accept","action":"B","reason":"power",'
             '"addressed_to":null,"reply_to_message_id":null,'
             '"v_star_response":{"response":"accept","proposal_id":"p1"}}'
         )
@@ -212,17 +229,21 @@ def test_control_prompts_never_disclose_opponent_private_v(monkeypatch) -> None:
     from scripts.llm_turn_game_common import run_one_game
 
     captured: list[str] = []
+    personas = {"alpha": "alpha_private", "beta": "beta_private"}
 
     def fake_run_prompt(model, tokenizer, prompt, max_new_tokens, enable_thinking=False, thinking_budget=None):
         if "id=v-measurement-before" in prompt:
-            marker = "alpha_private" if "エージェント alpha" in prompt else "beta_private"
             return "", (
-                '{"v_before":{"ordered_criteria":["' + marker + '"],'
-                '"weights":{"' + marker + '":1.0},"confidence":0.7},'
-                '"action_before":"A","reason_before":"' + marker + '"}'
+                f'{{"v_before":{{"ordered_criteria":{_canonical_json(FULL_CRITERIA)},'
+                f'"weights":{_canonical_json({_O:0.2, _P:0.2, _H:0.2, _F:0.2, _C:0.2})},"confidence":0.7}},'
+                '"action_before":"A","reason_before":"ok"}'
             )
         if "id=v-measurement-after" in prompt:
-            return "", '{"v_after":{"ordered_criteria":["final"],"weights":{"final":1.0},"confidence":0.7},"reason_after":"final"}'
+            return "", (
+                f'{{"v_after":{{"ordered_criteria":{_canonical_json(FULL_CRITERIA)},'
+                f'"weights":{_canonical_json({_O:0.2, _P:0.2, _H:0.2, _F:0.2, _C:0.2})},"confidence":0.7}},'
+                '"reason_after":"ok"}'
+            )
         captured.append(prompt)
         if "id=decision-contract" in prompt:
             return "", '{"action":"A","reason":"ok","ready":true}'
@@ -231,7 +252,7 @@ def test_control_prompts_never_disclose_opponent_private_v(monkeypatch) -> None:
     monkeypatch.setattr("scripts.llm_turn_game_common.run_prompt", fake_run_prompt)
     run_one_game(
         None, None, "control", 42,
-        {"alpha": "alpha persona", "beta": "beta persona"},
+        personas,
         {"alpha": None, "beta": None}, {"alpha": "a", "beta": "b"},
         max_discussion_turns=2, evaluator_rollouts=1,
         max_decision_opportunities=1, role_value_mode="soft_value",

@@ -1,3 +1,35 @@
+# 2026-07-17
+
+- RoleとValue分離によるV整合検証の要件実装
+  - `hivc_sim/profiles.py`:
+    - `ValueCriteriaSchema` dataclass で共通Vオントロジーを定義
+    - `DEFAULT_VALUE_CRITERIA_SCHEMA` を `value-manifest-2` 用に ID / version / sha256 / criteria / schema_level 付きで提供
+    - `Value.from_dict` が `ValueCriteriaSchema` を使って `initial_priority_weights` を検証・正規化
+  - `scripts/llm_turn_game_common.py`:
+    - `_normalize_v`, `_normalize_v_proposal` で完全な criteria 集合を必須化
+    - `extract_json_v_measurement` が `ordered_criteria`, `weights`, `confidence` を検証
+    - `v_alignment_required` を L1距離・ top criterion 不一致・ action mismatch の3条件で決定
+    - V protocol 状態機械 (`I_SHARE` → `V_COMPARE` → `V_PROPOSE`/`V_RESPOND`/`V_NOT_REQUIRED` → `A_CHECK` → `FINAL_VOTE`) を実装
+    - `v_measurement_prompt`/`v_proposal_required_prompt`/`v_proposal_response_prompt`/`discussion_prompt`/`decision_opportunity_prompt` を共通Vオントロジーに更新
+    - `run_one_game` で `v_before` を自由議論前に測定し、必要時に発話予算を2発話確保して `v_proposal_required` プロンプトを発行
+    - 質問の重複検出 (`_question_signature`)、JSON契約違反発話の取り扱い、無効発話を予算に加算しない制御を追加
+    - CSV行に `role_value_assignment_id`, `value_criteria_schema_id`, `value_criteria_schema_version`, `v_alignment_required`, `v_alignment_requirement_reasons`, `v_protocol_state`, `v_protocol_transition_history`, `question_count`, `answered_question_count`, `duplicate_question_count`, `max_consecutive_duplicate_questions`, `invalid_discussion_output_count`, `v_proposal_required_prompt_issued`, `missing_v_proposal_after_required_prompt` を追加
+    - `build_value_manifest` を `value-manifest-2` にし `value_criteria_schema` を含む; `append_profile_assignment` は固定プロファイルでも seed ごとの `role_value_assignment_id` を付与
+  - `scripts/qwen_two_agent_experiment.py` / `scripts/qwen_parallel_worker.py`:
+    - 固定プロファイルでも各 seed ごとに `append_profile_assignment` を呼び出し
+  - `hivc_sim/turn_game_metrics.py`:
+    - `v_process_metrics` の分母を `v_alignment_required` に変更し、後方互換フォールバックを実装
+    - `missing_v_proposal_after_required_prompt_rate`, `v_schema_completeness_rate` を追加
+    - `question_answer_rate`, `duplicate_question_rate`, `max_consecutive_duplicate_questions_metric`, `invalid_discussion_output_rate` を追加し `compute_summary_metrics` に統合
+  - `scripts/local_preview.html`:
+    - ターン詳細に `v_alignment_required`, `v_protocol_state`, `v_protocol_transition_history`, `v_proposal_required_prompt_issued`, `missing_v_proposal_after_required_prompt` を表示
+    - Identity エリアに `role_value_assignment_id` と `value_criteria_schema` を表示
+    - 条件比較テーブルに `v_alignment_required`, `v_protocol_state` を表示
+  - `hivc_sim/tests/test_v_flow.py`:
+    - 共通Vオントロジー (`oxygen`, `power`, `hull_damage`, `flooding`, `communication`) にテストデータを更新
+    - プライバシーテストを persona テキストマーカー方式に変更
+  - `pytest hivc_sim/tests -q` が 133 tests passed
+
 # 2026-07-15
 
 - GPU並列実験 orchestrator の最終検証
