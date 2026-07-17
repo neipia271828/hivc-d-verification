@@ -173,3 +173,32 @@ def test_parallel_experiment_command_uses_parallel_runner_and_blocks_other_paral
     assert "stream.jsonl" not in command
     # worker プロセスも含め、他の並列実験を検出する
     assert "qwen_parallel_worker" in command
+
+
+def test_parallel_resume_reuses_existing_run_directory() -> None:
+    cfg = {
+        "remote_project_dir": "~/projects/hivc-d-verification",
+        "remote_venv": ".venv",
+    }
+    args = argparse.Namespace(
+        experiment_config="configs/experiment.yaml",
+        conditions=["control", "consulting", "hivc_d"],
+        games=100,
+        seed=42,
+        parallel=True,
+        gpus=[0, 1],
+        workers_per_gpu=1,
+        temperature_warning=80,
+        temperature_stop_scheduling=83,
+        resume=True,
+        role_value_mode=None,
+        role_file=None,
+    )
+
+    command, _ = _start_experiment_remote_command(cfg, args, "episode-existing")
+
+    assert "--resume" in command
+    assert "resume対象runが存在しません" in command
+    assert "run IDが既に存在します" not in command
+    assert "resumed_at" in command
+    assert "exit_code" in command and ".pre-resume" in command

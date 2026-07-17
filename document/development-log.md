@@ -383,3 +383,20 @@
   - thermal slowdown系フィールドは前後空白と大小文字を正規化し、`Active` と完全一致した場合だけ真とする
   - `Not Active` の3フィールドをすべて偽と判定する回帰テストを追加
 - GPU実験本体は実行していない
+
+## 対応ありseed・parallel config hash・中断run結合の設計修正
+
+- `--games N` を1条件あたりの対応ありseed数として固定
+  - 3条件・100seedはseed 100個と総ゲーム300件に分けてmanifestへ記録
+  - 各shardで `seed_count × condition数 == task数` かつ各seedに全条件が1回ずつあることを起動前検査
+- orchestratorのrun全体 `config_hash` をworkerへ明示伝搬し、worker固有の `shard_config_hash` と分離
+- `paused_thermal` などshard未完了時は、seed完全性とvalue manifest結合をskip扱いにし、部分CSV行数だけを進捗として記録
+- worker再起動前に古い `pause_request` を削除し、即時再停止を防止
+- `--resume` が同一runの既存manifestを上書きする前に読み、完了shardのみ再利用するよう修正
+  - run ID省略時は最後runを再利用し、resume時の既存ディレクトリチェックを通常起動と分離
+  - 旧 `exit_code`、`finished_at`、`run.log` は `.pre-resume` に退避し、再開中にstatusが旧終了コードを読まないようにする
+- ローカル検証結果
+  - `uv run pytest hivc_sim/tests -q`: 125 passed
+  - 対象Pythonファイルの `py_compile`: 成功
+  - `git diff --check`: 成功
+- GPU実験本体は実行していない

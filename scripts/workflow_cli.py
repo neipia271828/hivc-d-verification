@@ -426,6 +426,19 @@ def _start_experiment_remote_command(
             "exit \"$code\"",
         ]
     )
+    if getattr(args, "resume", False):
+        run_setup = [
+            f"test -d {shlex.quote(run_dir)} || {{ echo 'ERROR: resume対象runが存在しません' >&2; exit 24; }}",
+            f"for f in exit_code finished_at run.log; do [ ! -e {shlex.quote(run_dir)}/\"$f\" ] || mv {shlex.quote(run_dir)}/\"$f\" {shlex.quote(run_dir)}/\"$f.pre-resume\"; done",
+            f"date -Iseconds > {shlex.quote(run_dir + '/resumed_at')}",
+        ]
+    else:
+        run_setup = [
+            f"test ! -e {shlex.quote(run_dir)} || {{ echo 'ERROR: run IDが既に存在します' >&2; exit 24; }}",
+            f"mkdir -p {shlex.quote(run_dir)}",
+            f"printf '%s\\n' {shlex.quote(run_id)} > {shlex.quote(run_dir + '/run_id')}",
+            f"date -Iseconds > {shlex.quote(run_dir + '/started_at')}",
+        ]
     remote = "\n".join(
         [
             "set -eu",
@@ -447,10 +460,7 @@ def _start_experiment_remote_command(
             "    exit 23",
             "  fi",
             "done",
-            f"test ! -e {shlex.quote(run_dir)} || {{ echo 'ERROR: run IDが既に存在します' >&2; exit 24; }}",
-            f"mkdir -p {shlex.quote(run_dir)}",
-            f"printf '%s\\n' {shlex.quote(run_id)} > {shlex.quote(run_dir + '/run_id')}",
-            f"date -Iseconds > {shlex.quote(run_dir + '/started_at')}",
+            *run_setup,
             f"printf '%s\\n' {shlex.quote(runner)} > {shlex.quote(run_dir + '/command.txt')}",
             f"nohup sh -c {shlex.quote(inner)} > {shlex.quote(run_dir + '/run.log')} 2>&1 < /dev/null &",
             "pid=$!",
@@ -564,7 +574,9 @@ def experiment_main() -> None:
                 raise WorkflowError(f"停止に失敗しました (exit={result.returncode})")
             return
 
-        run_id = _validate_run_id(args.run_id or _new_run_id())
+        run_id = _validate_run_id(
+            args.run_id or (_resolve_run_id(None) if args.resume else _new_run_id())
+        )
         remote_command, run_dir = _start_experiment_remote_command(cfg, args, run_id)
         if args.dry_run:
             _print_command(_ssh_command(cfg, remote_command))

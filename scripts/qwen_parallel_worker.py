@@ -162,6 +162,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", required=True, help="shard出力ディレクトリ")
     parser.add_argument("--gpu-id", type=int, default=0, help="物理GPU ID")
     parser.add_argument("--pause-file", default=None, help="pause要求ファイルパス")
+    parser.add_argument(
+        "--master-config-hash",
+        default=None,
+        help="orchestratorが計算したrun全体の不変config hash",
+    )
     return parser
 
 
@@ -197,7 +202,10 @@ def main() -> None:
     # 固定情報を manifest へ事前書き込み
     shard_manifest_path = output_dir / "shard_manifest.json"
     git_sha = _git_sha(REPO_ROOT)
-    config_hash = _sha256_of_text(json.dumps(cfg, ensure_ascii=False, sort_keys=True, default=str))
+    shard_config_hash = _sha256_of_text(
+        json.dumps(cfg, ensure_ascii=False, sort_keys=True, default=str)
+    )
+    config_hash = args.master_config_hash or shard_config_hash
     framework_info = _framework_info()
     persona_hash = _persona_file_hash(cfg)
 
@@ -214,6 +222,7 @@ def main() -> None:
             "pid": os.getpid(),
             "config_path": args.config,
             "config_hash": config_hash,
+            "shard_config_hash": shard_config_hash,
             "git_sha": git_sha,
             "framework_info": framework_info,
             "persona_hash": persona_hash,

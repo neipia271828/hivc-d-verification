@@ -111,6 +111,62 @@ def test_compute_shards_three_conditions_share_same_split() -> None:
     assert shards[1].seed_start == 57
 
 
+def test_compute_shards_keeps_games_as_paired_seeds_per_condition() -> None:
+    conditions = ["control", "consulting", "hivc_d"]
+    shards = qp.compute_shards(
+        conditions, seed=42, games=100, gpu_ids=[0, 1], workers_per_gpu=1
+    )
+
+    assert [(s.seed_start, s.seed_count) for s in shards] == [(42, 50), (92, 50)]
+    assert sum(s.seed_count for s in shards) == 100
+    assert sum(len(s.tasks) for s in shards) == 300
+    for shard in shards:
+        per_seed: dict[int, list[str]] = {}
+        for condition, game_seed in shard.tasks:
+            per_seed.setdefault(game_seed, []).append(condition)
+        assert len(per_seed) == shard.seed_count
+        assert all(set(order) == set(conditions) for order in per_seed.values())
+
+
+def test_master_manifest_separates_paired_seed_count_from_total_games(
+    tmp_path: Path, monkeypatch
+) -> None:
+    conditions = ["control", "consulting", "hivc_d"]
+    cfg = {
+        "conditions": conditions,
+        "games": 100,
+        "seed": 42,
+        "model_path": "/tmp/model",
+        "role_file": None,
+    }
+    shards = qp.compute_shards(conditions, 42, 100, [0, 1], 1)
+    monkeypatch.setattr(qp, "_git_sha", lambda: "git-hash")
+    monkeypatch.setattr(qp, "_persona_file_hash", lambda config: None)
+    monkeypatch.setattr(qp, "_framework_info", lambda: {})
+
+    manifest = qp._create_master_manifest(
+        SimpleNamespace(
+            config="configs/experiment.yaml",
+            workers_per_gpu=1,
+            temperature_warning=80,
+            temperature_stop_scheduling=83,
+            resume=False,
+        ),
+        cfg,
+        [0, 1],
+        shards,
+        tmp_path,
+    )
+
+    assert manifest["games"] == 100
+    assert manifest["games_per_condition"] == 100
+    assert manifest["total_condition_games"] == 300
+    assert [(item["seed_start"], item["seed_count"]) for item in manifest["shards"]] == [
+        (42, 50),
+        (92, 50),
+    ]
+
+
 def test_compute_shards_uneven_one_game_no_empty_shard() -> None:
     shards = qp.compute_shards(["control"], seed=42, games=1, gpu_ids=[0, 1], workers_per_gpu=1)
     assert len(shards) == 1
@@ -142,6 +198,61 @@ def test_counterbalanced_shard_rounds_are_deterministic_and_vary_by_seed_range()
     assert set(per_seed) == {42, 43}
     assert all(set(order) == {"control", "consulting", "hivc_d"} for order in per_seed.values())
     assert per_seed[42] != per_seed[43]
+
+
+def test_launch_worker_passes_master_config_hash_and_clears_stale_pause(
+    tmp_path: Path, monkeypatch
+) -> None:
+    shard = qp.compute_shards(["control"], seed=42, games=1, gpu_ids=[0], workers_per_gpu=1)[0]
+    shard.shard_dir = tmp_path / shard.shard_id
+    shard.pause_file = shard.shard_dir / qp.PAUSE_REQUEST_FILE
+    shard.shard_dir.mkdir()
+    shard.pause_file.write_text("thermal", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    class FakeProcess:
+        pid = 1234
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return FakeProcess()
+
+    monkeypatch.setattr(qp.subprocess, "Popen", fake_popen)
+    cfg = {"conditions": ["control"], "games": 1, "seed": 42, "output_dir": "run"}
+    qp._launch_worker(shard, cfg, SimpleNamespace(config=None))
+
+    command = captured["cmd"]
+    hash_index = command.index("--master-config-hash")
+    assert len(command[hash_index + 1]) == 64
+    assert not shard.pause_file.exists()
+
+
+def test_resume_reuses_only_completed_shards() -> None:
+    shards = qp.compute_shards(["control"], seed=42, games=2, gpu_ids=[0, 1], workers_per_gpu=1)
+    existing = {
+        "config_hash": "same-hash",
+        "shards": [
+            {"shard_id": shards[0].shard_id, "status": "completed", "exit_code": 0},
+            {"shard_id": shards[1].shard_id, "status": "paused_thermal", "exit_code": 2},
+        ],
+    }
+    manifest = {"config_hash": "same-hash", "resume": True}
+
+    qp._apply_resume(existing, manifest, shards)
+
+    assert shards[0].skip is True
+    assert shards[0].status == "completed"
+    assert shards[1].skip is False
+
+
+def test_resume_rejects_mismatched_master_config() -> None:
+    shards = qp.compute_shards(["control"], seed=42, games=1, gpu_ids=[0], workers_per_gpu=1)
+    with pytest.raises(RuntimeError, match="config_hash"):
+        qp._apply_resume(
+            {"config_hash": "old", "shards": []},
+            {"config_hash": "new", "resume": True},
+            shards,
+        )
 
 
 def _make_row(condition: str, seed: int, turn: int) -> dict[str, str]:
@@ -292,6 +403,49 @@ def test_merge_results_fails_when_shard_missing_output(tmp_path: Path) -> None:
     report = json.loads((master_dir / "merge_report.json").read_text(encoding="utf-8"))
     assert report["status"] == "failed"
     assert not all(c["passed"] for c in report["checks"])
+
+
+def test_incomplete_shard_reports_partial_rows_without_full_seed_mismatch(tmp_path: Path) -> None:
+    master_dir = tmp_path / "run-partial"
+    master_dir.mkdir()
+    shard = qp.compute_shards(["control"], seed=42, games=2, gpu_ids=[0], workers_per_gpu=1)[0]
+    shard.shard_dir = master_dir / "shards" / shard.shard_id
+    shard.shard_dir.mkdir(parents=True)
+    shard.status = "paused_thermal"
+    shard.exit_code = 2
+    qp._write_csv(shard.shard_dir / "control_games.csv", [_make_row("control", 42, 1)])
+    (shard.shard_dir / "shard_manifest.json").write_text(
+        json.dumps(
+            {
+                "config_hash": "config-hash",
+                "git_sha": "git-hash",
+                "persona_hash": None,
+                "framework_info": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = {"conditions": ["control"], "games": 2, "seed": 42, "model_path": "/tmp/model"}
+    manifest = {
+        "config_hash": "config-hash",
+        "git_sha": "git-hash",
+        "persona_hash": None,
+        "framework_info": {},
+    }
+    exit_code = qp._merge_results(master_dir, cfg, manifest, [shard], qp.MasterLogger(master_dir))
+
+    assert exit_code == 1
+    report = json.loads((master_dir / "merge_report.json").read_text(encoding="utf-8"))
+    assert report["partial_results"] is True
+    assert report["row_counts"] == {"control": 1}
+    seed_check = next(c for c in report["checks"] if c["name"] == "condition_seed_set_match")
+    assert seed_check == {
+        "name": "condition_seed_set_match",
+        "passed": None,
+        "skipped": True,
+        "reason": "shards_incomplete",
+    }
 
 
 def test_merge_results_fails_when_duplicate_turn(tmp_path: Path) -> None:

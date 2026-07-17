@@ -152,6 +152,11 @@ uv run experiment \
 
 `--workers-per-gpu 2` 以上は通常運用では禁止し、別途の高密度ベンチマークと明示的な安全基準の更新後にのみ許可する。
 
+`--games N` は「1条件あたりの対応ありseed数」とする。例えば3条件で `--games 100`
+なら、seedは100個であり、各seedを3条件で実行するため総ゲーム数は300となる。
+manifestには `games_per_condition=100` と `total_condition_games=300` を別々記録し、seed数を
+300に拡張してはならない。
+
 ### 6.2 事前検査
 
 orchestratorは起動前に次を検査する。
@@ -230,7 +235,13 @@ orchestratorは各GPUについて、少なくとも30秒ごとに次を記録す
 - 行スキーマと記録必須列が全shardで一致する。
 - config、framework、persona、Git SHAのハッシュがmaster runの宣言値と一致する。
 
+masterの `config_hash` はrun全体の不変設定を対象とし、orchestratorからworkerへ明示的に渡す。
+workerが上書きするshard固有の `seed`、`games`、`output_dir` を含むhashは
+`shard_config_hash` として別記録し、masterとの一致判定に使ってはならない。
+
 一つでも失敗した場合は `summary.csv` を正式結果として生成せず、不足・重複・不一致の内容を `merge_report.json` へ記録する。
+shardが `paused_thermal` または未完了の場合、完全性を前提とするseed集合・manifest結合検査は
+`skipped: true` と記録し、空集合と全seedの差分を大量出力しない。部分CSVの行数は進捗情報として別記録する。
 
 ### 9.2 結合出力
 
@@ -245,6 +256,8 @@ orchestratorは各GPUについて、少なくとも30秒ごとに次を記録す
 - shardの状態は `pending`、`running`、`completed`、`failed`、`paused_thermal` のいずれかとする。
 - workerが異常終了しても、他shardの原本と成功状態を変更しない。
 - `--resume` は `completed` でハッシュが一致するshardを再実行せず、未完了または失敗shardのみを対象とする。
+- `--resume` は同一run IDの既存 `master_manifest.json` を新manifestで上書きする前に読み、完了状態を引き継ぐ。
+- run IDを省略した `--resume` は最後のrun IDを使い、新しいrunディレクトリを作成しない。
 - 一部ゲームだけが出力されたshardは正常完了とみなさず、出力原本を保存したまま別のretry shardとして再実行する。
 - retryで同じ `(condition, seed)` を二重採用しない。最終結合時に採用したshardをmanifestで明示する。
 - 停止操作はmaster run全体とshard個別の両方をサポートする。
@@ -323,4 +336,3 @@ candidateは次のすべてを満たす場合に採用する。
 5. baseline/candidateを各4ゲーム以上で計測する。
 6. 採用基準を満たした場合のみ、正式実験の既定実行方式にする。
 7. README、GPU実験手順、ローカルプレビューのrun認識をmaster run対応へ更新する。
-

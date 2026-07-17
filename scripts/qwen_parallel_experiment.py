@@ -480,6 +480,11 @@ def _load_config(args: argparse.Namespace) -> dict[str, Any]:
     if "all" in conditions:
         conditions = list(CONDITIONS)
     cfg["conditions"] = conditions
+    cfg["games"] = int(cfg["games"])
+    if args.games is not None and cfg["games"] != int(args.games):
+        raise RuntimeError(
+            f"--games の解決値が変化しました: requested={args.games}, resolved={cfg['games']}"
+        )
     return cfg
 
 
@@ -577,6 +582,19 @@ def _pre_check(
             raise RuntimeError(
                 f"shard {s.shard_id} conditions {s.conditions} do not match {conditions}"
             )
+        expected_task_count = s.seed_count * len(conditions)
+        if len(s.tasks) != expected_task_count:
+            raise RuntimeError(
+                f"shard {s.shard_id} task数が不正: {len(s.tasks)} != {expected_task_count}"
+            )
+        per_seed: dict[int, list[str]] = {}
+        for condition, game_seed in s.tasks:
+            per_seed.setdefault(game_seed, []).append(condition)
+        expected_shard_seeds = set(range(s.seed_start, s.seed_start + s.seed_count))
+        if set(per_seed) != expected_shard_seeds:
+            raise RuntimeError(f"shard {s.shard_id} のpaired seed集合が不正")
+        if any(len(order) != len(conditions) or set(order) != set(conditions) for order in per_seed.values()):
+            raise RuntimeError(f"shard {s.shard_id} の各seedに全条件が1回ずつありません")
 
     return snapshot, shards
 
@@ -595,6 +613,8 @@ def _create_master_manifest(
     gpu_ids: list[int],
     shards: list[Shard],
     master_dir: Path,
+    *,
+    write: bool = True,
 ) -> dict[str, Any]:
     git_sha = _git_sha()
     config_hash = _sha256_text(json.dumps(cfg, ensure_ascii=False, sort_keys=True, default=str))
@@ -613,6 +633,8 @@ def _create_master_manifest(
         "model_path": cfg["model_path"],
         "conditions": cfg["conditions"],
         "games": cfg["games"],
+        "games_per_condition": cfg["games"],
+        "total_condition_games": cfg["games"] * len(cfg["conditions"]),
         "seed": cfg["seed"],
         "gpus": gpu_ids,
         "workers_per_gpu": args.workers_per_gpu,
@@ -621,7 +643,8 @@ def _create_master_manifest(
         "resume": args.resume,
         "shards": [_shard_entry(s) for s in shards],
     }
-    _write_master_manifest(master_dir, manifest)
+    if write:
+        _write_master_manifest(master_dir, manifest)
     return manifest
 
 
@@ -654,13 +677,16 @@ def _shard_entry(shard: Shard, include_status: bool = True) -> dict[str, Any]:
     return entry
 
 
-def _apply_resume(master_dir: Path, manifest: dict[str, Any], shards: list[Shard]) -> None:
+def _apply_resume(
+    existing: dict[str, Any] | None,
+    manifest: dict[str, Any],
+    shards: list[Shard],
+) -> None:
     """--resume 時に完了済みshardをスキップする。"""
     if not manifest.get("resume"):
         return
-    existing = _load_master_manifest(master_dir)
     if not existing:
-        return
+        raise RuntimeError("resume対象のmaster_manifest.jsonがありません")
     if existing.get("config_hash") != manifest["config_hash"]:
         raise RuntimeError("resume 時の config_hash が一致しません。新規runを開始してください。")
     completed_ids = {
@@ -694,6 +720,8 @@ def _launch_worker(shard: Shard, cfg: dict[str, Any], args: argparse.Namespace) 
         str(shard.gpu_id),
         "--pause-file",
         str(shard.pause_file),
+        "--master-config-hash",
+        _sha256_text(json.dumps(cfg, ensure_ascii=False, sort_keys=True, default=str)),
     ]
     if args.config:
         cmd.extend(["--config", args.config])
@@ -701,6 +729,10 @@ def _launch_worker(shard: Shard, cfg: dict[str, Any], args: argparse.Namespace) 
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = str(shard.gpu_id)
     env["PYTHONUNBUFFERED"] = "1"
+
+    # thermal pause からの再起動時に古いpause要求を引き継がない。
+    if shard.pause_file.exists():
+        shard.pause_file.unlink()
 
     log_path = shard.shard_dir / "run.log"
     with log_path.open("w", encoding="utf-8") as logfile:
@@ -893,13 +925,12 @@ def _merge_results(
         failed = [s.shard_id for s in shards if s.status != "completed" or s.exit_code != 0]
         logger.log(f"shard未完了・失敗: {failed}")
 
-    # 読み込み
-    if all_completed:
-        for shard in shards:
-            for condition in cfg["conditions"]:
-                csv_path = shard.shard_dir / f"{condition}_games.csv"
-                rows = _read_csv(csv_path)
-                condition_rows[condition].extend(rows)
+    # 読み込み。中断runでも部分進捗は記録するが、最終結合には使わない。
+    for shard in shards:
+        for condition in cfg["conditions"]:
+            csv_path = shard.shard_dir / f"{condition}_games.csv"
+            rows = _read_csv(csv_path)
+            condition_rows[condition].extend(rows)
 
     # 行スキーマ一致
     all_rows: list[dict[str, str]] = []
@@ -917,20 +948,34 @@ def _merge_results(
 
     # seed 重複・欠損
     expected_seeds = set(range(cfg["seed"], cfg["seed"] + cfg["games"]))
-    seed_ok = True
-    for condition, rows in condition_rows.items():
-        seeds = set()
-        for r in rows:
-            try:
-                seeds.add(int(r["seed"]))
-            except (ValueError, TypeError):
+    if all_completed:
+        seed_ok = True
+        for condition, rows in condition_rows.items():
+            seeds = set()
+            for r in rows:
+                try:
+                    seeds.add(int(r["seed"]))
+                except (ValueError, TypeError):
+                    seed_ok = False
+                    logger.log(f"condition {condition} seed値が不正: {r.get('seed')}")
+                    break
+            if set(seeds) != expected_seeds:
                 seed_ok = False
-                logger.log(f"condition {condition} seed値が不正: {r.get('seed')}")
-                break
-        if set(seeds) != expected_seeds:
-            seed_ok = False
-            logger.log(f"condition {condition} seed集合が不一致: {sorted(seeds)} != {sorted(expected_seeds)}")
-    checks.append({"name": "condition_seed_set_match", "passed": seed_ok})
+                logger.log(
+                    f"condition {condition} seed集合が不一致: "
+                    f"actual_count={len(seeds)}, expected_count={len(expected_seeds)}, "
+                    f"missing={sorted(expected_seeds - seeds)[:20]}"
+                )
+        checks.append({"name": "condition_seed_set_match", "passed": seed_ok})
+    else:
+        checks.append(
+            {
+                "name": "condition_seed_set_match",
+                "passed": None,
+                "skipped": True,
+                "reason": "shards_incomplete",
+            }
+        )
 
     # turn 重複
     seen: set[tuple[str, str, str]] = set()
@@ -962,10 +1007,20 @@ def _merge_results(
     checks.append({"name": "shard_hashes_match_master", "passed": hash_ok})
 
     merged_value_manifest = _merge_value_manifests(shards, cfg) if all_completed else None
-    value_manifest_ok = merged_value_manifest is not None
-    checks.append({"name": "value_manifests_mergeable", "passed": value_manifest_ok})
-    if all_completed and not value_manifest_ok:
-        logger.log("shard value_manifest.json の読込みまたは結合に失敗")
+    if all_completed:
+        value_manifest_ok = merged_value_manifest is not None
+        checks.append({"name": "value_manifests_mergeable", "passed": value_manifest_ok})
+        if not value_manifest_ok:
+            logger.log("shard value_manifest.json の読込みまたは結合に失敗")
+    else:
+        checks.append(
+            {
+                "name": "value_manifests_mergeable",
+                "passed": None,
+                "skipped": True,
+                "reason": "shards_incomplete",
+            }
+        )
 
     all_checks_pass = all(c["passed"] for c in checks)
     merge_status = "merged" if (all_completed and all_checks_pass) else "failed"
@@ -1006,6 +1061,7 @@ def _merge_results(
         "all_completed": all_completed,
         "checks": checks,
         "row_counts": {c: len(rows) for c, rows in condition_rows.items()},
+        "partial_results": not all_completed and any(condition_rows.values()),
         "expected_games_per_condition": cfg["games"],
         "output_files": output_files,
     }
@@ -1059,10 +1115,14 @@ def main() -> None:
         shard.shard_dir = shards_dir / shard.shard_id
         shard.pause_file = shard.shard_dir / PAUSE_REQUEST_FILE
 
+    # resume判定のため、新manifestで上書きする前に旧状態を読む。
+    existing_manifest = _load_master_manifest(master_dir) if args.resume else None
+
     # master manifest 作成
-    manifest = _create_master_manifest(args, cfg, gpu_ids, shards, master_dir)
+    manifest = _create_master_manifest(args, cfg, gpu_ids, shards, master_dir, write=False)
     if args.resume:
-        _apply_resume(master_dir, manifest, shards)
+        _apply_resume(existing_manifest, manifest, shards)
+    _write_master_manifest(master_dir, manifest)
 
     # スキップ情報を master manifest に反映
     _update_manifest_shards(master_dir, manifest, shards)
