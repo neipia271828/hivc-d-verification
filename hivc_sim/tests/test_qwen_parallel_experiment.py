@@ -167,6 +167,67 @@ def test_power_limit_command_reports_permission_failure(monkeypatch) -> None:
         qp._set_gpu_power_limit(0, 180)
 
 
+def test_thermal_duty_cycle_suspends_and_resumes_worker(
+    tmp_path: Path, monkeypatch
+) -> None:
+    signals: list[tuple[int, int]] = []
+    monotonic_values = iter([100.0, 112.5])
+
+    class FakeProcess:
+        @staticmethod
+        def poll():
+            return None
+
+    class FakeLogger:
+        @staticmethod
+        def log(_message):
+            pass
+
+    shard = qp.Shard(
+        shard_id="mixed-gpu0-seed42-42",
+        condition="mixed",
+        gpu_id=0,
+        seed_start=42,
+        seed_count=1,
+        shard_dir=tmp_path,
+        pause_file=tmp_path / "pause_request",
+        process=FakeProcess(),
+        pid=4321,
+        status="running",
+    )
+    monkeypatch.setattr(qp.os, "killpg", lambda pid, sig: signals.append((pid, sig)))
+    monkeypatch.setattr(qp.time, "monotonic", lambda: next(monotonic_values))
+
+    assert qp._suspend_shard_for_thermal(shard, tmp_path, 78, FakeLogger()) is True
+    assert shard.thermal_suspended is True
+    assert shard.thermal_suspend_count == 1
+
+    assert qp._resume_shard_from_thermal(shard, tmp_path, 70, FakeLogger()) is True
+    assert shard.thermal_suspended is False
+    assert shard.thermal_suspended_seconds == 12.5
+    assert signals == [(4321, qp.signal.SIGSTOP), (4321, qp.signal.SIGCONT)]
+
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "thermal_events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [event["action"] for event in events] == ["suspend", "resume"]
+    assert events[1]["total_suspended_seconds"] == 12.5
+
+
+def test_precheck_rejects_invalid_thermal_hysteresis(tmp_path: Path) -> None:
+    logger = qp.MasterLogger(tmp_path)
+    args = SimpleNamespace(
+        thermal_duty_cycle=True,
+        thermal_resume_temperature=79,
+        thermal_suspend_temperature=78,
+        temperature_stop_scheduling=83,
+    )
+
+    with pytest.raises(RuntimeError, match="resume < suspend < stop-scheduling"):
+        qp._pre_check(args, {}, [0], logger)
+
+
 def test_compute_shards_even_split_two_gpus() -> None:
     shards = qp.compute_shards(["control"], seed=42, games=30, gpu_ids=[0, 1], workers_per_gpu=1)
     assert len(shards) == 2
@@ -240,6 +301,13 @@ def test_master_manifest_separates_paired_seed_count_from_total_games(
     assert manifest["games"] == 100
     assert manifest["games_per_condition"] == 100
     assert manifest["total_condition_games"] == 300
+    assert manifest["thermal_duty_cycle"] == {
+        "enabled": False,
+        "suspend_temperature": 78,
+        "resume_temperature": 70,
+        "monitor_interval_seconds": 5,
+        "event_log": "thermal_events.jsonl",
+    }
     assert [(item["seed_start"], item["seed_count"]) for item in manifest["shards"]] == [
         (42, 50),
         (92, 50),

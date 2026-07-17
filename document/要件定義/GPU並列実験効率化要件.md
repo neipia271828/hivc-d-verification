@@ -148,6 +148,9 @@ uv run experiment \
 | `--workers-per-gpu` | GPUごとの最大worker数 | 1 |
 | `--temperature-warning` | 警告温度 | 80℃ |
 | `--temperature-stop-scheduling` | 新規shard起動を止める温度 | 83℃ |
+| `--thermal-duty-cycle` | 温度に応じてworkerを一時停止・再開する権限不要の負荷制御 | false |
+| `--thermal-suspend-temperature` | duty cycleで一時停止する温度 | 78℃ |
+| `--thermal-resume-temperature` | duty cycleで再開する温度 | 70℃ |
 | `--power-limit-w` | 実験中だけ各GPUへ適用する電力上限。未指定時は変更しない | 未指定 |
 | `--resume` | 成功済みshardを再利用して再開 | false |
 
@@ -185,7 +188,7 @@ orchestratorは起動前に次を検査する。
 
 ### 7.1 監視項目
 
-orchestratorは各GPUについて、少なくとも30秒ごとに次を記録する。
+orchestratorは各GPUについて5秒ごとに次を記録する。
 
 - timestamp
 - GPU ID / UUID
@@ -197,12 +200,17 @@ orchestratorは各GPUについて、少なくとも30秒ごとに次を記録す
 - P-state
 - thermal slowdown / hardware slowdownの有無
 - worker PIDとshard ID
+- thermal duty cycleによって一時停止中のshard ID
 
 記録先は `gpu_metrics.csv` とし、master run直下に保存する。
 
 ### 7.2 安全動作
 
 - 80℃以上で警告を記録する。
+- `--thermal-duty-cycle` が有効な場合、78℃以上で当該GPUの実行中workerプロセスグループへ `SIGSTOP` を送り、70℃以下で `SIGCONT` により再開する。閾値はCLIで変更可能だが、常に `resume < suspend < stop-scheduling` を満たすこと。
+- duty cycleはモデル、プロンプト、seed、生成パラメータを変更せず、wall-clock時間だけを延長する。停止・再開時刻、温度、GPU、shard、PID、累積停止秒数を `thermal_events.jsonl` に記録する。
+- shardごとの停止回数、停止中かどうか、累積停止秒数を `master_manifest.json` に記録する。
+- orchestrator終了処理では停止中workerへ `SIGCONT` を送る。`uv run experiment --stop` は停止中プロセスにも終了シグナルを処理させるため、`SIGTERM` の後に `SIGCONT` を送る。
 - 83℃以上では、実行中のゲームを即時強制終了せず、後続shardの新規起動を停止する。
 - 83℃以上が60秒以上継続する、またはthermal slowdownが検出された場合、workerは現在のゲーム完了後に次のゲームへ進まず、shardを `paused_thermal` とする。
 - CUDA out-of-memory、モデル読込失敗、GPUリセットは自動で並列度を上げる理由にせず、対象shardを失敗として保存する。

@@ -398,6 +398,14 @@ def _parallel_runner_args(
     temperature_stop = getattr(args, "temperature_stop_scheduling", 83)
     if temperature_stop != 83:
         command.extend(["--temperature-stop-scheduling", str(temperature_stop)])
+    if getattr(args, "thermal_duty_cycle", False):
+        command.append("--thermal-duty-cycle")
+        suspend_temperature = getattr(args, "thermal_suspend_temperature", 78)
+        resume_temperature = getattr(args, "thermal_resume_temperature", 70)
+        if suspend_temperature != 78:
+            command.extend(["--thermal-suspend-temperature", str(suspend_temperature)])
+        if resume_temperature != 70:
+            command.extend(["--thermal-resume-temperature", str(resume_temperature)])
     power_limit_w = getattr(args, "power_limit_w", None)
     if power_limit_w is not None:
         command.extend(["--power-limit-w", str(power_limit_w)])
@@ -526,6 +534,13 @@ def _build_experiment_parser() -> argparse.ArgumentParser:
     parser.add_argument("--temperature-warning", type=int, default=80, help="警告温度（℃）")
     parser.add_argument("--temperature-stop-scheduling", type=int, default=83, help="新規shard起動を止める温度（℃）")
     parser.add_argument(
+        "--thermal-duty-cycle",
+        action="store_true",
+        help="78℃でworkerを一時停止し、70℃まで冷えたら再開する（sudo不要）",
+    )
+    parser.add_argument("--thermal-suspend-temperature", type=int, default=78)
+    parser.add_argument("--thermal-resume-temperature", type=int, default=70)
+    parser.add_argument(
         "--power-limit-w",
         type=int,
         default=None,
@@ -552,6 +567,16 @@ def experiment_main() -> None:
             raise WorkflowError("--power-limit-w は --parallel と併用してください")
         if args.power_limit_w is not None and args.power_limit_w < 1:
             raise WorkflowError("--power-limit-w は1以上にしてください")
+        if args.thermal_duty_cycle and not args.parallel:
+            raise WorkflowError("--thermal-duty-cycle は --parallel と併用してください")
+        if args.thermal_duty_cycle and not (
+            args.thermal_resume_temperature
+            < args.thermal_suspend_temperature
+            < args.temperature_stop_scheduling
+        ):
+            raise WorkflowError(
+                "温度は thermal-resume < thermal-suspend < temperature-stop-scheduling の順にしてください"
+            )
 
         if args.status or args.logs or args.stop:
             run_id = _resolve_run_id(args.run_id)
@@ -575,7 +600,8 @@ def experiment_main() -> None:
                     "  [ -f \"$worker_pid_file\" ] || continue",
                     "  worker_pid=$(cat \"$worker_pid_file\")",
                     "  case \"$worker_pid\" in (*[!0-9]*|'') continue ;; esac",
-                    "  kill \"$worker_pid\" 2>/dev/null || true",
+                    "  kill -TERM -\"$worker_pid\" 2>/dev/null || kill \"$worker_pid\" 2>/dev/null || true",
+                    "  kill -CONT -\"$worker_pid\" 2>/dev/null || kill -CONT \"$worker_pid\" 2>/dev/null || true",
                     "done",
                     "for _ in 1 2 3 4 5; do",
                     "  workers_alive=0",

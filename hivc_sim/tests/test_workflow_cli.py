@@ -159,6 +159,31 @@ def test_experiment_parser_accepts_temporary_power_limit() -> None:
     assert args.power_limit_w == 180
 
 
+def test_parallel_runner_args_passes_thermal_duty_cycle() -> None:
+    cfg = {"remote_venv": ".venv"}
+    args = argparse.Namespace(
+        experiment_config="configs/experiment.yaml",
+        conditions=["control", "consulting", "hivc_d"],
+        games=1,
+        seed=42,
+        gpus=[0],
+        workers_per_gpu=1,
+        temperature_warning=80,
+        temperature_stop_scheduling=83,
+        thermal_duty_cycle=True,
+        thermal_suspend_temperature=76,
+        thermal_resume_temperature=68,
+        power_limit_w=None,
+        resume=False,
+    )
+
+    command = _parallel_runner_args(cfg, args, "runs/episode-test")
+
+    assert "--thermal-duty-cycle" in command
+    assert command[command.index("--thermal-suspend-temperature") + 1] == "76"
+    assert command[command.index("--thermal-resume-temperature") + 1] == "68"
+
+
 def test_stop_command_targets_workers_before_power_limit_orchestrator(monkeypatch) -> None:
     from scripts import workflow_cli
 
@@ -182,7 +207,8 @@ def test_stop_command_targets_workers_before_power_limit_orchestrator(monkeypatc
     workflow_cli.experiment_main()
 
     command = captured["command"]
-    assert command.index('kill "$worker_pid"') < command.index("orchestrator_pid=$(cat")
+    assert command.index('kill -TERM -"$worker_pid"') < command.index("orchestrator_pid=$(cat")
+    assert command.index('kill -TERM -"$worker_pid"') < command.index('kill -CONT -"$worker_pid"')
     assert 'kill -TERM "$orchestrator_pid"' in command
 
 

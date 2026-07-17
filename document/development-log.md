@@ -419,3 +419,21 @@
   - `git diff --check`: 成功
   - `uv run experiment ... --power-limit-w 180 --dry-run`: CLIからGPU runnerへの引数伝播を確認
 - GPUのpower limit変更およびGPU実験本体はまだ実行していない
+
+## sudo不要の温度連動thermal duty cycle
+
+- GPU power limitを変更できない一般ユーザー向けに `--thermal-duty-cycle` を追加
+  - 既定では78℃以上でworkerプロセスグループへ `SIGSTOP`
+  - 70℃以下まで冷却後、`SIGCONT` で同じworkerを再開
+  - 83℃の新規起動停止とthermal slowdown時のゲーム境界停止は従来どおり維持
+- GPU監視間隔を30秒から5秒へ短縮し、230W動作時の急な温度上昇へ追従
+- モデル・プロンプト・seed・生成パラメータは変更せず、wall-clock時間のみを延長する設計
+- `thermal_events.jsonl` に停止・再開時刻、温度、GPU、shard、PID、累積停止時間を保存
+- `gpu_metrics.csv` に停止中shardを、`master_manifest.json` にshard別の停止回数・累積停止秒数を保存
+- `uv run experiment --stop` は停止中workerへSIGTERM後にSIGCONTを送り、終了シグナルを確実に処理可能に変更
+- CLIで温度を変更する場合は `resume < suspend < stop-scheduling` を起動前検査
+- ローカル検証結果
+  - `uv run pytest hivc_sim/tests -q`: 133 passed
+  - 対象Pythonファイルの `py_compile`: 成功
+  - `git diff --check`: 成功
+  - GPU実験本体はまだ実行していない

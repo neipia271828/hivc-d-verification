@@ -42,7 +42,7 @@ from qwen_two_agent_experiment import ARG_TYPES, CLI_DEFAULTS  # noqa: E402
 from turn_game_metrics import compute_summary_metrics  # noqa: E402
 
 
-SAMPLE_INTERVAL = 30
+SAMPLE_INTERVAL = 5
 PAUSE_REQUEST_FILE = "pause_request"
 ALLOWED_COMPUTE_MODES = {"Default", "Exclusive_Process", "E. Process", "E. Thread"}
 POWER_LIMIT_VERIFY_TOLERANCE_W = 0.5
@@ -127,6 +127,10 @@ class Shard:
     skip: bool = False
     conditions: list[str] = field(default_factory=list)
     tasks: list[tuple[str, int]] = field(default_factory=list)
+    thermal_suspended: bool = False
+    thermal_suspend_count: int = 0
+    thermal_suspended_seconds: float = 0.0
+    thermal_suspend_started_monotonic: float | None = None
 
 
 def _nvidia_smi_query(gpu_ids: list[int] | None, fields: list[str]) -> list[dict[str, str]]:
@@ -307,7 +311,6 @@ class GpuPowerLimitGuard:
         self.logger = logger
         self.devices: list[dict[str, Any]] = []
         self._restored = False
-        self._previous_sigterm: Any = None
 
     def apply(self) -> None:
         if self.requested_w is None:
@@ -351,13 +354,6 @@ class GpuPowerLimitGuard:
             self.restore()
             raise
 
-        self._previous_sigterm = signal.getsignal(signal.SIGTERM)
-
-        def _handle_sigterm(signum: int, _frame: object) -> None:
-            raise SystemExit(128 + signum)
-
-        signal.signal(signal.SIGTERM, _handle_sigterm)
-
     def restore(self) -> None:
         if self._restored:
             return
@@ -397,10 +393,6 @@ class GpuPowerLimitGuard:
                 if record.get("applied_w") is not None and record.get("restore_error") is None:
                     record["restore_error"] = f"復元後照合に失敗しました: {exc}"
             self.logger.log(f"ERROR: GPU power limit復元後の照合失敗: {exc}")
-        if self._previous_sigterm is not None:
-            signal.signal(signal.SIGTERM, self._previous_sigterm)
-            self._previous_sigterm = None
-
     def manifest_entry(self) -> dict[str, Any]:
         return {
             "requested_w": self.requested_w,
@@ -603,6 +595,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--temperature-warning", type=int, default=80)
     parser.add_argument("--temperature-stop-scheduling", type=int, default=83)
     parser.add_argument(
+        "--thermal-duty-cycle",
+        action="store_true",
+        default=False,
+        help="温度に応じてworkerをSIGSTOP/SIGCONTし、権限不要で平均負荷を抑える",
+    )
+    parser.add_argument("--thermal-suspend-temperature", type=int, default=78)
+    parser.add_argument("--thermal-resume-temperature", type=int, default=70)
+    parser.add_argument(
         "--power-limit-w",
         type=int,
         default=None,
@@ -683,6 +683,17 @@ def _pre_check(
 ) -> tuple[list[dict[str, object]], list[Shard]]:
     """起動前検査を実施する。失敗した場合は RuntimeError を投げる。"""
     logger.log("GPU検出中...")
+    thermal_duty_cycle = getattr(args, "thermal_duty_cycle", False)
+    thermal_resume_temperature = getattr(args, "thermal_resume_temperature", 70)
+    thermal_suspend_temperature = getattr(args, "thermal_suspend_temperature", 78)
+    if thermal_duty_cycle and not (
+        thermal_resume_temperature
+        < thermal_suspend_temperature
+        < args.temperature_stop_scheduling
+    ):
+        raise RuntimeError(
+            "thermal duty cycle温度は resume < suspend < stop-scheduling の順にしてください"
+        )
     snapshot = get_gpu_snapshot(gpu_ids)
     if len(snapshot) != len(gpu_ids):
         raise RuntimeError("指定GPUの一部が nvidia-smi で検出できません")
@@ -810,6 +821,13 @@ def _create_master_manifest(
         "workers_per_gpu": args.workers_per_gpu,
         "temperature_warning": args.temperature_warning,
         "temperature_stop_scheduling": args.temperature_stop_scheduling,
+        "thermal_duty_cycle": {
+            "enabled": getattr(args, "thermal_duty_cycle", False),
+            "suspend_temperature": getattr(args, "thermal_suspend_temperature", 78),
+            "resume_temperature": getattr(args, "thermal_resume_temperature", 70),
+            "monitor_interval_seconds": SAMPLE_INTERVAL,
+            "event_log": "thermal_events.jsonl",
+        },
         "power_limit_policy": getattr(args, "power_limit_policy", None),
         "resume": args.resume,
         "shards": [_shard_entry(s) for s in shards],
@@ -843,6 +861,18 @@ def _shard_entry(shard: Shard, include_status: bool = True) -> dict[str, Any]:
                 "vram_used_mb": shard.vram_used_mb,
                 "started_at": shard.started_at,
                 "finished_at": shard.finished_at,
+                "thermal_suspended": shard.thermal_suspended,
+                "thermal_suspend_count": shard.thermal_suspend_count,
+                "thermal_suspended_seconds": round(
+                    shard.thermal_suspended_seconds
+                    + (
+                        time.monotonic() - shard.thermal_suspend_started_monotonic
+                        if shard.thermal_suspended
+                        and shard.thermal_suspend_started_monotonic is not None
+                        else 0.0
+                    ),
+                    3,
+                ),
             }
         )
     return entry
@@ -969,6 +999,107 @@ def _wait_for_shards(shards: list[Shard], state: dict[str, Any], state_lock: thr
         time.sleep(0.5)
 
 
+def _append_thermal_event(master_dir: Path, event: dict[str, Any]) -> None:
+    path = master_dir / "thermal_events.jsonl"
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _suspend_shard_for_thermal(
+    shard: Shard,
+    master_dir: Path,
+    temperature: int,
+    logger: MasterLogger,
+) -> bool:
+    if shard.thermal_suspended or shard.pid is None or shard.process is None:
+        return False
+    if shard.process.poll() is not None:
+        return False
+    try:
+        os.killpg(shard.pid, signal.SIGSTOP)
+    except ProcessLookupError:
+        return False
+    shard.thermal_suspended = True
+    shard.thermal_suspend_count += 1
+    shard.thermal_suspend_started_monotonic = time.monotonic()
+    timestamp = _now_iso()
+    _append_thermal_event(
+        master_dir,
+        {
+            "timestamp": timestamp,
+            "action": "suspend",
+            "reason": "temperature",
+            "temperature": temperature,
+            "gpu_id": shard.gpu_id,
+            "shard_id": shard.shard_id,
+            "pid": shard.pid,
+        },
+    )
+    logger.log(
+        f"THERMAL SUSPEND: GPU {shard.gpu_id} {temperature}C、"
+        f"{shard.shard_id} (pid={shard.pid}) を一時停止"
+    )
+    return True
+
+
+def _resume_shard_from_thermal(
+    shard: Shard,
+    master_dir: Path,
+    temperature: int | None,
+    logger: MasterLogger,
+    *,
+    reason: str = "cooled",
+) -> bool:
+    if not shard.thermal_suspended or shard.pid is None:
+        return False
+    try:
+        os.killpg(shard.pid, signal.SIGCONT)
+    except ProcessLookupError:
+        pass
+    now_monotonic = time.monotonic()
+    if shard.thermal_suspend_started_monotonic is not None:
+        shard.thermal_suspended_seconds += max(
+            0.0, now_monotonic - shard.thermal_suspend_started_monotonic
+        )
+    shard.thermal_suspend_started_monotonic = None
+    shard.thermal_suspended = False
+    timestamp = _now_iso()
+    _append_thermal_event(
+        master_dir,
+        {
+            "timestamp": timestamp,
+            "action": "resume",
+            "reason": reason,
+            "temperature": temperature,
+            "gpu_id": shard.gpu_id,
+            "shard_id": shard.shard_id,
+            "pid": shard.pid,
+            "total_suspended_seconds": round(shard.thermal_suspended_seconds, 3),
+        },
+    )
+    logger.log(
+        f"THERMAL RESUME: GPU {shard.gpu_id} "
+        f"{temperature if temperature is not None else 'unknown'}C、"
+        f"{shard.shard_id} を再開 (reason={reason})"
+    )
+    return True
+
+
+def _resume_all_thermally_suspended(
+    state: dict[str, Any],
+    state_lock: threading.Lock,
+    master_dir: Path,
+    logger: MasterLogger,
+    *,
+    reason: str,
+) -> None:
+    with state_lock:
+        for shard in state["workers"]:
+            _resume_shard_from_thermal(
+                shard, master_dir, None, logger, reason=reason
+            )
+
+
 def _monitor_gpus(
     gpu_ids: list[int],
     state: dict[str, Any],
@@ -997,6 +1128,7 @@ def _monitor_gpus(
         "hw_slowdown",
         "worker_pids",
         "worker_shard_ids",
+        "thermal_suspended_shard_ids",
     ]
     first = True
     high_temp_since: dict[int, dt.datetime] = {}
@@ -1018,8 +1150,28 @@ def _monitor_gpus(
         for info in snapshot:
             gpu_idx = info["index"]
             workers_for_gpu = [w for w in workers if w.gpu_id == gpu_idx and w.status == "running"]
+            temp = info.get("temperature")
+            if getattr(args, "thermal_duty_cycle", False) and temp is not None:
+                with state_lock:
+                    current_workers = [
+                        w
+                        for w in state["workers"]
+                        if w.gpu_id == gpu_idx and w.status == "running"
+                    ]
+                    if temp >= getattr(args, "thermal_suspend_temperature", 78):
+                        for worker in current_workers:
+                            _suspend_shard_for_thermal(
+                                worker, master_dir, int(temp), logger
+                            )
+                    elif temp <= getattr(args, "thermal_resume_temperature", 70):
+                        for worker in current_workers:
+                            _resume_shard_from_thermal(
+                                worker, master_dir, int(temp), logger
+                            )
+                workers_for_gpu = current_workers
             pids = [str(w.pid) for w in workers_for_gpu if w.pid]
             shard_ids = [w.shard_id for w in workers_for_gpu]
+            suspended_ids = [w.shard_id for w in workers_for_gpu if w.thermal_suspended]
 
             row = {
                 "timestamp": now.isoformat(),
@@ -1039,6 +1191,7 @@ def _monitor_gpus(
                 "hw_slowdown": info.get("hw_slowdown"),
                 "worker_pids": ",".join(pids),
                 "worker_shard_ids": ",".join(shard_ids),
+                "thermal_suspended_shard_ids": ",".join(suspended_ids),
             }
             with open(metrics_path, "a", newline="", encoding="utf-8") as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -1047,7 +1200,6 @@ def _monitor_gpus(
                     first = False
                 writer.writerow(row)
 
-            temp = info.get("temperature")
             if temp is not None:
                 if temp >= args.temperature_warning:
                     logger.log(f"WARNING: GPU {gpu_idx} 温度 {temp}C >= {args.temperature_warning}C")
@@ -1272,6 +1424,12 @@ def main() -> None:
 
     power_guard = GpuPowerLimitGuard(gpu_ids, args.power_limit_w, logger)
     manifest: dict[str, Any] | None = None
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+    def _handle_sigterm(signum: int, _frame: object) -> None:
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, _handle_sigterm)
     try:
         try:
             power_guard.apply()
@@ -1353,6 +1511,13 @@ def main() -> None:
         except Exception as exc:
             logger.log(f"実行中エラー: {exc}\n{traceback.format_exc()}")
         finally:
+            _resume_all_thermally_suspended(
+                state,
+                state_lock,
+                master_dir,
+                logger,
+                reason="orchestrator_shutdown",
+            )
             stop_event.set()
             monitor_thread.join(timeout=5)
 
@@ -1370,6 +1535,7 @@ def main() -> None:
         sys.exit(exit_code)
     finally:
         power_guard.restore()
+        signal.signal(signal.SIGTERM, previous_sigterm)
         if manifest is not None:
             manifest["power_limit_policy"] = power_guard.manifest_entry()
             _write_master_manifest(master_dir, manifest)
