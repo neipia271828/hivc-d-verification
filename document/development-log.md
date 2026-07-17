@@ -436,4 +436,20 @@
   - `uv run pytest hivc_sim/tests -q`: 133 passed
   - 対象Pythonファイルの `py_compile`: 成功
   - `git diff --check`: 成功
-  - GPU実験本体はまだ実行していない
+- GPU実験本体はまだ実行していない
+
+## thermal duty cycle pilot分析に基づくV整合要件の改訂
+
+- `episode-20260717-202452` の取得済みログを診断し、GPU運用は合格、HIVC-D効果検証は不合格と判定
+  - 全4 HIVC-DターンでV提案0件、`missing_v_proposal`
+  - V測定のcriteriaがRole固有の一部項目へ縮退
+  - 質問の同文反復、実質未回答と指標の不一致、壊れたJSONの有効message混入
+  - 固定profileの `game_profile_assignments` 欠落
+- `document/要件定義/RoleとValue分離によるV整合検証要件.md` を更新
+  - 共通Vオントロジーと完全次元バリデーション
+  - Role×Valueの交換・直交割付けによる交絡検査
+  - `v_alignment_required`、proposal機会保証、HIVC-D状態機械
+  - 質問型正規化、回答優先、反復抑止、JSON契約違反の拒否
+  - 固定profileを含むseed・condition別manifest割当完全性
+  - 会話契約指標、受入基準、Gate A〜Cの大規模GPU実験開始ゲート
+- 本更新は要件定義のみで、修正実装および追加GPU実験は実施していない
