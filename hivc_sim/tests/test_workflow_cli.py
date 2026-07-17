@@ -122,6 +122,7 @@ def test_parallel_runner_args_passes_parallel_and_gpu_options() -> None:
         workers_per_gpu=1,
         temperature_warning=80,
         temperature_stop_scheduling=83,
+        power_limit_w=180,
         resume=False,
         role_value_mode="soft_value",
     )
@@ -135,6 +136,8 @@ def test_parallel_runner_args_passes_parallel_and_gpu_options() -> None:
     assert "--workers-per-gpu" not in command  # 既定値は省略
     assert "--temperature-warning" not in command  # 既定値は省略
     assert "--temperature-stop-scheduling" not in command  # 既定値は省略
+    power_index = command.index("--power-limit-w")
+    assert command[power_index + 1] == "180"
     assert "--resume" not in command
     mode_index = command.index("--role-value-mode")
     assert command[mode_index + 1] == "soft_value"
@@ -146,6 +149,41 @@ def test_experiment_parser_accepts_prescribed_condition_and_role_value_mode() ->
     )
     assert args.conditions == ["hivc_d_prescribed_v1"]
     assert args.role_value_mode == "expertise_only"
+
+
+def test_experiment_parser_accepts_temporary_power_limit() -> None:
+    args = _build_experiment_parser().parse_args(
+        ["--parallel", "--gpus", "0", "--power-limit-w", "180", "--dry-run"]
+    )
+    assert args.parallel is True
+    assert args.power_limit_w == 180
+
+
+def test_stop_command_targets_workers_before_power_limit_orchestrator(monkeypatch) -> None:
+    from scripts import workflow_cli
+
+    cfg = {
+        "remote_project_dir": "~/projects/hivc-d-verification",
+        "remote_venv": ".venv",
+    }
+    captured: dict[str, str] = {}
+    monkeypatch.setattr(workflow_cli, "_load_gpu_config", lambda _path: cfg)
+    monkeypatch.setattr(workflow_cli, "_resolve_run_id", lambda _run_id: "episode-test")
+
+    def fake_remote(_cfg, command, **_kwargs):
+        captured["command"] = command
+        return type("Result", (), {"returncode": 0})()
+
+    monkeypatch.setattr(workflow_cli, "_remote", fake_remote)
+    monkeypatch.setattr(
+        "sys.argv", ["experiment", "--stop", "--run-id", "episode-test"]
+    )
+
+    workflow_cli.experiment_main()
+
+    command = captured["command"]
+    assert command.index('kill "$worker_pid"') < command.index("orchestrator_pid=$(cat")
+    assert 'kill -TERM "$orchestrator_pid"' in command
 
 
 def test_parallel_experiment_command_uses_parallel_runner_and_blocks_other_parallel_workers() -> None:

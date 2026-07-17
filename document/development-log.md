@@ -400,3 +400,22 @@
   - 対象Pythonファイルの `py_compile`: 成功
   - `git diff --check`: 成功
 - GPU実験本体は実行していない
+
+## GPU電力上限の一時適用・自動復元
+
+- `uv run experiment --parallel` に `--power-limit-w` を追加
+  - 未指定時はGPU設定を変更せず、指定時だけ選択GPUへ同一の電力上限を適用
+  - GPUごとの現在値・既定値・最小値・最大値を取得し、許容範囲外ならworker起動前に停止
+  - `nvidia-smi` の設定失敗・権限不足・適用後照合不一致でもworkerを起動しない
+- 実験開始前のpower limitをGPUごとに保存し、正常終了・エラー終了・SIGTERM終了時に元の値へ戻して再照合
+  - 複数GPUへの適用途中で失敗した場合も、設定済みGPUをロールバック
+  - `uv run experiment --stop` はworkerを先に停止し、次にorchestratorへSIGTERMを送って復元処理を実行
+  - SIGKILL・ホスト停止など復元不能なケースは要件書に制約として明記
+- `master_manifest.json` の `power_limit_policy` に指定値、開始前値、許容範囲、適用値、復元値・成否を保存
+- GPUサーバーを読み取り確認し、GPU 0/1はいずれも現在値230W、許容範囲100W〜230W、温度35℃/39℃であることを確認
+- ローカル検証結果
+  - `uv run pytest hivc_sim/tests -q`: 130 passed
+  - 対象Pythonファイルの `py_compile`: 成功
+  - `git diff --check`: 成功
+  - `uv run experiment ... --power-limit-w 180 --dry-run`: CLIからGPU runnerへの引数伝播を確認
+- GPUのpower limit変更およびGPU実験本体はまだ実行していない

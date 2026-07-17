@@ -398,6 +398,9 @@ def _parallel_runner_args(
     temperature_stop = getattr(args, "temperature_stop_scheduling", 83)
     if temperature_stop != 83:
         command.extend(["--temperature-stop-scheduling", str(temperature_stop)])
+    power_limit_w = getattr(args, "power_limit_w", None)
+    if power_limit_w is not None:
+        command.extend(["--power-limit-w", str(power_limit_w)])
     if getattr(args, "resume", False):
         command.append("--resume")
     return command
@@ -522,6 +525,12 @@ def _build_experiment_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workers-per-gpu", type=int, default=1, help="GPUあたりの最大worker数（通常運用では1）")
     parser.add_argument("--temperature-warning", type=int, default=80, help="警告温度（℃）")
     parser.add_argument("--temperature-stop-scheduling", type=int, default=83, help="新規shard起動を止める温度（℃）")
+    parser.add_argument(
+        "--power-limit-w",
+        type=int,
+        default=None,
+        help="並列実験中だけ各GPUへ適用する電力上限(W)。終了時に元へ復元",
+    )
     parser.add_argument("--resume", action="store_true", help="成功済みshardを再利用して再開")
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument("--status", action="store_true")
@@ -539,6 +548,10 @@ def experiment_main() -> None:
         cfg = _load_gpu_config(args.gpu_config)
         if args.games < 1:
             raise WorkflowError("--games は1以上にしてください")
+        if args.power_limit_w is not None and not args.parallel:
+            raise WorkflowError("--power-limit-w は --parallel と併用してください")
+        if args.power_limit_w is not None and args.power_limit_w < 1:
+            raise WorkflowError("--power-limit-w は1以上にしてください")
 
         if args.status or args.logs or args.stop:
             run_id = _resolve_run_id(args.run_id)
@@ -564,7 +577,22 @@ def experiment_main() -> None:
                     "  case \"$worker_pid\" in (*[!0-9]*|'') continue ;; esac",
                     "  kill \"$worker_pid\" 2>/dev/null || true",
                     "done",
-                    "kill -TERM -\"$pid\" 2>/dev/null || kill \"$pid\" 2>/dev/null || true",
+                    "for _ in 1 2 3 4 5; do",
+                    "  workers_alive=0",
+                    "  for worker_pid_file in \"$run_dir\"/shards/*/pid; do",
+                    "    [ -f \"$worker_pid_file\" ] || continue",
+                    "    worker_pid=$(cat \"$worker_pid_file\")",
+                    "    kill -0 \"$worker_pid\" 2>/dev/null && workers_alive=1",
+                    "  done",
+                    "  [ \"$workers_alive\" = 1 ] || break",
+                    "  sleep 1",
+                    "done",
+                    "if [ -f \"$run_dir/orchestrator_pid\" ]; then",
+                    "  orchestrator_pid=$(cat \"$run_dir/orchestrator_pid\")",
+                    "  case \"$orchestrator_pid\" in (*[!0-9]*|'') ;; (*) kill -TERM \"$orchestrator_pid\" 2>/dev/null || true ;; esac",
+                    "fi",
+                    "for _ in 1 2 3 4 5; do kill -0 \"$pid\" 2>/dev/null || break; sleep 1; done",
+                    "kill \"$pid\" 2>/dev/null || true",
                     "date -Iseconds > \"$run_dir/stopped_at\"",
                     "echo \"stopped pid=$pid\"",
                 ]

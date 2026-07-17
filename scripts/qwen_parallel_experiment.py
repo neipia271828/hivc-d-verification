@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 import platform
+import signal
 import subprocess
 import sys
 import threading
@@ -44,6 +45,7 @@ from turn_game_metrics import compute_summary_metrics  # noqa: E402
 SAMPLE_INTERVAL = 30
 PAUSE_REQUEST_FILE = "pause_request"
 ALLOWED_COMPUTE_MODES = {"Default", "Exclusive_Process", "E. Process", "E. Thread"}
+POWER_LIMIT_VERIFY_TOLERANCE_W = 0.5
 
 
 def _now_iso() -> str:
@@ -246,6 +248,168 @@ def get_gpu_snapshot(gpu_ids: list[int]) -> list[dict[str, object]]:
     return out
 
 
+def _parse_watts(value: object, field: str, gpu_id: int) -> float:
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"GPU {gpu_id} の {field} を数値として取得できません: {value!r}") from exc
+
+
+def get_gpu_power_constraints(gpu_ids: list[int]) -> list[dict[str, float | int]]:
+    """Return current/default/min/max power limits for the selected GPUs."""
+    fields = [
+        "index",
+        "power.limit",
+        "power.default_limit",
+        "power.min_limit",
+        "power.max_limit",
+    ]
+    rows = _nvidia_smi_query(gpu_ids, fields)
+    constraints: list[dict[str, float | int]] = []
+    for row in rows:
+        gpu_id = int(row["index"])
+        constraints.append(
+            {
+                "gpu_id": gpu_id,
+                "current_w": _parse_watts(row["power.limit"], "power.limit", gpu_id),
+                "default_w": _parse_watts(row["power.default_limit"], "power.default_limit", gpu_id),
+                "min_w": _parse_watts(row["power.min_limit"], "power.min_limit", gpu_id),
+                "max_w": _parse_watts(row["power.max_limit"], "power.max_limit", gpu_id),
+            }
+        )
+    if {int(item["gpu_id"]) for item in constraints} != set(gpu_ids):
+        raise RuntimeError("指定GPUのpower limit情報をすべて取得できません")
+    return constraints
+
+
+def _set_gpu_power_limit(gpu_id: int, watts: float) -> None:
+    result = subprocess.run(
+        ["nvidia-smi", "-i", str(gpu_id), "-pl", f"{watts:g}"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"GPU {gpu_id} power limit {watts:g}W の設定に失敗しました "
+            f"(exit={result.returncode}, stdout={result.stdout.strip()!r}, "
+            f"stderr={result.stderr.strip()!r})。管理者権限またはGPU側の設定権限を確認してください。"
+        )
+
+
+class GpuPowerLimitGuard:
+    """Apply a temporary power cap and restore each GPU's original cap on exit."""
+
+    def __init__(self, gpu_ids: list[int], requested_w: int | None, logger: "MasterLogger") -> None:
+        self.gpu_ids = gpu_ids
+        self.requested_w = requested_w
+        self.logger = logger
+        self.devices: list[dict[str, Any]] = []
+        self._restored = False
+        self._previous_sigterm: Any = None
+
+    def apply(self) -> None:
+        if self.requested_w is None:
+            return
+        constraints = get_gpu_power_constraints(self.gpu_ids)
+        for item in constraints:
+            gpu_id = int(item["gpu_id"])
+            if not float(item["min_w"]) <= self.requested_w <= float(item["max_w"]):
+                raise RuntimeError(
+                    f"GPU {gpu_id} の指定power limit {self.requested_w}Wは許容範囲外です "
+                    f"({item['min_w']:g}W..{item['max_w']:g}W)"
+                )
+
+        try:
+            for item in constraints:
+                record: dict[str, Any] = {
+                    **item,
+                    "requested_w": self.requested_w,
+                    "applied_w": None,
+                    "restored_w": None,
+                    "restored": False,
+                    "restore_error": None,
+                }
+                self.devices.append(record)
+                _set_gpu_power_limit(int(item["gpu_id"]), float(self.requested_w))
+                record["applied_w"] = float(self.requested_w)
+
+            verified = {int(item["gpu_id"]): item for item in get_gpu_power_constraints(self.gpu_ids)}
+            for record in self.devices:
+                actual = float(verified[int(record["gpu_id"])]["current_w"])
+                record["applied_w"] = actual
+                if abs(actual - self.requested_w) > POWER_LIMIT_VERIFY_TOLERANCE_W:
+                    raise RuntimeError(
+                        f"GPU {record['gpu_id']} power limit検証失敗: "
+                        f"requested={self.requested_w}W, actual={actual:g}W"
+                    )
+                self.logger.log(
+                    f"GPU {record['gpu_id']} power limit: {record['current_w']:g}W -> {actual:g}W"
+                )
+        except Exception:
+            self.restore()
+            raise
+
+        self._previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+        def _handle_sigterm(signum: int, _frame: object) -> None:
+            raise SystemExit(128 + signum)
+
+        signal.signal(signal.SIGTERM, _handle_sigterm)
+
+    def restore(self) -> None:
+        if self._restored:
+            return
+        self._restored = True
+        applied_records = [record for record in self.devices if record.get("applied_w") is not None]
+        if not applied_records:
+            return
+        for record in reversed(self.devices):
+            if record.get("applied_w") is None:
+                continue
+            try:
+                _set_gpu_power_limit(int(record["gpu_id"]), float(record["current_w"]))
+            except Exception as exc:
+                record["restore_error"] = str(exc)
+                self.logger.log(f"ERROR: GPU {record['gpu_id']} power limit復元失敗: {exc}")
+        try:
+            verified = {int(item["gpu_id"]): item for item in get_gpu_power_constraints(self.gpu_ids)}
+            for record in self.devices:
+                if record.get("restore_error") is not None or record.get("applied_w") is None:
+                    continue
+                actual = float(verified[int(record["gpu_id"])]["current_w"])
+                record["restored_w"] = actual
+                if abs(actual - float(record["current_w"])) > POWER_LIMIT_VERIFY_TOLERANCE_W:
+                    record["restore_error"] = (
+                        f"復元後照合失敗: expected={record['current_w']:g}W, actual={actual:g}W"
+                    )
+                    self.logger.log(
+                        f"ERROR: GPU {record['gpu_id']} power limit {record['restore_error']}"
+                    )
+                    continue
+                record["restored"] = True
+                self.logger.log(
+                    f"GPU {record['gpu_id']} power limitを {actual:g}W に復元しました"
+                )
+        except Exception as exc:
+            for record in self.devices:
+                if record.get("applied_w") is not None and record.get("restore_error") is None:
+                    record["restore_error"] = f"復元後照合に失敗しました: {exc}"
+            self.logger.log(f"ERROR: GPU power limit復元後の照合失敗: {exc}")
+        if self._previous_sigterm is not None:
+            signal.signal(signal.SIGTERM, self._previous_sigterm)
+            self._previous_sigterm = None
+
+    def manifest_entry(self) -> dict[str, Any]:
+        return {
+            "requested_w": self.requested_w,
+            "temporary": self.requested_w is not None,
+            "restore_on_exit": True,
+            "devices": self.devices,
+        }
+
+
 def get_compute_apps() -> list[dict[str, str]]:
     """nvidia-smi からCUDA computeプロセス一覧を取得する。"""
     cmd = [
@@ -438,6 +602,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workers-per-gpu", type=int, default=1, help="GPUあたりworker数")
     parser.add_argument("--temperature-warning", type=int, default=80)
     parser.add_argument("--temperature-stop-scheduling", type=int, default=83)
+    parser.add_argument(
+        "--power-limit-w",
+        type=int,
+        default=None,
+        help="実行中だけ各GPUへ適用する電力上限(W)。終了時に元の値へ復元する",
+    )
     parser.add_argument("--resume", action="store_true", default=False)
     parser.add_argument("--model-peak-mb", type=int, default=10000, help="モデル読込みピークMB")
     parser.add_argument("--gpu-vram-safety-factor", type=float, default=1.25)
@@ -640,6 +810,7 @@ def _create_master_manifest(
         "workers_per_gpu": args.workers_per_gpu,
         "temperature_warning": args.temperature_warning,
         "temperature_stop_scheduling": args.temperature_stop_scheduling,
+        "power_limit_policy": getattr(args, "power_limit_policy", None),
         "resume": args.resume,
         "shards": [_shard_entry(s) for s in shards],
     }
@@ -1091,6 +1262,7 @@ def main() -> None:
     logger = MasterLogger(master_dir)
     shards_dir = master_dir / "shards"
     shards_dir.mkdir(parents=True, exist_ok=True)
+    (master_dir / "orchestrator_pid").write_text(str(os.getpid()), encoding="utf-8")
 
     try:
         gpu_ids = _resolve_gpu_ids(args)
@@ -1098,99 +1270,109 @@ def main() -> None:
         logger.log(f"GPU検出失敗: {exc}")
         sys.exit(1)
 
-    # shard 生成
+    power_guard = GpuPowerLimitGuard(gpu_ids, args.power_limit_w, logger)
+    manifest: dict[str, Any] | None = None
     try:
-        _snapshot, shards = _pre_check(args, cfg, gpu_ids, logger)
-    except Exception as exc:
-        logger.log(f"事前検査失敗: {exc}")
-        # master_manifest に最低限記録して終了
-        manifest = _create_master_manifest(args, cfg, gpu_ids, [], master_dir)
-        manifest["status"] = "pre_check_failed"
-        manifest["error"] = str(exc)
+        try:
+            power_guard.apply()
+            args.power_limit_policy = power_guard.manifest_entry()
+            _snapshot, shards = _pre_check(args, cfg, gpu_ids, logger)
+        except Exception as exc:
+            args.power_limit_policy = power_guard.manifest_entry()
+            logger.log(f"事前検査失敗: {exc}")
+            # master_manifest に最低限記録して終了
+            manifest = _create_master_manifest(args, cfg, gpu_ids, [], master_dir)
+            manifest["status"] = "pre_check_failed"
+            manifest["error"] = str(exc)
+            _write_master_manifest(master_dir, manifest)
+            sys.exit(1)
+
+        # shard_dir / pause_file を設定
+        for shard in shards:
+            shard.shard_dir = shards_dir / shard.shard_id
+            shard.pause_file = shard.shard_dir / PAUSE_REQUEST_FILE
+
+        # resume判定のため、新manifestで上書きする前に旧状態を読む。
+        existing_manifest = _load_master_manifest(master_dir) if args.resume else None
+
+        # master manifest 作成
+        manifest = _create_master_manifest(args, cfg, gpu_ids, shards, master_dir, write=False)
+        if args.resume:
+            _apply_resume(existing_manifest, manifest, shards)
         _write_master_manifest(master_dir, manifest)
-        sys.exit(1)
 
-    # shard_dir / pause_file を設定
-    for shard in shards:
-        shard.shard_dir = shards_dir / shard.shard_id
-        shard.pause_file = shard.shard_dir / PAUSE_REQUEST_FILE
+        # スキップ情報を master manifest に反映
+        _update_manifest_shards(master_dir, manifest, shards)
 
-    # resume判定のため、新manifestで上書きする前に旧状態を読む。
-    existing_manifest = _load_master_manifest(master_dir) if args.resume else None
+        state: dict[str, Any] = {
+            "workers": [],
+            "stop_scheduling": False,
+            "thermal_pause": False,
+            "gpus": gpu_ids,
+        }
+        state_lock = threading.Lock()
+        stop_event = threading.Event()
 
-    # master manifest 作成
-    manifest = _create_master_manifest(args, cfg, gpu_ids, shards, master_dir, write=False)
-    if args.resume:
-        _apply_resume(existing_manifest, manifest, shards)
-    _write_master_manifest(master_dir, manifest)
+        monitor_thread = threading.Thread(
+            target=_monitor_gpus,
+            args=(gpu_ids, state, state_lock, master_dir, stop_event, args, logger),
+            daemon=True,
+        )
+        monitor_thread.start()
 
-    # スキップ情報を master manifest に反映
-    _update_manifest_shards(master_dir, manifest, shards)
-
-    state: dict[str, Any] = {
-        "workers": [],
-        "stop_scheduling": False,
-        "thermal_pause": False,
-        "gpus": gpu_ids,
-    }
-    state_lock = threading.Lock()
-    stop_event = threading.Event()
-
-    monitor_thread = threading.Thread(
-        target=_monitor_gpus,
-        args=(gpu_ids, state, state_lock, master_dir, stop_event, args, logger),
-        daemon=True,
-    )
-    monitor_thread.start()
-
-    try:
-        for round_index, round_shards in enumerate(counterbalanced_shard_rounds(shards), start=1):
-            if state.get("stop_scheduling"):
-                logger.log(f"stop_scheduling: launch round {round_index} をスキップ")
-                break
-
-            logger.log(
-                f"counterbalanced round {round_index}: "
-                + ", ".join(f"{s.shard_id}({s.condition})" for s in round_shards)
-            )
-
-            for shard in round_shards:
+        try:
+            for round_index, round_shards in enumerate(counterbalanced_shard_rounds(shards), start=1):
                 if state.get("stop_scheduling"):
-                    logger.log("新規shard起動停止")
+                    logger.log(f"stop_scheduling: launch round {round_index} をスキップ")
                     break
-                if shard.skip:
-                    logger.log(f"{shard.shard_id} は resume によりスキップ")
-                    continue
-                _launch_worker(shard, cfg, args)
-                with state_lock:
-                    state["workers"].append(shard)
+
+                logger.log(
+                    f"counterbalanced round {round_index}: "
+                    + ", ".join(f"{s.shard_id}({s.condition})" for s in round_shards)
+                )
+
+                for shard in round_shards:
+                    if state.get("stop_scheduling"):
+                        logger.log("新規shard起動停止")
+                        break
+                    if shard.skip:
+                        logger.log(f"{shard.shard_id} は resume によりスキップ")
+                        continue
+                    _launch_worker(shard, cfg, args)
+                    with state_lock:
+                        state["workers"].append(shard)
+                    _update_manifest_shards(master_dir, manifest, shards)
+
+                _wait_for_shards(round_shards, state, state_lock)
                 _update_manifest_shards(master_dir, manifest, shards)
 
-            _wait_for_shards(round_shards, state, state_lock)
-            _update_manifest_shards(master_dir, manifest, shards)
+                if state.get("stop_scheduling"):
+                    logger.log("stop_scheduling: 後続条件をスキップ")
+                    break
 
-            if state.get("stop_scheduling"):
-                logger.log("stop_scheduling: 後続条件をスキップ")
-                break
+        except Exception as exc:
+            logger.log(f"実行中エラー: {exc}\n{traceback.format_exc()}")
+        finally:
+            stop_event.set()
+            monitor_thread.join(timeout=5)
 
-    except Exception as exc:
-        logger.log(f"実行中エラー: {exc}\n{traceback.format_exc()}")
+        # 残ったworkerを待機
+        _wait_for_shards([s for s in shards if s.process is not None], state, state_lock)
+        _update_manifest_shards(master_dir, manifest, shards)
+
+        # 結合
+        try:
+            exit_code = _merge_results(master_dir, cfg, manifest, shards, logger)
+        except Exception as exc:
+            logger.log(f"結合処理エラー: {exc}\n{traceback.format_exc()}")
+            exit_code = 1
+
+        sys.exit(exit_code)
     finally:
-        stop_event.set()
-        monitor_thread.join(timeout=5)
-
-    # 残ったworkerを待機
-    _wait_for_shards([s for s in shards if s.process is not None], state, state_lock)
-    _update_manifest_shards(master_dir, manifest, shards)
-
-    # 結合
-    try:
-        exit_code = _merge_results(master_dir, cfg, manifest, shards, logger)
-    except Exception as exc:
-        logger.log(f"結合処理エラー: {exc}\n{traceback.format_exc()}")
-        exit_code = 1
-
-    sys.exit(exit_code)
+        power_guard.restore()
+        if manifest is not None:
+            manifest["power_limit_policy"] = power_guard.manifest_entry()
+            _write_master_manifest(master_dir, manifest)
 
 
 if __name__ == "__main__":

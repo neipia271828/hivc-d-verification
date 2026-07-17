@@ -88,6 +88,85 @@ def test_gpu_snapshot_does_not_treat_not_active_as_active(monkeypatch) -> None:
     assert snapshot[0]["hw_slowdown"] is False
 
 
+def test_power_limit_guard_applies_verifies_and_restores(monkeypatch) -> None:
+    query_count = 0
+    set_calls: list[tuple[int, float]] = []
+
+    def fake_constraints(gpu_ids):
+        nonlocal query_count
+        query_count += 1
+        current = 180.0 if query_count == 2 else 230.0
+        return [
+            {
+                "gpu_id": gpu_id,
+                "current_w": current,
+                "default_w": 230.0,
+                "min_w": 100.0,
+                "max_w": 230.0,
+            }
+            for gpu_id in gpu_ids
+        ]
+
+    class FakeLogger:
+        def log(self, _message):
+            pass
+
+    monkeypatch.setattr(qp, "get_gpu_power_constraints", fake_constraints)
+    monkeypatch.setattr(
+        qp, "_set_gpu_power_limit", lambda gpu_id, watts: set_calls.append((gpu_id, watts))
+    )
+
+    guard = qp.GpuPowerLimitGuard([0, 1], 180, FakeLogger())
+    guard.apply()
+    assert set_calls == [(0, 180.0), (1, 180.0)]
+    assert all(item["applied_w"] == 180.0 for item in guard.devices)
+
+    guard.restore()
+    assert set_calls == [(0, 180.0), (1, 180.0), (1, 230.0), (0, 230.0)]
+    assert all(item["restored"] is True for item in guard.devices)
+    assert all(item["restored_w"] == 230.0 for item in guard.devices)
+
+
+def test_power_limit_guard_rejects_out_of_range_before_setting(monkeypatch) -> None:
+    monkeypatch.setattr(
+        qp,
+        "get_gpu_power_constraints",
+        lambda gpu_ids: [
+            {
+                "gpu_id": 0,
+                "current_w": 230.0,
+                "default_w": 230.0,
+                "min_w": 200.0,
+                "max_w": 230.0,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        qp,
+        "_set_gpu_power_limit",
+        lambda *_args: pytest.fail("範囲外の値を設定してはならない"),
+    )
+    guard = qp.GpuPowerLimitGuard([0], 180, SimpleNamespace(log=lambda _message: None))
+
+    with pytest.raises(RuntimeError, match="許容範囲外"):
+        guard.apply()
+
+
+def test_power_limit_command_reports_permission_failure(monkeypatch) -> None:
+    monkeypatch.setattr(
+        qp.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=4,
+            stdout="",
+            stderr="Insufficient Permissions",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="管理者権限"):
+        qp._set_gpu_power_limit(0, 180)
+
+
 def test_compute_shards_even_split_two_gpus() -> None:
     shards = qp.compute_shards(["control"], seed=42, games=30, gpu_ids=[0, 1], workers_per_gpu=1)
     assert len(shards) == 2

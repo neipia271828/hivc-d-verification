@@ -148,6 +148,7 @@ uv run experiment \
 | `--workers-per-gpu` | GPUごとの最大worker数 | 1 |
 | `--temperature-warning` | 警告温度 | 80℃ |
 | `--temperature-stop-scheduling` | 新規shard起動を止める温度 | 83℃ |
+| `--power-limit-w` | 実験中だけ各GPUへ適用する電力上限。未指定時は変更しない | 未指定 |
 | `--resume` | 成功済みshardを再利用して再開 | false |
 
 `--workers-per-gpu 2` 以上は通常運用では禁止し、別途の高密度ベンチマークと明示的な安全基準の更新後にのみ許可する。
@@ -169,6 +170,16 @@ orchestratorは起動前に次を検査する。
 - 期待shard間で `(condition, seed)` が重複せず、各条件のseed集合が一致する。
 
 事前検査に失敗した場合は、workerを1つも起動しない。
+
+### 6.3 一時的な電力制限
+
+- `--power-limit-w N` は `--parallel` と併用し、選択した全GPUへ同じ上限を適用する。
+- 適用前にGPUごとの現在値、既定値、最小値、最大値を取得し、指定値が許容範囲内であることを検査する。
+- 設定コマンドが権限不足などで失敗した場合、または適用後の照合値が指定値と一致しない場合は、workerを起動しない。
+- 実験の正常終了、エラー終了、`uv run experiment --stop` によるSIGTERM終了時に、各GPUを実験開始前の上限へ復元する。管理CLIはworkerを先に停止してからorchestratorへSIGTERMを送り、高負荷workerの生存中に上限だけ復元しない。
+- 適用途中で一部GPUだけ設定された場合も、設定済みGPUを開始前の値へロールバックする。
+- 指定値、開始前値、許容範囲、適用値、復元成否を `master_manifest.json` の `power_limit_policy` に保存する。
+- SIGKILL、ホスト停止、GPUドライバ停止ではプロセスによる復元を保証できないため、次回起動前に現在値を再確認する。
 
 ## 7. 温度・VRAM・負荷監視
 
