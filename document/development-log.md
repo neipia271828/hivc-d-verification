@@ -1,3 +1,28 @@
+# 2026-07-17 (review remediation)
+
+- Gate A review 指摘に対する修正
+  - `scripts/qwen_parallel_experiment.py`:
+    - `_merge_value_manifests` で `(seed, condition)` 集合が期待と完全一致することを検査
+    - 同一キーの重複・内容衝突・condition 欠落を `assignment_completeness=false` とし診断情報を追加
+    - `game_profile_assignments` の重複排除を停止し、検査経路で検出できるように変更
+  - `scripts/llm_turn_game_common.py`:
+    - V 提案を出しただけでは自動的に `accept` しないように変更。プロポーザは `v_star_response: accept` を明示的に返すか、後続の V 応答で受諾する
+    - `discussion_prompt` / `v_proposal_required_prompt` の例に明示的 self-accept を含めるよう更新
+    - `v_star_failure_reason` が予算枯渇時に `v_negotiation_budget_exhausted` で上書きされ、直前の未解決理由は `v_star_unresolved_reason` に残す
+    - `extract_json_discussion` / `_is_valid_discussion_payload` で必須キー・型・値（speech_act, message, action, reason, addressed_to, reply_to_message_id）を検証
+    - JSON 契約違反出力を有効 `transcript` へ追加せず、`invalid_discussion_outputs` 監査経路へ分離
+    - ターン CSV に `v_star_unresolved_reason`, `invalid_discussion_outputs` を追加
+  - `hivc_sim/turn_game_metrics.py`:
+    - `silent_unanswered_question_count` を `compute_summary_metrics` に統合
+  - `hivc_sim/tests`:
+    - `test_qwen_parallel_experiment.py` に manifest の condition 欠落・重複・内容衝突・欠落キーの Gate A テストを追加
+    - `test_v_flow.py` に explicit self-accept、counter、V 予算枯渇理由、V 測定リトライのテストを追加
+    - `test_turn_game.py` に JSON 前後テキスト拒否・必須キー欠落・型不一致・無効発話の監査経路テストを追加
+    - `test_turn_game_metrics.py` に strict schema completeness と `silent_unanswered_question_count` のテストを追加
+    - `test_profiles.py` に swap / orthogonal YAML ロードテストを追加
+    - `pytest hivc_sim/tests -q` が 148 tests passed
+  - `python3 -m py_compile` 対象ファイル構文確認と `git diff --check` を実施
+
 # 2026-07-17
 
 - RoleとValue分離によるV整合検証の要件実装
@@ -516,6 +541,126 @@
   - 「回答すべき質問に再質問を返す」テストを、強制遷移から再試行後に正しく回答するケースへ更新
 - ローカル検証結果
   - `uv run pytest hivc_sim/tests -q`: 133 passed
+  - 対象Pythonファイルの `py_compile`: 成功
+  - `git diff --check`: 成功
+  - GPU実験本体は実行していない
+  - pushは実行していない
+
+## 2026-07-17: V-negotiation・JSON契約・質問ルーティングのblocker修正
+
+### 目的
+GPU smoke実行前に指摘された6件のblocker/high/medium項目を修正する。
+
+### 実装内容
+
+- `scripts/llm_turn_game_common.py`:
+  - **[Blocker 1] 必須V提案のself-accept保存**: `v_proposal_required_prompt` が提案とself-acceptを同じJSONで要求しているにもかかわらず、実行側が `proposal, _ = parse_v_negotiation(...)` でself-acceptを破棄していた問題を修正。`proposal, self_response` の両方を取得し、`v_responses[agent]` とtranscriptへ記録するように変更。
+  - **[Blocker 2] counter提案者の自動accept廃止**: 自由議論・必須交渉の両パスで、counterを受け取るとシステムが自動的にacceptを追加していた仕様を廃止。両agentが同一提案を明示的にacceptすることがV*受諾の要件であり、counter提案者も後続応答で明示的にacceptする必要がある。
+  - **[High 3] JSON型検証の抜け修正**: `_is_valid_discussion_payload` で `reply_to_message_id: {}` (辞書) が正規化後にNoneとなり型検査を迂回する問題と、`addressed_to: 123` (整数) が文字列として受理される問題を修正。正規化前の値について、`addressed_to` は `str|null`、`reply_to_message_id` は `str|int|null` (bool除外) のみ厳密に受理するように変更。
+  - **[High 4] invalid JSONの再試行実装**: invalid出力を監査経路へ分離しただけでしたが、そのまま発話数・予算を消費して次話者へ進んでいた問題を修正。`max_discussion_retries` (既定1) による同一agentへの修復プロンプト再送と、`discussion_retry_count` の記録を実装。リトライ上限後もinvalidの場合は監査経路へ確定保存する。
+  - **[Medium 5] 質問signatureと回答不能ルーティング**:
+    - `_question_signature` を `normalized_requested_fields` ベースに変更。`requested_fields` が明示されている場合はそれを正規化してsignatureに使い、未明示の場合は action+reason+message にフォールバックする。
+    - `_normalize_requested_fields` ヘルパーを追加（str/list/tuple をソート済み小文字セットへ正規化）。
+    - `observation_scope` に基づく回答不能判定を実装。`requested_fields` が両agentとも観測できない場合は `unanswerable_question` として閉じ、再送しない。
+    - `closed_questions` リストを追加し、回答済み質問を移動。closed questionの再質問は `reask_reason` がある場合のみ許可する。
+    - `get_discussion_message` で `requested_fields` と `reask_reason` を raw_payload から抽出し、レスポンスdictに含める。
+    - 質問JSON契約に `requested_fields` と `reask_reason` の任意キー説明を追加。
+- `hivc_sim/turn_game_metrics.py`:
+  - **[Medium 6] schema completeness の全Vレコード検査**: `_v_schema_complete` が `alpha_v_before` と `beta_v_before` の項目集合しか確認していなかった問題を修正。`v_after` (存在時)、weightsの全値の有限性・非負性、weights合計の1.0一致（1e-6許容誤差）を直接検査するように変更。
+- `hivc_sim/tests/test_v_flow.py`:
+  - `test_counter_proposal_is_auto_accepted_by_counter_proposer` を `test_counter_proposal_requires_explicit_self_accept` に改名し、counter提案者が明示的にacceptしない場合はunresolved、明示的にacceptすればacceptedになる両ケースを検証。
+- `hivc_sim/tests/test_turn_game.py`:
+  - `addressed_to: 123` (整数)、`reply_to_message_id: {}` (辞書)、`reply_to_message_id: true` (bool) の型検証拒否テストを追加。
+  - `_normalize_requested_fields` と `_question_signature` の requested_fields ベース動作テストを追加。
+  - `test_invalid_discussion_output_is_not_added_to_transcript` を `test_invalid_discussion_output_triggers_retry_and_recovers` と `test_invalid_discussion_output_retry_exhaustion_records_audit` に分割し、リトライ成功時とリトライ枯渇時の両方を検証。
+- `hivc_sim/tests/test_turn_game_metrics.py`:
+  - `_v_schema_complete` の v_after検査、weight合計検査、NaN/負値検査テストを追加。
+- ローカル検証結果
+  - `python -m pytest hivc_sim/tests -q`: 153 passed (148 → 153)
+  - 対象Pythonファイルの `py_compile`: 成功
+  - `git diff --check`: 成功
+  - GPU実験本体は実行していない
+  - pushは実行していない
+
+## 2026-07-17: counter経路・scopeルーティング・token計数の追加修正
+
+### 目的
+前回修正後のレビューで指摘された3件のblocker/high項目を修正する。
+
+### 実装内容
+
+- `scripts/llm_turn_game_common.py`:
+  - **[Blocker] counter経路の4発話予算確保**: `reserved_v_messages` を3→4に変更。自動accept廃止後のcounter経路は最大4発話が必要 (alpha提案+self-accept → beta counter → alpha accept → beta self-accept)。
+  - **[Blocker] counter出力でself-accept同時表現スキーマ**: `parse_v_negotiation` で `v_star_response.self_accept` フラグを解析し、`self_accept_for_counter_id` としてresponseに含める。両パス（自由議論・必須交渉）で、counter出力時に `self_accept_for_counter_id` があればcounter提案への明示的acceptを別途 `v_responses` へ記録する。これによりcounter経路が3発話で合意に到達可能になる。
+  - **[Blocker] v_proposal_response_prompt へ self_accept 説明追加**: counter出力時に `self_accept: true` で自分のcounter提案にも同意できることをプロンプトに明記し、JSONテンプレートに `self_accept` フィールドを追加。
+  - **[High] observation_scopeによる質問ルーティング完成**:
+    - 各requested_fieldについて、alpha/betaどちらが観測可能かを3分類 (only_alpha, only_beta, both, neither) で判定。
+    - 全fieldを両者とも観測できない場合は `unanswerable_question` として閉じる。
+    - 一部fieldだけ観測不能な場合は `unanswerable_partial_fields` としてtranscriptに記録。
+    - 現在のaddressed_toが観測できず、もう一方が観測できる場合は宛先を切り替える (scope_routed)。
+    - scope回答不能質問を `closed_questions` へ保存し、reask_reasonなしの再送を抑止。
+    - requested_fields なしの場合は従来通りもう一方のagentへ正規化。
+  - **[High] JSONリトライ分のtokenを各attemptで加算**: リトライループ内で各attemptの生成tokenを `token_count` に累積加算し、リトライ分の推論負荷が `discussion_token_budget_used` に正しく反映されるように修正。
+- `hivc_sim/tests/test_v_flow.py`:
+  - `test_counter_happy_path_reaches_accepted_in_run_one_game`: counter経路でself_accept=trueを使い3発話で合意に到達することをrun_one_game統合テストで検証。
+  - `test_counter_without_self_accept_needs_extra_message`: self_accept=falseの場合4発話で合意に到達することを検証。
+- `hivc_sim/tests/test_turn_game.py`:
+  - `test_scope_unanswerable_question_is_closed_and_not_resent`: 両agentとも観測できないfieldへの質問がunanswerableとして閉じられ、closed_questionsに保存されることを検証。
+  - `test_scope_routed_question_goes_to_observing_agent`: requested_fieldsを観測できるagentへ質問がルーティングされることを検証。
+- ローカル検証結果
+  - `python -m pytest hivc_sim/tests -q`: 157 passed (153 → 157)
+  - 対象Pythonファイルの `py_compile`: 成功
+  - `git diff --check`: 成功
+  - GPU実験本体は実行していない
+  - pushは実行していない
+
+## 2026-07-17: observation_scopeルーティングの追加修正 (self_observable・partial_unanswerable・重複検出順序)
+
+### 目的
+前回のscopeルーティング実装に対するレビューで指摘された3件を修正する。
+
+### 実装内容
+
+- `scripts/llm_turn_game_common.py`:
+  - **[High] 質問者だけが観測できるfieldの質問を self_observable_question として閉じる**:
+    - 従来は `fields_for_other` から質問者自身が観測できるfieldを除外し、空になると宛先を変更しなかった。その結果、alphaだけが観測できる `hull_damage` への質問が、観測できないbetaへ残っていた。
+    - 各fieldを「質問者のみ観測可能 (only_speaker)」「相手のみ観測可能 (only_other)」「両者観測可能 (both)」「両者とも観測不可 (neither)」の4分類で判定するよう変更。
+    - 全fieldが質問者のみ観測可能（または質問者＋両者観測不可）で、相手が観測できない場合は `self_observable_by_scope=True` として質問を閉じる (`closed_as_self_observable=True`, `requires_response=False`)。
+    - `self_observable_question_count` を新設し、CSV行にも出力する。
+    - 自己観測可能質問も `closed_questions` へ保存し、reask_reasonなしの再送を抑止する。
+  - **[High] 一部回答可能な質問を全体回答不能と誤判定する問題を修正**:
+    - 従来の判定条件が `only_alpha_fields` と `only_beta_fields` しか見ておらず、`both_observe_fields` を考慮していなかった。その結果、`requested_fields=["oxygen", "unknown_field"]` で oxygen を両者が観測できる場合でも、質問全体が unanswerable になっていた。
+    - 判定条件に `both_observe_fields` を追加し、両者観測可能なfieldが1つでもあれば全体を unanswerable にしない。観測不能なfieldは `unanswerable_partial_fields` に記録する。
+  - **[Medium] 重複検出をscope判定の前に移動**:
+    - 従来はscope判定で `closed_questions` に保存した質問と同じsignatureの質問が、次回のscope判定で再び unanswerable/self_observable として閉じられ、重複検出に到達しなかった。
+    - 重複検出ブロックをscope判定ブロックの前に移動し、closed_questionsにある質問と同じsignatureの質問は scope判定に入る前に `duplicate_question=True` として処理する。
+    - 重複判定用に `addressed_to` の正規化を重複検出ブロック内で先に行う。
+- `hivc_sim/tests/test_turn_game.py`:
+  - `test_scope_unanswerable_question_is_closed_and_not_resent`: 発話上限を6に増加し、alphaが常にmorale質問を送り続けるシナリオで、1回目がunanswerableとして閉じられ、2回目以降がduplicate_questionとして拒否されることをassert。`duplicate_question_count >= 1` を検証。
+  - `test_scope_self_observable_question_is_closed` (新規): alphaがhull_damage (alphaのみ観測可能) への質問を出した場合、`closed_as_self_observable=True` として閉じられ、`self_observable_question_count >= 1` になることを検証。
+  - `test_scope_partial_unanswerable_with_both_observe_not_full_unanswerable` (新規): `requested_fields=["oxygen","morale"]` で oxygen が両者観測可能、morale が両者観測不可の場合、質問全体が unanswerable にならず、morale が `unanswerable_partial_fields` に記録されることを検証。
+- ローカル検証結果
+  - `python -m pytest hivc_sim/tests -q`: 158 passed (157 → 158)
+  - 対象Pythonファイルの `py_compile`: 成功
+  - `git diff --check`: 成功
+  - GPU実験本体は実行していない
+  - pushは実行していない
+
+## 2026-07-17: question_count分母修正とunanswerable requires_response修正
+
+### 目的
+scope分岐後の `question_count` が unanswerable/self_observable/duplicate 質問を含まず、`duplicate_question_rate` の分母が0になりNaNになる問題を修正する。
+
+### 実装内容
+
+- `scripts/llm_turn_game_common.py`:
+  - **[High] question_count を分岐前に加算**: `question_count += 1` を重複検出ブロックの先頭（`is_question` 判定直後）に移動し、unanswerable/self_observable/duplicate いずれの分岐でも `continue` する前に加算されるようにした。通常の質問パス（`open_questions.append`）の `question_count += 1` は削除し二重加算を防止。
+  - **[High] unanswerable質問の requires_response を False に修正**: 回答を求めない質問が `requires_response=True` のままにならないよう `False` に変更。
+- `hivc_sim/tests/test_turn_game.py`:
+  - `test_scope_unanswerable_question_is_closed_and_not_resent`: `question_count >= 2`、`question_count >= unanswerable + duplicate`、`requires_response is False`、`duplicate_question_rate` がNaNにならないことをassert。
+  - `test_scope_self_observable_question_is_closed`: `question_count >= 1`、`question_count >= self_observable_question_count` をassert。
+- ローカル検証結果
+  - `python -m pytest hivc_sim/tests -q`: 158 passed
   - 対象Pythonファイルの `py_compile`: 成功
   - `git diff --check`: 成功
   - GPU実験本体は実行していない

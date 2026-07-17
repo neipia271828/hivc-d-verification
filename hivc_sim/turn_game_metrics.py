@@ -36,6 +36,7 @@ discussion_diversity の定義:
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import Iterable
 
@@ -179,15 +180,21 @@ def _v_alignment_required_for_row(row: dict) -> bool:
 
 
 def _v_schema_complete(row: dict) -> bool | None:
-    """共通Vオントロジーに完全に従った V before/after レコードがあるかを判定する。"""
+    """共通Vオントロジーに完全に従った V before/after レコードがあるかを判定する。
+
+    検査対象:
+    - alpha_v_before, beta_v_before
+    - alpha_v_after, beta_v_after (存在する場合)
+    - weights の全値が有限かつ非負
+    - weights の合計が 1.0 に一致する（浮動小数点許容誤差内）
+    - ordered_criteria が期待集合に完全一致
+    """
     errors = _parse_json(row.get("v_measurement_errors"), row.get("v_measurement_errors"))
     if isinstance(errors, dict) and any(
         isinstance(v, str) and v not in ("", "not_recorded") for v in errors.values()
     ):
         return False
     expected = set(DEFAULT_VALUE_CRITERIA_SCHEMA.criteria)
-    alpha = _parse_json(row.get("alpha_v_before"), row.get("alpha_v_before"))
-    beta = _parse_json(row.get("beta_v_before"), row.get("beta_v_before"))
 
     def valid(v: object) -> bool:
         if not isinstance(v, dict):
@@ -200,13 +207,37 @@ def _v_schema_complete(row: dict) -> bool | None:
             return False
         if set(ordered) != expected or len(ordered) != len(expected):
             return False
+        # 全 weight 値が有限かつ非負
+        for w in weights.values():
+            if not isinstance(w, (int, float)) or not math.isfinite(float(w)) or float(w) < 0:
+                return False
+        # weight 合計が 1.0 に一致する（浮動小数点許容誤差内）
+        total = sum(float(w) for w in weights.values())
+        if not math.isfinite(total) or abs(total - 1.0) > 1e-6:
+            return False
         return True
 
-    alpha_valid = valid(alpha)
-    beta_valid = valid(beta)
-    if alpha_valid or beta_valid:
-        return alpha_valid and beta_valid
-    return None
+    alpha_before = _parse_json(row.get("alpha_v_before"), row.get("alpha_v_before"))
+    beta_before = _parse_json(row.get("beta_v_before"), row.get("beta_v_before"))
+    alpha_after_raw = row.get("alpha_v_after")
+    beta_after_raw = row.get("beta_v_after")
+    alpha_after = _parse_json(alpha_after_raw, alpha_after_raw) if alpha_after_raw not in (None, "", "not_recorded") else None
+    beta_after = _parse_json(beta_after_raw, beta_after_raw) if beta_after_raw not in (None, "", "not_recorded") else None
+
+    # before は必須: 両方とも有効でなければ schema 不完全
+    alpha_before_valid = valid(alpha_before)
+    beta_before_valid = valid(beta_before)
+    if not (alpha_before_valid and beta_before_valid):
+        if alpha_before is not None or beta_before is not None:
+            return False
+        return None
+
+    # after が存在する場合は同様に検査する
+    for after_val in (alpha_after, beta_after):
+        if after_val is not None and not valid(after_val):
+            return False
+
+    return True
 
 
 def v_process_metrics(rows: list[dict]) -> dict[str, float | int]:
@@ -818,6 +849,11 @@ def invalid_discussion_output_rate(rows: list[dict]) -> float:
     return invalid / total if total else float("nan")
 
 
+def silent_unanswered_question_count(rows: list[dict]) -> int:
+    """失敗理由なしで意思決定へ持ち越した未回答数の合計。"""
+    return int(sum(_safe_float(row.get("silent_unanswered_question_count"), 0.0) for row in rows))
+
+
 def compute_summary_metrics(rows: list[dict], threshold: float = CONFLICT_THRESHOLD) -> dict[str, float | int]:
     """REQUIREMENTS §6 の主要評価指標を全て計算して返す。"""
     enriched = [enrich_turn_row(dict(row)) for row in rows]
@@ -842,5 +878,6 @@ def compute_summary_metrics(rows: list[dict], threshold: float = CONFLICT_THRESH
     summary["duplicate_question_rate"] = duplicate_question_rate(enriched)
     summary["max_consecutive_duplicate_questions"] = max_consecutive_duplicate_questions_metric(enriched)
     summary["invalid_discussion_output_rate"] = invalid_discussion_output_rate(enriched)
+    summary["silent_unanswered_question_count"] = silent_unanswered_question_count(enriched)
     summary.update(v_process_metrics(enriched))
     return summary

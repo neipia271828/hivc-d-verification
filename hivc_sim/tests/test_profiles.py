@@ -139,3 +139,15 @@ def test_repository_separated_profile_files_load_and_soft_weights_are_normalized
         assert profile.value is not None and profile.value.negotiable is True
         assert sum(profile.value.initial_priority_weights.values()) == pytest.approx(1.0)
     assert all(profile.value is None for profile in expertise.values())
+
+
+def test_swap_and_orthogonal_profile_files_load() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    swap = load_profiles(repo_root / "configs/profiles_soft_value_swap.yaml", "soft_value")
+    orthogonal = load_profiles(repo_root / "configs/profiles_soft_value_orthogonal.yaml", "soft_value")
+    assert set(swap) >= {"alpha", "beta"}
+    assert set(orthogonal) >= {"alpha", "beta"}
+    for profile in (*swap.values(), *orthogonal.values()):
+        assert profile.role.schema_version == "2.0"
+        assert profile.value is not None and profile.value.negotiable is True
+        assert sum(profile.value.initial_priority_weights.values()) == pytest.approx(1.0)

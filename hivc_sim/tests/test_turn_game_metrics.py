@@ -435,3 +435,61 @@ def test_accepted_status_without_matching_proposal_is_not_acceptance() -> None:
     assert metrics["v_star_acceptance_rate"] == 0.0
     assert metrics["v_star_acceptance_rate_numerator"] == 0
     assert metrics["v_star_acceptance_rate_denominator"] == 1
+
+
+def test_v_schema_completeness_requires_full_common_ontology() -> None:
+    from turn_game_metrics import _v_schema_complete
+    import json
+
+    full_v = json.dumps({"ordered_criteria": ["oxygen", "power", "hull_damage", "flooding", "communication"], "weights": {"oxygen": 0.2, "power": 0.2, "hull_damage": 0.2, "flooding": 0.2, "communication": 0.2}})
+    partial_v = json.dumps({"ordered_criteria": ["oxygen", "power"], "weights": {"oxygen": 0.5, "power": 0.5}})
+
+    complete = {"alpha_v_before": full_v, "beta_v_before": full_v}
+    assert _v_schema_complete(complete) is True
+
+    partial = {"alpha_v_before": full_v, "beta_v_before": partial_v}
+    assert _v_schema_complete(partial) is False
+
+    missing_one = {"alpha_v_before": full_v, "beta_v_before": ""}
+    assert _v_schema_complete(missing_one) is False
+
+
+def test_v_schema_completeness_checks_v_after_and_weight_sums() -> None:
+    from turn_game_metrics import _v_schema_complete
+    import json
+
+    full_v = json.dumps({"ordered_criteria": ["oxygen", "power", "hull_damage", "flooding", "communication"], "weights": {"oxygen": 0.2, "power": 0.2, "hull_damage": 0.2, "flooding": 0.2, "communication": 0.2}})
+
+    # v_after が存在して不完全な場合は schema 不完全
+    partial_after = json.dumps({"ordered_criteria": ["oxygen"], "weights": {"oxygen": 1.0}})
+    row_with_bad_after = {"alpha_v_before": full_v, "beta_v_before": full_v, "alpha_v_after": partial_after}
+    assert _v_schema_complete(row_with_bad_after) is False
+
+    # v_after が完全な場合は schema 完全
+    row_with_good_after = {"alpha_v_before": full_v, "beta_v_before": full_v, "alpha_v_after": full_v, "beta_v_after": full_v}
+    assert _v_schema_complete(row_with_good_after) is True
+
+    # weight 合計が 1.0 でない場合は schema 不完全
+    bad_sum_v = json.dumps({"ordered_criteria": ["oxygen", "power", "hull_damage", "flooding", "communication"], "weights": {"oxygen": 0.5, "power": 0.2, "hull_damage": 0.2, "flooding": 0.2, "communication": 0.2}})
+    row_bad_sum = {"alpha_v_before": bad_sum_v, "beta_v_before": full_v}
+    assert _v_schema_complete(row_bad_sum) is False
+
+    # weight に NaN/inf が含まれる場合は schema 不完全
+    nan_v = json.dumps({"ordered_criteria": ["oxygen", "power", "hull_damage", "flooding", "communication"], "weights": {"oxygen": "NaN", "power": 0.2, "hull_damage": 0.2, "flooding": 0.2, "communication": 0.2}})
+    row_nan = {"alpha_v_before": nan_v, "beta_v_before": full_v}
+    assert _v_schema_complete(row_nan) is False
+
+    # weight に負の値が含まれる場合は schema 不完全
+    neg_v = json.dumps({"ordered_criteria": ["oxygen", "power", "hull_damage", "flooding", "communication"], "weights": {"oxygen": -0.2, "power": 0.4, "hull_damage": 0.3, "flooding": 0.3, "communication": 0.2}})
+    row_neg = {"alpha_v_before": neg_v, "beta_v_before": full_v}
+    assert _v_schema_complete(row_neg) is False
+
+
+def test_summary_includes_silent_unanswered_question_count() -> None:
+    summary = compute_summary_metrics(
+        [
+            {"silent_unanswered_question_count": 1, "question_count": 0, "answered_question_count": 1, "duplicate_question_count": 1, "max_consecutive_duplicate_questions": 1, "discussion_turns": 0},
+            {"silent_unanswered_question_count": 2, "question_count": 0, "answered_question_count": 0, "duplicate_question_count": 0, "max_consecutive_duplicate_questions": 0, "discussion_turns": 0},
+        ]
+    )
+    assert summary["silent_unanswered_question_count"] == 3

@@ -537,20 +537,43 @@ def _merge_value_manifests(shards: list[Shard], cfg: dict[str, Any]) -> dict[str
     if not manifests:
         return None
 
+    def _canonical(obj: object) -> str:
+        return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
     merged = dict(manifests[0][1])
     frameworks: dict[str, Any] = {}
     assignments: list[dict[str, Any]] = []
-    seen_assignments: set[str] = set()
+    key_counts: dict[tuple[int, str], int] = {}
+    key_first_body: dict[tuple[int, str], str] = {}
+    duplicate_keys: set[tuple[int, str]] = set()
+    conflicting_keys: set[tuple[int, str]] = set()
+    condition_missing_entries = 0
+    seed_invalid_entries = 0
     sources: list[dict[str, Any]] = []
     for shard, body in manifests:
         frameworks.update(body.get("frameworks") or {})
         for entry in body.get("game_profile_assignments") or []:
             if not isinstance(entry, dict):
                 continue
-            key = json.dumps(entry, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-            if key not in seen_assignments:
-                seen_assignments.add(key)
+            seed = entry.get("seed")
+            condition = entry.get("condition")
+            missing_condition = not isinstance(condition, str) or not condition
+            invalid_seed = not isinstance(seed, int)
+            if missing_condition or invalid_seed:
+                if missing_condition:
+                    condition_missing_entries += 1
+                if invalid_seed:
+                    seed_invalid_entries += 1
                 assignments.append(entry)
+                continue
+            key = (seed, condition)
+            key_counts[key] = key_counts.get(key, 0) + 1
+            body_json = _canonical(entry)
+            if key not in key_first_body:
+                key_first_body[key] = body_json
+            elif key_first_body[key] != body_json:
+                conflicting_keys.add(key)
+            assignments.append(entry)
         sources.append(
             {
                 "shard_id": shard.shard_id,
@@ -560,29 +583,42 @@ def _merge_value_manifests(shards: list[Shard], cfg: dict[str, Any]) -> dict[str
                 "seed_count": shard.seed_count,
             }
         )
+    for key, count in key_counts.items():
+        if count > 1:
+            duplicate_keys.add(key)
+
     merged["frameworks"] = frameworks
-    merged["game_profile_assignments"] = sorted(assignments, key=lambda item: (item.get("seed", -1), item.get("condition", ""), json.dumps(item, sort_keys=True)))
+    merged["game_profile_assignments"] = sorted(assignments, key=lambda item: (item.get("seed", -1), item.get("condition", ""), _canonical(item)))
     merged["seed_range"] = {"start": cfg["seed"], "count": cfg["games"]}
     merged["framework_ids"] = list(cfg["conditions"])
-    merged["runner_version"] = "qwen_parallel_experiment-merged-v2"
+    merged["runner_version"] = "qwen_parallel_experiment-merged-v3"
     merged["merged_at"] = _now_iso()
     merged["shard_sources"] = sources
 
     # §9.2: 全 (seed, condition) の割当が欠落・重複なく揃っているか検査
     expected_assignments = cfg["games"] * len(cfg["conditions"])
+    expected_keys = {
+        (seed, cond)
+        for seed in range(cfg["seed"], cfg["seed"] + cfg["games"])
+        for cond in cfg["conditions"]
+    }
+    actual_keys = set(key_counts.keys())
     merged["expected_assignments"] = expected_assignments
     merged["actual_assignments"] = len(assignments)
-    merged["assignment_completeness"] = len(assignments) == expected_assignments
-    if len(assignments) != expected_assignments:
-        # Build expected set for diagnostics
-        expected_keys = {
-            f"{seed}:{cond}"
-            for seed in range(cfg["seed"], cfg["seed"] + cfg["games"])
-            for cond in cfg["conditions"]
-        }
-        actual_keys = {f"{entry.get('seed')}:{entry.get('condition')}" for entry in assignments}
-        merged["missing_assignments"] = sorted(expected_keys - actual_keys)
-        merged["duplicate_or_extra_assignment_count"] = max(0, len(assignments) - len(actual_keys))
+    merged["assignment_completeness"] = (
+        len(assignments) == expected_assignments
+        and actual_keys == expected_keys
+        and not duplicate_keys
+        and not conflicting_keys
+        and condition_missing_entries == 0
+        and seed_invalid_entries == 0
+    )
+    merged["missing_assignments"] = sorted(f"{s}:{c}" for s, c in expected_keys - actual_keys)
+    merged["duplicate_assignments"] = sorted(f"{s}:{c}" for s, c in duplicate_keys)
+    merged["conflicting_assignments"] = sorted(f"{s}:{c}" for s, c in conflicting_keys)
+    merged["duplicate_or_extra_assignment_count"] = max(0, len(assignments) - len(actual_keys))
+    merged["condition_missing_entries"] = condition_missing_entries
+    merged["seed_invalid_entries"] = seed_invalid_entries
     return merged
 
 
@@ -1356,7 +1392,11 @@ def _merge_results(
         if not assignment_ok:
             logger.log(
                 f"value_manifest 割当完全性エラー: expected={merged_value_manifest.get('expected_assignments')}, "
-                f"actual={merged_value_manifest.get('actual_assignments')}, missing={merged_value_manifest.get('missing_assignments', [])}"
+                f"actual={merged_value_manifest.get('actual_assignments')}, "
+                f"missing={merged_value_manifest.get('missing_assignments', [])}, "
+                f"duplicates={merged_value_manifest.get('duplicate_assignments', [])}, "
+                f"conflicts={merged_value_manifest.get('conflicting_assignments', [])}, "
+                f"condition_missing={merged_value_manifest.get('condition_missing_entries', 0)}"
             )
     else:
         checks.append(

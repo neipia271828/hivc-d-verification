@@ -4,6 +4,7 @@ import json
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -497,7 +498,7 @@ def test_merge_results_generates_master_csvs_and_report(tmp_path: Path) -> None:
     }
     (shard.shard_dir / "shard_manifest.json").write_text(json.dumps(shard_manifest), encoding="utf-8")
     (shard.shard_dir / "value_manifest.json").write_text(
-        json.dumps({"schema_version": "value-manifest-1", "frameworks": {"control": {}}, "game_profile_assignments": [{"seed": 42}]}),
+        json.dumps({"schema_version": "value-manifest-1", "frameworks": {"control": {}}, "game_profile_assignments": [{"seed": 42, "condition": "control"}]}),
         encoding="utf-8",
     )
     qp._write_csv(shard.shard_dir / "control_games.csv", [_make_row("control", 42, 1)])
@@ -511,7 +512,7 @@ def test_merge_results_generates_master_csvs_and_report(tmp_path: Path) -> None:
     assert (master_dir / "merge_report.json").is_file()
     assert (master_dir / "value_manifest.json").is_file()
     value_manifest = json.loads((master_dir / "value_manifest.json").read_text(encoding="utf-8"))
-    assert value_manifest["game_profile_assignments"] == [{"seed": 42}]
+    assert value_manifest["game_profile_assignments"] == [{"seed": 42, "condition": "control"}]
     assert value_manifest["framework_ids"] == ["control"]
 
     report = json.loads((master_dir / "merge_report.json").read_text(encoding="utf-8"))
@@ -639,3 +640,71 @@ def test_merge_results_fails_when_duplicate_turn(tmp_path: Path) -> None:
     assert report["status"] == "failed"
     dup_check = next(c for c in report["checks"] if c["name"] == "no_duplicate_turn")
     assert not dup_check["passed"]
+
+
+def _value_manifest_shard(tmp_path: Path, condition: str, assignments: list[dict]) -> Any:
+    shard_dir = tmp_path / "shards" / f"{condition}-gpu0-seed42-43"
+    shard_dir.mkdir(parents=True)
+    (shard_dir / "value_manifest.json").write_text(
+        json.dumps({"schema_version": "value-manifest-2", "frameworks": {condition: {}}, "game_profile_assignments": assignments}),
+        encoding="utf-8",
+    )
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        shard_id=shard_dir.name,
+        condition=condition,
+        conditions=[condition],
+        seed_start=42,
+        seed_count=1,
+        shard_dir=shard_dir,
+    )
+
+
+def test_merge_value_manifest_rejects_missing_condition(tmp_path: Path) -> None:
+    shard = _value_manifest_shard(tmp_path, "control", [{"seed": 42}])
+    cfg = {"conditions": ["control"], "games": 1, "seed": 42, "model_path": "/tmp/model"}
+    merged = qp._merge_value_manifests([shard], cfg)
+    assert merged is not None
+    assert merged["assignment_completeness"] is False
+    assert merged["condition_missing_entries"] == 1
+
+
+def test_merge_value_manifest_rejects_duplicate_same_key(tmp_path: Path) -> None:
+    shard = _value_manifest_shard(
+        tmp_path,
+        "control",
+        [
+            {"seed": 42, "condition": "control", "role_value_assignment_id": "a"},
+            {"seed": 42, "condition": "control", "role_value_assignment_id": "a"},
+        ],
+    )
+    cfg = {"conditions": ["control"], "games": 1, "seed": 42, "model_path": "/tmp/model"}
+    merged = qp._merge_value_manifests([shard], cfg)
+    assert merged is not None
+    assert merged["assignment_completeness"] is False
+    assert merged["duplicate_assignments"] == ["42:control"]
+
+
+def test_merge_value_manifest_rejects_conflicting_content(tmp_path: Path) -> None:
+    shard = _value_manifest_shard(
+        tmp_path,
+        "control",
+        [
+            {"seed": 42, "condition": "control", "role_value_assignment_id": "a"},
+            {"seed": 42, "condition": "control", "role_value_assignment_id": "b"},
+        ],
+    )
+    cfg = {"conditions": ["control"], "games": 1, "seed": 42, "model_path": "/tmp/model"}
+    merged = qp._merge_value_manifests([shard], cfg)
+    assert merged is not None
+    assert merged["assignment_completeness"] is False
+    assert merged["conflicting_assignments"] == ["42:control"]
+
+
+def test_merge_value_manifest_rejects_missing_key(tmp_path: Path) -> None:
+    shard = _value_manifest_shard(tmp_path, "control", [{"seed": 42, "condition": "control"}])
+    cfg = {"conditions": ["control", "hivc_d"], "games": 1, "seed": 42, "model_path": "/tmp/model"}
+    merged = qp._merge_value_manifests([shard], cfg)
+    assert merged is not None
+    assert merged["assignment_completeness"] is False
+    assert merged["missing_assignments"] == ["42:hivc_d"]

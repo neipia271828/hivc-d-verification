@@ -29,6 +29,9 @@ from turn_game import (  # noqa: E402
 )
 from scripts.llm_turn_game_common import (  # noqa: E402
     CONDITION_PROCEDURES,
+    _extract_json_object,
+    _normalize_requested_fields,
+    _question_signature,
     allocate_discussion_budgets,
     decision_opportunity_prompt,
     discussion_prompt,
@@ -301,7 +304,7 @@ def test_allocate_discussion_budgets_uses_actual_opportunity_count() -> None:
 def test_extract_json_discussion_parses_question_metadata() -> None:
     response = (
         '{"speech_act":"question_objection","message":"なぜ？","action":"C",'
-        '"reason":"確認","addressed_to":"beta","requires_response":true}'
+        '"reason":"確認","addressed_to":"beta","reply_to_message_id":null}'
     )
     speech_act, message, action, reason, reply_id, addressed_to, requires = extract_json_discussion(response)
     assert speech_act.value == "question_objection"
@@ -312,7 +315,7 @@ def test_extract_json_discussion_parses_question_metadata() -> None:
 
     response2 = (
         '{"speech_act":"evidence","message":"理由","reply_to_message_id":"1",'
-        '"action":"C","reason":"回答"}'
+        '"action":"C","reason":"回答","addressed_to":null}'
     )
     speech_act2, message2, action2, reason2, reply_id2, addressed_to2, requires2 = extract_json_discussion(response2)
     assert reply_id2 == "1"
@@ -321,7 +324,7 @@ def test_extract_json_discussion_parses_question_metadata() -> None:
     # question_objection なら requires_response はモデル値によらず true
     response3 = (
         '{"speech_act":"question_objection","message":"なぜ？","action":"C",'
-        '"reason":"確認","addressed_to":"beta","requires_response":false}'
+        '"reason":"確認","addressed_to":"beta","reply_to_message_id":null}'
     )
     speech_act3, _, _, _, _, _, requires3 = extract_json_discussion(response3)
     assert speech_act3.value == "question_objection"
@@ -455,13 +458,13 @@ def test_run_one_game_question_response_closure(monkeypatch) -> None:
             return (
                 "",
                 '{"speech_act":"question_objection","message":"なぜ？","action":"C",'
-                '"reason":"質問","addressed_to":"beta","requires_response":true}',
+                '"reason":"質問","addressed_to":"beta","reply_to_message_id":null}',
             )
         call_count += 1
         return (
             "",
             '{"speech_act":"evidence","message":"理由","action":"C",'
-            '"reason":"回答","reply_to_message_id":"1"}',
+            '"reason":"回答","addressed_to":null,"reply_to_message_id":"1"}',
         )
 
     monkeypatch.setattr("scripts.llm_turn_game_common.run_prompt", fake_run_prompt)
@@ -513,13 +516,13 @@ def test_run_one_game_forced_decision_still_collects_votes(monkeypatch) -> None:
             return (
                 "",
                 '{"speech_act":"question_objection","message":"なぜ？","action":"C",'
-                '"reason":"質問","addressed_to":"beta","requires_response":true}',
+                '"reason":"質問","addressed_to":"beta","reply_to_message_id":null}',
             )
         call_count += 1
         return (
             "",
             '{"speech_act":"question_objection","message":"さらに？","action":"C",'
-            '"reason":"追加質問","addressed_to":"alpha","requires_response":true}',
+            '"reason":"追加質問","addressed_to":"alpha","reply_to_message_id":null}',
         )
 
     monkeypatch.setattr("scripts.llm_turn_game_common.run_prompt", fake_run_prompt)
@@ -572,14 +575,14 @@ def test_run_one_game_question_objection_requires_response_and_addressed_to_norm
             return (
                 "",
                 '{"speech_act":"question_objection","message":"why?","action":"C",'
-                '"reason":"質問","addressed_to":"gamma","requires_response":false}',
+                '"reason":"質問","addressed_to":"gamma","reply_to_message_id":null}',
             )
         # 2回目 beta が回答
         call_count += 1
         return (
             "",
             '{"speech_act":"evidence","message":"理由","action":"C",'
-            '"reason":"回答","reply_to_message_id":"1"}',
+            '"reason":"回答","addressed_to":null,"reply_to_message_id":"1"}',
         )
 
     monkeypatch.setattr("scripts.llm_turn_game_common.run_prompt", fake_run_prompt)
@@ -629,7 +632,7 @@ def test_run_one_game_fake_reply_from_non_addressee_keeps_question_open(monkeypa
             return (
                 "",
                 '{"speech_act":"question_objection","message":"Q1","action":"C",'
-                '"reason":"質問","addressed_to":"beta","requires_response":true}',
+                '"reason":"質問","addressed_to":"beta","reply_to_message_id":null}',
             )
         # 2 beta は存在しない返信IDを指定（not_found）
         if call_count == 1:
@@ -637,14 +640,14 @@ def test_run_one_game_fake_reply_from_non_addressee_keeps_question_open(monkeypa
             return (
                 "",
                 '{"speech_act":"evidence","message":"無効","action":"C",'
-                '"reason":"回答","reply_to_message_id":"999"}',
+                '"reason":"回答","addressed_to":null,"reply_to_message_id":"999"}',
             )
         # 3 alpha が自分の質問 Q1 に回答（addressed_to mismatch）
         call_count += 1
         return (
             "",
             '{"speech_act":"evidence","message":"自答","action":"C",'
-            '"reason":"回答","reply_to_message_id":"1"}',
+                '"reason":"回答","addressed_to":null,"reply_to_message_id":"1"}',
         )
 
     monkeypatch.setattr("scripts.llm_turn_game_common.run_prompt", fake_run_prompt)
@@ -695,14 +698,14 @@ def test_run_one_game_missing_reply_to_while_answer_required(monkeypatch) -> Non
             return (
                 "",
                 '{"speech_act":"question_objection","message":"Q1","action":"C",'
-                '"reason":"質問","addressed_to":"beta","requires_response":true}',
+                '"reason":"質問","addressed_to":"beta","reply_to_message_id":null}',
             )
         # 2 beta は reply_to_message_id を返さない一般発言
         call_count += 1
         return (
             "",
             '{"speech_act":"evidence","message":"一般論","action":"C",'
-            '"reason":"一般発言"}',
+            '"reason":"一般発言","addressed_to":null,"reply_to_message_id":null}',
         )
 
     monkeypatch.setattr("scripts.llm_turn_game_common.run_prompt", fake_run_prompt)
@@ -750,7 +753,7 @@ def test_run_one_game_question_while_answer_required_retries(monkeypatch) -> Non
             return (
                 "",
                 '{"speech_act":"question_objection","message":"Q1","action":"C",'
-                '"reason":"質問","addressed_to":"beta","requires_response":true}',
+                '"reason":"質問","addressed_to":"beta","reply_to_message_id":null}',
             )
         # 2 beta は Q1 に回答せず alpha 宛の質問を返す（無効）
         if call_count == 1:
@@ -758,14 +761,14 @@ def test_run_one_game_question_while_answer_required_retries(monkeypatch) -> Non
             return (
                 "",
                 '{"speech_act":"question_objection","message":"Q2","action":"C",'
-                '"reason":"返質問","addressed_to":"alpha","requires_response":true}',
+                '"reason":"返質問","addressed_to":"alpha","reply_to_message_id":null}',
             )
         # 3 beta が Q1 に回答（再試行後）
         call_count += 1
         return (
             "",
-            '{"speech_act":"evidence","message":"A1","reply_to_message_id":"1",'
-            '"reason":"回答","addressed_to":"beta","requires_response":false}',
+            '{"speech_act":"evidence","message":"A1","action":"C",'
+            '"reason":"回答","addressed_to":null,"reply_to_message_id":"1"}',
         )
 
     monkeypatch.setattr("scripts.llm_turn_game_common.run_prompt", fake_run_prompt)
@@ -795,3 +798,482 @@ def test_run_one_game_question_while_answer_required_retries(monkeypatch) -> Non
     assert "invalid_response_while_answer_required" not in first["forced_decision_reason"]
     # Q1 は回答により閉じられている
     assert first["unanswered_question_count"] == 0
+
+
+def test_extract_json_object_rejects_surrounding_text_and_markdown() -> None:
+    assert _extract_json_object('{"a":1}') == {"a": 1}
+    assert _extract_json_object('Some prose {"a":1}') is None
+    assert _extract_json_object('```json\n{"a":1}\n```') is None
+    assert _extract_json_object('{"a":1} extra') is None
+    assert _extract_json_object('{"a":1}{"b":2}') is None
+
+
+def test_extract_json_discussion_rejects_missing_keys_and_type_mismatch() -> None:
+    # 必須キー欠落
+    missing_keys = '{"speech_act":"evidence","message":"ok","action":"A","reason":"ok"}'
+    speech_act, _, _, _, _, _, _ = extract_json_discussion(missing_keys)
+    assert speech_act is None
+
+    # message が空文字
+    empty_message = '{"speech_act":"evidence","message":"","action":"A","reason":"ok","addressed_to":null,"reply_to_message_id":null}'
+    speech_act2, _, _, _, _, _, _ = extract_json_discussion(empty_message)
+    assert speech_act2 is None
+
+    # action が無効な文字列
+    invalid_action = '{"speech_act":"evidence","message":"ok","action":"X","reason":"ok","addressed_to":null,"reply_to_message_id":null}'
+    speech_act3, _, action, _, _, _, _ = extract_json_discussion(invalid_action)
+    assert speech_act3 is None
+
+    # 質問で addressed_to が欠落/空
+    missing_addressed = '{"speech_act":"question_objection","message":"Q","action":"A","reason":"Q","addressed_to":null,"reply_to_message_id":null}'
+    speech_act4, _, _, _, _, _, _ = extract_json_discussion(missing_addressed)
+    assert speech_act4 is None
+
+    # 非質問で addressed_to が設定されている
+    spurious_addressed = '{"speech_act":"evidence","message":"ok","action":"A","reason":"ok","addressed_to":"beta","reply_to_message_id":null}'
+    speech_act5, _, _, _, _, _, _ = extract_json_discussion(spurious_addressed)
+    assert speech_act5 is None
+
+    # addressed_to に整数を設定（暗黙の型変換を拒否）
+    int_addressed = '{"speech_act":"question_objection","message":"Q","action":"A","reason":"Q","addressed_to":123,"reply_to_message_id":null}'
+    speech_act6, _, _, _, _, addressed_to6, _ = extract_json_discussion(int_addressed)
+    assert speech_act6 is None
+
+    # reply_to_message_id に辞書を設定（正規化でNoneになるのを防ぐ）
+    dict_reply = '{"speech_act":"evidence","message":"ok","action":"A","reason":"ok","addressed_to":null,"reply_to_message_id":{}}'
+    speech_act7, _, _, _, reply_id7, _, _ = extract_json_discussion(dict_reply)
+    assert speech_act7 is None
+
+    # reply_to_message_id に bool を設定（int派生型だが拒否）
+    bool_reply = '{"speech_act":"evidence","message":"ok","action":"A","reason":"ok","addressed_to":null,"reply_to_message_id":true}'
+    speech_act8, _, _, _, reply_id8, _, _ = extract_json_discussion(bool_reply)
+    assert speech_act8 is None
+
+
+def test_normalize_requested_fields() -> None:
+    assert _normalize_requested_fields(None) == []
+    assert _normalize_requested_fields("oxygen") == ["oxygen"]
+    assert _normalize_requested_fields(["Oxygen", "Power", "oxygen"]) == ["oxygen", "power"]
+    assert _normalize_requested_fields(["  ", ""]) == []
+    assert _normalize_requested_fields(123) == []
+    assert _normalize_requested_fields({"a": 1}) == []
+
+
+def test_question_signature_uses_requested_fields_when_present() -> None:
+    """requested_fields があればそれを signature に使い、action/reason/message は無視する。"""
+    sig_with_fields = _question_signature({
+        "speaker": "Alpha",
+        "addressed_to": "Beta",
+        "requested_fields": ["Oxygen", "Power"],
+        "action": "A",
+        "reason": "r1",
+        "message": "m1",
+    })
+    sig_same_fields_diff_text = _question_signature({
+        "speaker": "alpha",
+        "addressed_to": "beta",
+        "requested_fields": ["power", "oxygen"],
+        "action": "B",
+        "reason": "r2",
+        "message": "m2",
+    })
+    assert sig_with_fields == sig_same_fields_diff_text
+
+    sig_diff_fields = _question_signature({
+        "speaker": "alpha",
+        "addressed_to": "beta",
+        "requested_fields": ["hull_damage"],
+        "action": "A",
+        "reason": "r1",
+        "message": "m1",
+    })
+    assert sig_with_fields != sig_diff_fields
+
+
+def test_question_signature_falls_back_to_action_reason_message() -> None:
+    """requested_fields がない場合は action+reason+message を signature に使う。"""
+    sig1 = _question_signature({
+        "speaker": "alpha",
+        "addressed_to": "beta",
+        "action": "A",
+        "reason": "r1",
+        "message": "m1",
+    })
+    sig2 = _question_signature({
+        "speaker": "alpha",
+        "addressed_to": "beta",
+        "action": "A",
+        "reason": "r1",
+        "message": "m1",
+    })
+    assert sig1 == sig2
+    sig3 = _question_signature({
+        "speaker": "alpha",
+        "addressed_to": "beta",
+        "action": "B",
+        "reason": "r1",
+        "message": "m1",
+    })
+    assert sig1 != sig3
+
+
+def test_invalid_discussion_output_triggers_retry_and_recovers(monkeypatch) -> None:
+    """JSON 契約違反は同一agentへ修復リトライし、成功すれば監査経路へ保存しない。"""
+    import json
+    from scripts.llm_turn_game_common import run_one_game
+
+    call_count = 0
+
+    def fake_run_prompt(model, tokenizer, prompt, max_new_tokens, enable_thinking=False, thinking_budget=None):
+        nonlocal call_count
+        if "意思決定機会" in prompt:
+            return "", '{"action":"A","reason":"vote A","message":"A","ready":true}'
+        call_count += 1
+        if call_count == 1:
+            return "", "this is not valid json"
+        return "", '{"speech_act":"evidence","message":"ok","action":"A","reason":"ok","addressed_to":null,"reply_to_message_id":null}'
+
+    monkeypatch.setattr("scripts.llm_turn_game_common.run_prompt", fake_run_prompt)
+    rows = run_one_game(
+        None,
+        None,
+        "control",
+        42,
+        {"alpha": "alpha", "beta": "beta"},
+        {"alpha": None, "beta": None},
+        {"alpha": "a", "beta": "b"},
+        max_new_tokens=96,
+        max_discussion_turns=2,
+        discussion_token_budget=1024,
+        evaluator_rollouts=2,
+        max_decision_opportunities=1,
+        scenario_id="comms_favored",
+    )
+    assert rows
+    first = rows[0]
+    transcript = json.loads(first["discussion_transcript"])
+    assert not any(item.get("raw") == "this is not valid json" for item in transcript)
+    # リトライ成功時は監査経路にinvalidを保存しない
+    audit = json.loads(first["invalid_discussion_outputs"])
+    assert len(audit) == 0
+    assert first["discussion_retry_count"] >= 1
+    assert first["invalid_discussion_output_count"] == 0
+
+
+def test_invalid_discussion_output_retry_exhaustion_records_audit(monkeypatch) -> None:
+    """リトライ上限後もinvalidの場合は監査経路へ確定保存し、retry回数を記録する。"""
+    import json
+    from scripts.llm_turn_game_common import run_one_game
+
+    def fake_run_prompt(model, tokenizer, prompt, max_new_tokens, enable_thinking=False, thinking_budget=None):
+        if "意思決定機会" in prompt:
+            return "", '{"action":"A","reason":"vote A","message":"A","ready":true}'
+        return "", "this is not valid json"
+
+    monkeypatch.setattr("scripts.llm_turn_game_common.run_prompt", fake_run_prompt)
+    rows = run_one_game(
+        None,
+        None,
+        "control",
+        42,
+        {"alpha": "alpha", "beta": "beta"},
+        {"alpha": None, "beta": None},
+        {"alpha": "a", "beta": "b"},
+        max_new_tokens=96,
+        max_discussion_turns=2,
+        discussion_token_budget=1024,
+        evaluator_rollouts=2,
+        max_decision_opportunities=1,
+        scenario_id="comms_favored",
+    )
+    assert rows
+    first = rows[0]
+    audit = json.loads(first["invalid_discussion_outputs"])
+    assert len(audit) >= 1
+    assert audit[0]["raw"] == "this is not valid json"
+    assert audit[0]["retry_attempts"] >= 1
+    assert first["discussion_retry_count"] >= 1
+    assert first["invalid_discussion_output_count"] >= 1
+
+
+def test_scope_unanswerable_question_is_closed_and_not_resent(monkeypatch) -> None:
+    """両agentとも観測できないfieldへの質問は unanswerable として閉じ、closed_questionsへ保存して再送を抑止する。
+
+    発話上限を十分に確保し、同じspeakerが同じrequested_fieldsを再送した場合に
+    duplicate_question として拒否されることを検証する。
+    """
+    import json
+    from scripts.llm_turn_game_common import run_one_game
+
+    # alpha: hull_damage/flooding を観測可能、communication は不可
+    # beta:  communication を観測可能、hull_damage/flooding は不可
+    # "morale" は両者とも観測不可 -> unanswerable
+    from profiles import Role, Persona, Value, ResolvedProfile
+
+    alpha_role = Role(
+        id="safety", label="安全", schema_version="2.0",
+        expertise_domains=("safety",), observation_scope=("oxygen", "power", "hull_damage", "flooding"),
+        responsibility="安全", feasibility_constraints=(),
+    )
+    beta_role = Role(
+        id="comms", label="通信", schema_version="2.0",
+        expertise_domains=("comms",), observation_scope=("oxygen", "power", "communication"),
+        responsibility="通信", feasibility_constraints=(),
+    )
+    alpha_persona = Persona(id="p1", version="1.0", communication_style="concise", evidence_demand=0.5, concession_tendency=0.5, consensus_orientation=0.5, dominance=0.5)
+    beta_persona = Persona(id="p2", version="1.0", communication_style="concise", evidence_demand=0.5, concession_tendency=0.5, consensus_orientation=0.5, dominance=0.5)
+    alpha_value = Value(id="v1", version="1.0", initial_priority_weights={"oxygen": 0.3, "power": 0.2, "hull_damage": 0.2, "flooding": 0.2, "communication": 0.1}, confidence=0.6, negotiable=True)
+    beta_value = Value(id="v2", version="1.0", initial_priority_weights={"oxygen": 0.2, "power": 0.2, "hull_damage": 0.2, "flooding": 0.2, "communication": 0.2}, confidence=0.6, negotiable=True)
+    resolved_profiles = {
+        "alpha": ResolvedProfile(role=alpha_role, persona=alpha_persona, value=alpha_value, role_value_mode="soft_value"),
+        "beta": ResolvedProfile(role=beta_role, persona=beta_persona, value=beta_value, role_value_mode="soft_value"),
+    }
+
+    question_count = 0
+
+    def fake_run_prompt(model, tokenizer, prompt, max_new_tokens, enable_thinking=False, thinking_budget=None):
+        nonlocal question_count
+        if "意思決定機会" in prompt:
+            return "", '{"action":"A","reason":"vote","message":"A","ready":true}'
+        if "id=v-measurement-before" in prompt:
+            return "", '{"v_before":{"ordered_criteria":["oxygen","power","hull_damage","flooding","communication"],"weights":{"oxygen":0.2,"power":0.2,"hull_damage":0.2,"flooding":0.2,"communication":0.2},"confidence":0.6},"action_before":"A","reason_before":"ok"}'
+        if "id=v-measurement-after" in prompt:
+            return "", '{"v_after":{"ordered_criteria":["oxygen","power","hull_damage","flooding","communication"],"weights":{"oxygen":0.2,"power":0.2,"hull_damage":0.2,"flooding":0.2,"communication":0.2},"confidence":0.7},"reason_after":"ok"}'
+        # alpha は常に morale (両者観測不可) への質問を出し続ける
+        # beta は evidence を返す
+        # observation_scope 行に hull_damage+flooding があれば alpha、communication があれば beta
+        is_alpha_prompt = (
+            "id=discussion-contract" in prompt
+            and 'observation_scope: ["oxygen","power","hull_damage","flooding"]' in prompt
+        )
+        if is_alpha_prompt:
+            question_count += 1
+            return (
+                "",
+                '{"speech_act":"question_objection","message":"morale?","action":"A","reason":"確認",'
+                '"addressed_to":"beta","reply_to_message_id":null,"requested_fields":["morale"]}',
+            )
+        return (
+            "",
+            '{"speech_act":"evidence","message":"ok","action":"A","reason":"ok",'
+            '"addressed_to":null,"reply_to_message_id":null}',
+        )
+
+    monkeypatch.setattr("scripts.llm_turn_game_common.run_prompt", fake_run_prompt)
+    rows = run_one_game(
+        None,
+        None,
+        "control",
+        42,
+        {"alpha": "alpha", "beta": "beta"},
+        {"alpha": None, "beta": None},
+        {"alpha": "a", "beta": "b"},
+        max_new_tokens=96,
+        max_discussion_turns=6,
+        discussion_token_budget=2048,
+        evaluator_rollouts=2,
+        max_decision_opportunities=1,
+        scenario_id="comms_favored",
+        role_value_mode="soft_value",
+        resolved_profiles=resolved_profiles,
+    )
+    assert rows
+    first = rows[0]
+    transcript = json.loads(first["discussion_transcript"])
+    # 質問は unanswerable として閉じられる
+    unanswerable_entries = [t for t in transcript if t.get("closed_as_unanswerable")]
+    assert len(unanswerable_entries) >= 1
+    assert unanswerable_entries[0].get("unanswerable_reason") == "neither_agent_observes_requested_fields"
+    assert first["unanswerable_question_count"] >= 1
+    # 同じspeakerが同じrequested_fieldsを再送した場合はduplicate_questionとして拒否される
+    # 2回目以降のmorale質問はclosed_questionsにあるためduplicate扱い
+    assert first["duplicate_question_count"] >= 1
+    # §6.6.4: question_count は unanswerable + duplicate を含む全質問試行を分母とする
+    assert first["question_count"] >= 2
+    assert first["question_count"] >= first["unanswerable_question_count"] + first["duplicate_question_count"]
+    # unanswerable質問の requires_response は False である（回答を求めない）
+    assert unanswerable_entries[0].get("requires_response") is False
+    # duplicate_question_rate が NaN にならないことを検証
+    from hivc_sim.turn_game_metrics import duplicate_question_rate
+    rate = duplicate_question_rate([first])
+    assert rate == rate  # NaN check (NaN != NaN)
+    assert rate >= 0.0
+
+
+def test_scope_self_observable_question_is_closed(monkeypatch) -> None:
+    """質問者自身だけが観測可能なfieldへの質問は self_observable_question として閉じる。
+
+    alpha が hull_damage (alphaのみ観測可能、betaは観測不可) への質問を出した場合、
+    相手に聞く必要がないので self_observable_question として閉じる。
+    """
+    import json
+    from scripts.llm_turn_game_common import run_one_game
+    from profiles import Role, Persona, Value, ResolvedProfile
+
+    alpha_role = Role(
+        id="safety", label="安全", schema_version="2.0",
+        expertise_domains=("safety",), observation_scope=("oxygen", "power", "hull_damage", "flooding"),
+        responsibility="安全", feasibility_constraints=(),
+    )
+    beta_role = Role(
+        id="comms", label="通信", schema_version="2.0",
+        expertise_domains=("comms",), observation_scope=("oxygen", "power", "communication"),
+        responsibility="通信", feasibility_constraints=(),
+    )
+    alpha_persona = Persona(id="p1", version="1.0", communication_style="concise", evidence_demand=0.5, concession_tendency=0.5, consensus_orientation=0.5, dominance=0.5)
+    beta_persona = Persona(id="p2", version="1.0", communication_style="concise", evidence_demand=0.5, concession_tendency=0.5, consensus_orientation=0.5, dominance=0.5)
+    alpha_value = Value(id="v1", version="1.0", initial_priority_weights={"oxygen": 0.3, "power": 0.2, "hull_damage": 0.2, "flooding": 0.2, "communication": 0.1}, confidence=0.6, negotiable=True)
+    beta_value = Value(id="v2", version="1.0", initial_priority_weights={"oxygen": 0.2, "power": 0.2, "hull_damage": 0.2, "flooding": 0.2, "communication": 0.2}, confidence=0.6, negotiable=True)
+    resolved_profiles = {
+        "alpha": ResolvedProfile(role=alpha_role, persona=alpha_persona, value=alpha_value, role_value_mode="soft_value"),
+        "beta": ResolvedProfile(role=beta_role, persona=beta_persona, value=beta_value, role_value_mode="soft_value"),
+    }
+
+    question_count = 0
+
+    def fake_run_prompt(model, tokenizer, prompt, max_new_tokens, enable_thinking=False, thinking_budget=None):
+        nonlocal question_count
+        if "意思決定機会" in prompt:
+            return "", '{"action":"A","reason":"vote","message":"A","ready":true}'
+        if "id=v-measurement-before" in prompt:
+            return "", '{"v_before":{"ordered_criteria":["oxygen","power","hull_damage","flooding","communication"],"weights":{"oxygen":0.2,"power":0.2,"hull_damage":0.2,"flooding":0.2,"communication":0.2},"confidence":0.6},"action_before":"A","reason_before":"ok"}'
+        if "id=v-measurement-after" in prompt:
+            return "", '{"v_after":{"ordered_criteria":["oxygen","power","hull_damage","flooding","communication"],"weights":{"oxygen":0.2,"power":0.2,"hull_damage":0.2,"flooding":0.2,"communication":0.2},"confidence":0.7},"reason_after":"ok"}'
+        # alpha が hull_damage (alphaのみ観測可能) への質問を出す（1回だけ）
+        is_alpha_prompt = (
+            "id=discussion-contract" in prompt
+            and 'observation_scope: ["oxygen","power","hull_damage","flooding"]' in prompt
+        )
+        if is_alpha_prompt and question_count == 0:
+            question_count += 1
+            return (
+                "",
+                '{"speech_act":"question_objection","message":"hull_damage?","action":"A","reason":"確認",'
+                '"addressed_to":"beta","reply_to_message_id":null,"requested_fields":["hull_damage"]}',
+            )
+        return (
+            "",
+            '{"speech_act":"evidence","message":"ok","action":"A","reason":"ok",'
+            '"addressed_to":null,"reply_to_message_id":null}',
+        )
+
+    monkeypatch.setattr("scripts.llm_turn_game_common.run_prompt", fake_run_prompt)
+    rows = run_one_game(
+        None,
+        None,
+        "control",
+        42,
+        {"alpha": "alpha", "beta": "beta"},
+        {"alpha": None, "beta": None},
+        {"alpha": "a", "beta": "b"},
+        max_new_tokens=96,
+        max_discussion_turns=4,
+        discussion_token_budget=2048,
+        evaluator_rollouts=2,
+        max_decision_opportunities=1,
+        scenario_id="comms_favored",
+        role_value_mode="soft_value",
+        resolved_profiles=resolved_profiles,
+    )
+    assert rows
+    first = rows[0]
+    transcript = json.loads(first["discussion_transcript"])
+    # 質問は self_observable として閉じられる
+    self_observable_entries = [t for t in transcript if t.get("closed_as_self_observable")]
+    assert len(self_observable_entries) >= 1
+    assert self_observable_entries[0].get("self_observable_reason") == "only_speaker_observes_requested_fields"
+    assert self_observable_entries[0]["requested_fields"] == ["hull_damage"]
+    assert first["self_observable_question_count"] >= 1
+    # §6.6.4: question_count は self_observable 質問も分母に含む
+    assert first["question_count"] >= 1
+    assert first["question_count"] >= first["self_observable_question_count"]
+
+
+def test_scope_partial_unanswerable_with_both_observe_not_full_unanswerable(monkeypatch) -> None:
+    """一部fieldが両者観測可能で一部が両者観測不能の場合、全体をunanswerableにせずpartial_fieldsに記録する。
+
+    requested_fields=["oxygen", "morale"] で oxygen を両者が観測可能、morale を両者とも観測不可の場合、
+    質問全体は unanswerable にならず、morale が unanswerable_partial_fields に記録される。
+    """
+    import json
+    from scripts.llm_turn_game_common import run_one_game
+    from profiles import Role, Persona, Value, ResolvedProfile
+
+    # 両者とも oxygen を観測可能、morale は両者とも観測不可
+    alpha_role = Role(
+        id="safety", label="安全", schema_version="2.0",
+        expertise_domains=("safety",), observation_scope=("oxygen", "power", "hull_damage"),
+        responsibility="安全", feasibility_constraints=(),
+    )
+    beta_role = Role(
+        id="comms", label="通信", schema_version="2.0",
+        expertise_domains=("comms",), observation_scope=("oxygen", "power", "communication"),
+        responsibility="通信", feasibility_constraints=(),
+    )
+    alpha_persona = Persona(id="p1", version="1.0", communication_style="concise", evidence_demand=0.5, concession_tendency=0.5, consensus_orientation=0.5, dominance=0.5)
+    beta_persona = Persona(id="p2", version="1.0", communication_style="concise", evidence_demand=0.5, concession_tendency=0.5, consensus_orientation=0.5, dominance=0.5)
+    alpha_value = Value(id="v1", version="1.0", initial_priority_weights={"oxygen": 0.3, "power": 0.2, "hull_damage": 0.2, "flooding": 0.2, "communication": 0.1}, confidence=0.6, negotiable=True)
+    beta_value = Value(id="v2", version="1.0", initial_priority_weights={"oxygen": 0.2, "power": 0.2, "hull_damage": 0.2, "flooding": 0.2, "communication": 0.2}, confidence=0.6, negotiable=True)
+    resolved_profiles = {
+        "alpha": ResolvedProfile(role=alpha_role, persona=alpha_persona, value=alpha_value, role_value_mode="soft_value"),
+        "beta": ResolvedProfile(role=beta_role, persona=beta_persona, value=beta_value, role_value_mode="soft_value"),
+    }
+
+    question_count = 0
+
+    def fake_run_prompt(model, tokenizer, prompt, max_new_tokens, enable_thinking=False, thinking_budget=None):
+        nonlocal question_count
+        if "意思決定機会" in prompt:
+            return "", '{"action":"A","reason":"vote","message":"A","ready":true}'
+        if "id=v-measurement-before" in prompt:
+            return "", '{"v_before":{"ordered_criteria":["oxygen","power","hull_damage","flooding","communication"],"weights":{"oxygen":0.2,"power":0.2,"hull_damage":0.2,"flooding":0.2,"communication":0.2},"confidence":0.6},"action_before":"A","reason_before":"ok"}'
+        if "id=v-measurement-after" in prompt:
+            return "", '{"v_after":{"ordered_criteria":["oxygen","power","hull_damage","flooding","communication"],"weights":{"oxygen":0.2,"power":0.2,"hull_damage":0.2,"flooding":0.2,"communication":0.2},"confidence":0.7},"reason_after":"ok"}'
+        # alpha が oxygen(両者観測可能) + morale(両者観測不可) への質問を出す（1回だけ）
+        is_alpha_prompt = (
+            "id=discussion-contract" in prompt
+            and 'observation_scope: ["oxygen","power","hull_damage"]' in prompt
+        )
+        if is_alpha_prompt and question_count == 0:
+            question_count += 1
+            return (
+                "",
+                '{"speech_act":"question_objection","message":"oxygen and morale?","action":"A","reason":"確認",'
+                '"addressed_to":"beta","reply_to_message_id":null,"requested_fields":["oxygen","morale"]}',
+            )
+        # beta が回答
+        return (
+            "",
+            '{"speech_act":"evidence","message":"回答","action":"A","reason":"回答",'
+            '"addressed_to":null,"reply_to_message_id":"1"}',
+        )
+
+    monkeypatch.setattr("scripts.llm_turn_game_common.run_prompt", fake_run_prompt)
+    rows = run_one_game(
+        None,
+        None,
+        "control",
+        42,
+        {"alpha": "alpha", "beta": "beta"},
+        {"alpha": None, "beta": None},
+        {"alpha": "a", "beta": "b"},
+        max_new_tokens=96,
+        max_discussion_turns=4,
+        discussion_token_budget=2048,
+        evaluator_rollouts=2,
+        max_decision_opportunities=1,
+        scenario_id="comms_favored",
+        role_value_mode="soft_value",
+        resolved_profiles=resolved_profiles,
+    )
+    assert rows
+    first = rows[0]
+    transcript = json.loads(first["discussion_transcript"])
+    # 質問は unanswerable として閉じられない（oxygen が両者観測可能だから）
+    unanswerable_entries = [t for t in transcript if t.get("closed_as_unanswerable")]
+    assert len(unanswerable_entries) == 0
+    # 質問は通常の質問として記録され、morale が partial_fields に記録される
+    questions = [t for t in transcript if t.get("requires_response") and not t.get("closed_as_self_observable")]
+    assert len(questions) >= 1
+    assert "morale" in questions[0].get("unanswerable_partial_fields", [])
+    assert first["unanswerable_question_count"] == 0

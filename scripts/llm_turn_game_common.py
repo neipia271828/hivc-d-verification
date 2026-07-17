@@ -529,17 +529,44 @@ def _role_value_assignment_id(
     return _profile_sha256(body)[:16]
 
 
-def _question_signature(item: dict[str, Any]) -> tuple[str, str, str]:
-    """質問の (speaker, addressed_to, normalized_fields) signature。
+def _normalize_requested_fields(value: Any) -> list[str]:
+    """requested_fields を正規化したソート済みリストに変換する。
 
-    requested_fields が明示されていない場合は action + reason + message を正規化して使用する。
+    None・空・無効型の場合は空リストを返す。
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        items = [value]
+    elif isinstance(value, (list, tuple)):
+        items = list(value)
+    else:
+        return []
+    normalized: list[str] = []
+    for item in items:
+        if isinstance(item, str):
+            text = item.strip().lower()
+            if text:
+                normalized.append(text)
+    return sorted(set(normalized))
+
+
+def _question_signature(item: dict[str, Any]) -> tuple[str, str, str]:
+    """質問の (speaker, addressed_to, normalized_requested_fields) signature。
+
+    requested_fields が明示されている場合はそれを正規化して使用する。
+    明示されていない場合は action + reason + message を正規化してフォールバックする。
     """
     speaker = str(item.get("speaker", "")).strip().lower()
     addressed_to = str(item.get("addressed_to", "")).strip().lower()
-    action = str(item.get("action", "")).strip().lower()
-    reason = str(item.get("reason", "")).strip().lower()
-    message = str(item.get("message", "")).strip().lower()
-    fields = _canonical_json({"action": action, "reason": reason, "message": message})
+    requested_fields = _normalize_requested_fields(item.get("requested_fields"))
+    if requested_fields:
+        fields = _canonical_json({"requested_fields": requested_fields})
+    else:
+        action = str(item.get("action", "")).strip().lower()
+        reason = str(item.get("reason", "")).strip().lower()
+        message = str(item.get("message", "")).strip().lower()
+        fields = _canonical_json({"action": action, "reason": reason, "message": message})
     return (speaker, addressed_to, fields)
 
 
@@ -600,7 +627,12 @@ def _normalize_v_proposal(
 
 
 def parse_v_negotiation(payload: Any, speaker: str, message_id: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    """Parse proposal and accept/reject/counter without ever inferring acceptance."""
+    """Parse proposal and accept/reject/counter without ever inferring acceptance.
+
+    counter応答で counter_proposal と同時に self_accept=true が指定された場合、
+    返す response に self_accept_for_counter_id を含める。
+    呼び出し側はこのフラグを見て counter提案への明示的acceptを別途記録できる。
+    """
     if not isinstance(payload, dict):
         return None, None
     proposal = _normalize_v_proposal(payload.get("v_proposal"), f"{speaker}-message-{message_id}")
@@ -619,6 +651,10 @@ def parse_v_negotiation(payload: Any, speaker: str, message_id: str) -> tuple[di
                 if counter is not None:
                     counter["message_index"] = message_index
                     response["counter_proposal"] = counter
+                    # counter出力で counter提案への明示的self-acceptが同時表現された場合
+                    self_accept_flag = raw_response.get("self_accept")
+                    if isinstance(self_accept_flag, bool) and self_accept_flag:
+                        response["self_accept_for_counter_id"] = counter.get("proposal_id", "")
     return proposal, response
 
 
@@ -1069,30 +1105,83 @@ def extract_json_action(response: str) -> tuple[Action | None, str, str, bool]:
     return None, text[:160], text[:160], False
 
 
+def _coerce_str_or_none(value: Any) -> str | None:
+    """文字列または整数を正規化した文字列に変換。None/空文字は None にする。
+
+    注意: 呼び出し側で事前に型検査を行うこと。この関数は正規化済みの値に対して
+    文字列表記を統一するためだけに使い、未知の型を暗黙に受理しないこと。
+    """
+    if value is None:
+        return None
+    if isinstance(value, (str, int)):
+        text = str(value).strip()
+        return text or None
+    return None
+
+
+def _is_valid_discussion_payload(payload: dict[str, Any]) -> bool:
+    """自由議論 JSON が必須キー・型・値の契約を満たすか検証する。"""
+    required_keys = ("speech_act", "message", "action", "reason", "addressed_to", "reply_to_message_id")
+    if not all(k in payload for k in required_keys):
+        return False
+
+    speech_act = _normalize_speech_act(payload.get("speech_act"))
+    if speech_act is None:
+        return False
+
+    message = payload.get("message")
+    reason = payload.get("reason")
+    if not isinstance(message, str) or not message.strip():
+        return False
+    if not isinstance(reason, str) or not reason.strip():
+        return False
+
+    action_val = payload.get("action")
+    if not isinstance(action_val, str):
+        return False
+    action_text = action_val.strip().upper()
+    if action_text not in {a.value for a in ALL_ACTIONS}:
+        return False
+
+    # addressed_to は正規化前に厳密に型検査する。
+    # 仕様: 質問の場合は str(宛先agent名)、それ以外は null。
+    # 整数や辞書などの暗黙の型変換は契約違反として拒否する。
+    raw_addressed_to = payload.get("addressed_to")
+    if raw_addressed_to is not None and not isinstance(raw_addressed_to, str):
+        return False
+    addressed_to = _coerce_str_or_none(raw_addressed_to)
+    if speech_act in QUESTION_SPEECH_ACTS and not addressed_to:
+        return False
+    if speech_act not in QUESTION_SPEECH_ACTS and addressed_to is not None:
+        return False
+
+    # reply_to_message_id は正規化前に厳密に型検査する。
+    # 仕様: str | int | null のみ受理。辞書やリストは契約違反として拒否する。
+    raw_reply_to = payload.get("reply_to_message_id")
+    if raw_reply_to is not None and not isinstance(raw_reply_to, (str, int)):
+        return False
+    # bool は int の派生型だが、JSON契約では受理しない
+    if isinstance(raw_reply_to, bool):
+        return False
+
+    return True
+
+
 def extract_json_discussion(response: str) -> tuple[SpeechAct | None, str, Action | None, str, str | None, str | None, bool]:
-    """自由議論用JSONをパースする。"""
+    """自由議論用JSONをパースする。契約違反は有効発話として扱わない。"""
     text = response.strip()
     payload = _extract_json_object(text)
-    if payload is not None:
-        try:
-            speech_act = _normalize_speech_act(payload.get("speech_act"))
-            message = str(payload.get("message", "")).strip()
-            reason = str(payload.get("reason", "")).strip()
-            reply_to_message_id = payload.get("reply_to_message_id")
-            if reply_to_message_id is not None:
-                reply_to_message_id = str(reply_to_message_id).strip() or None
-            addressed_to = str(payload.get("addressed_to", "")).strip() or None
-            # information_request / question_objection / question は内部表現 question として回答を要請
-            requires_response = speech_act in QUESTION_SPEECH_ACTS
-            action: Action | None = None
-            if "action" in payload:
-                action_text = str(payload["action"]).strip().upper()
-                if action_text in {action.value for action in ALL_ACTIONS}:
-                    action = Action(action_text)
-            return speech_act, message, action, reason, reply_to_message_id, addressed_to, requires_response
-        except (TypeError, ValueError):
-            pass
-    return None, text[:160], None, "", None, None, False
+    if payload is None or not _is_valid_discussion_payload(payload):
+        return None, text[:160], None, "", None, None, False
+
+    speech_act = _normalize_speech_act(payload["speech_act"])
+    message = str(payload["message"]).strip()
+    reason = str(payload["reason"]).strip()
+    action = Action(str(payload["action"]).strip().upper())
+    reply_to_message_id = _coerce_str_or_none(payload["reply_to_message_id"])
+    addressed_to = _coerce_str_or_none(payload["addressed_to"])
+    requires_response = speech_act in QUESTION_SPEECH_ACTS
+    return speech_act, message, action, reason, reply_to_message_id, addressed_to, requires_response
 
 
 def format_persona(agent_name: str, persona: str, persona_params: dict[str, object] | None) -> str:
@@ -1242,9 +1331,12 @@ def _discussion_json_contract(agent_name: str, open_question: dict[str, Any] | N
         "reason": "確認したい理由",
         "addressed_to": other_agent,
         "reply_to_message_id": None,
+        "requested_fields": ["oxygen"],
+        "reask_reason": "",
     }
     return (
         f"{required_keys}\n"
+        f"質問時の任意キー: requested_fields(質問するstate field名のリスト), reask_reason(既に閉じた質問を再質問する場合の新しい根拠)\n"
         f"通常発言JSON例:\n{json.dumps(statement_example, ensure_ascii=False, separators=(',', ':'))}\n"
         f"質問JSON例:\n{json.dumps(question_example, ensure_ascii=False, separators=(',', ':'))}"
     )
@@ -1364,7 +1456,8 @@ def discussion_prompt(
         f"HIVC-D条件で自分の事前V測定を明示共有する場合だけ share_v_before=true を追加できます。\n"
         f'v_proposal={{"proposal_id":"一意ID","ordered_criteria":{criteria_example},"scope":"turn"}}\n'
         f'v_star_response={{"response":"accept|reject|counter","proposal_id":"対象ID"}}。対象IDなしの応答は無効です。\n'
-        f"counterの場合は v_star_response.counter_proposal に proposal_id、ordered_criteria({criteria_example})、scope、任意のweightsを含む完全な代替案を必ず入れてください。"
+        f"自分が提示した v_proposal を受諾する場合、同じ JSON に v_star_response={{\"response\":\"accept\",\"proposal_id\":\"<v_proposal.proposal_id>\"}} を必ず含めてください。"
+        f"counterの場合は v_star_response.counter_proposal に proposal_id、ordered_criteria({criteria_example})、scope、任意のweightsを含む完全な代替案を入れてください。"
         if condition in {"hivc_d", "hivc_d_prescribed_v1"}
         else ""
     )
@@ -1513,7 +1606,7 @@ criteria: {criteria_json}
 {_v_state_block(v_state)}
 
 必ず次のJSONだけを返してください。説明文やMarkdownは不要です。
-{{"v_proposal":{{"proposal_id":"{agent_name}-turn{{state.turn}}-required","ordered_criteria":{criteria_json},"weights":{weights_json},"scope":"turn"}},"action":"A","reason":"短い理由"}}
+{{"v_proposal":{{"proposal_id":"{agent_name}-turn{{state.turn}}-required","ordered_criteria":{criteria_json},"weights":{weights_json},"scope":"turn"}},"v_star_response":{{"response":"accept","proposal_id":"{agent_name}-turn{{state.turn}}-required"}},"action":"A","reason":"短い理由"}}
 """
 
 
@@ -1536,6 +1629,7 @@ def v_proposal_response_prompt(
 
 相手から V* 提案が出ました。あなたの観測・役割から判断し、accept / reject / counter のいずれかを返してください。
 counter の場合は完全な代替案を v_star_response.counter_proposal に入れてください。
+counter を出す場合、自分のcounter提案にも明示的に同意するには v_star_response.self_accept を true に設定してください。これにより counter提案者自身の同意も記録されます。
 
 【VALUE_CRITERIA_SCHEMA id={DEFAULT_VALUE_CRITERIA_SCHEMA.id}】
 version: {DEFAULT_VALUE_CRITERIA_SCHEMA.version}
@@ -1567,7 +1661,7 @@ criteria: {criteria_json}
 {_v_state_block(v_state)}
 
 必ず次のJSONだけを返してください。説明文やMarkdownは不要です。
-{{"v_star_response":{{"response":"accept|reject|counter","proposal_id":"{proposal.get('proposal_id', '')}","counter_proposal":{{"proposal_id":"{agent_name}-counter-turn{{state.turn}}","ordered_criteria":{criteria_json},"scope":"turn"}}}}}}
+{{"v_star_response":{{"response":"accept|reject|counter","proposal_id":"{proposal.get('proposal_id', '')}","counter_proposal":{{"proposal_id":"{agent_name}-counter-turn{{state.turn}}","ordered_criteria":{criteria_json},"scope":"turn"}},"self_accept":false}}}}
 """
 
 
@@ -1666,7 +1760,8 @@ def get_discussion_message(
             "invalid_discussion_output": True,
         }
     speech_act, message, action, reason, reply_to_message_id, addressed_to, requires_response = extract_json_discussion(raw)
-    # 契約違反: speech_act が無効、または message が空、または JSON のみでない出力
+    # 契約違反: 必須キー欠落、型不一致、無効なspeech_act/action、空のmessage/reason、
+    # 質問でないのにaddressed_toが設定されている、質問でaddressed_toが欠落 等。
     if speech_act is None or not message:
         return {
             "speech_act": None,
@@ -1678,9 +1773,17 @@ def get_discussion_message(
             "requires_response": False,
             "raw": raw,
             "thinking": thinking,
-            "raw_payload": None,
+            "raw_payload": raw_payload,
             "invalid_discussion_output": True,
         }
+    # 質問の追加メタデータ: requested_fields と reask_reason
+    requested_fields: list[str] = []
+    reask_reason = ""
+    if requires_response and isinstance(raw_payload, dict):
+        requested_fields = _normalize_requested_fields(raw_payload.get("requested_fields"))
+        raw_reask = raw_payload.get("reask_reason")
+        if isinstance(raw_reask, str):
+            reask_reason = raw_reask.strip()
     return {
         "speech_act": speech_act,
         "message": message,
@@ -1693,6 +1796,8 @@ def get_discussion_message(
         "thinking": thinking,
         "raw_payload": raw_payload,
         "invalid_discussion_output": False,
+        "requested_fields": requested_fields,
+        "reask_reason": reask_reason,
     }
 
 
@@ -1775,6 +1880,14 @@ def run_one_game(
                 return role
         return _resolved_role_from_params(persona_params.get(agent))
 
+    def agent_observation_scope(agent: str) -> set[str]:
+        """agentの observation_scope を小文字セットで返す。未定義の場合は空集合。"""
+        role = resolved_role_for(agent)
+        role_mapping = _role_body(role)
+        if role_mapping is None:
+            return set()
+        return {str(item).strip().lower() for item in role_mapping.get("observation_scope", [])}
+
     while not state.done:
         q_values = estimate_q_values(state, n_rollouts=evaluator_rollouts, seed=seed + state.turn * 1000)
         optimal = best_action(q_values)
@@ -1832,11 +1945,17 @@ def run_one_game(
             turn_v_alignment_required, turn_v_alignment_requirement_reasons = False, []
 
         # §6.2.2: reserve discussion budget for mandatory V negotiation in hivc_d.
-        # proposal, opponent accept|reject|counter, and counter-response may be needed.
+        # counter経路は自動acceptを廃止したため、明示的合意に到達するには最大4発話が必要:
+        #   1. alpha: proposal + self-accept
+        #   2. beta:  counter
+        #   3. alpha: counter を accept
+        #   4. beta:  自分の counter を accept
+        # counter出力で counter_proposal と同時に self-accept を表現できるスキーマも許容するが、
+        # モデルが同時表現しなかった場合の安全側として4発話を予約する。
         reserved_v_messages = 0
         reserved_v_tokens = 0
         if enable_v_flow and condition == "hivc_d" and turn_v_alignment_required:
-            reserved_v_messages = 3
+            reserved_v_messages = 4
             reserved_v_tokens = reserved_v_messages * max_new_tokens
 
         # 少なくとも各エージェント1回ずつ発言できるよう実効値を確保
@@ -1880,14 +1999,19 @@ def run_one_game(
         # 質問/応答閉包用の状態
         next_message_id = 1
         open_questions: list[dict[str, Any]] = []
+        closed_questions: list[dict[str, Any]] = []
         forced_decision_with_open_question = False
         forced_decision_reason = ""
         question_response_latencies: list[int] = []
         question_count = 0
         answered_question_count = 0
         unanswerable_question_count = 0
+        self_observable_question_count = 0
         duplicate_question_count = 0
         invalid_discussion_output_count = 0
+        invalid_discussion_outputs: list[dict[str, Any]] = []
+        discussion_retry_count = 0
+        max_discussion_retries = int(kwargs.get("max_discussion_retries", 1))
         consecutive_duplicate_count = 0
         max_consecutive_duplicate_questions_recorded = 0
         last_duplicate_signature: tuple[str, str, str] | None = None
@@ -1901,6 +2025,7 @@ def run_one_game(
         v_star_id = persistent_v_star_id if inherited_game_v else ""
         v_star: dict[str, Any] | None = persistent_v_star
         v_star_failure_reason = "" if inherited_game_v else ("missing_v_proposal" if enable_v_flow else "not_recorded")
+        v_star_unresolved_reason = v_star_failure_reason
         v_proposal_required_prompt_issued = False
         missing_v_proposal_after_required_prompt = False
         v_negotiation_messages_used = 0
@@ -2001,38 +2126,55 @@ def run_one_game(
                     role=resolved_role_for(speaker),
                 )
 
-                response = get_discussion_message(
-                    model,
-                    tokenizer,
-                    prompt,
-                    max_new_tokens,
-                    fallback_action=fallback,
-                    enable_thinking=enable_thinking,
-                    thinking_budget=thinking_budget,
-                )
-
-                raw = response["raw"]
+                # §6.2: invalid JSON出力に対する修復リトライ。
+                # 同一agentへ修復プロンプトを再送し、retry上限後にinvalidとして確定する。
+                # 各attemptの生成tokenをその場で予算へ加算し、実際の推論負荷と記録値を一致させる。
+                response: dict[str, Any] = {}
+                raw = ""
                 token_count = 0
-                if tokenizer is not None:
-                    token_count = len(tokenizer.encode(raw, add_special_tokens=False))
+                for attempt in range(max_discussion_retries + 1):
+                    current_prompt = prompt
+                    if attempt > 0:
+                        repair_prefix = (
+                            "【REPAIR_REQUEST id=discussion-repair】\n"
+                            "直前の出力はJSON契約を満たしていません。"
+                            "必須キー(speech_act, message, action, reason, addressed_to, reply_to_message_id)"
+                            "をすべて含め、説明文やMarkdownなしでJSONのみ返してください。\n"
+                            f"直前の出力(先頭): {raw[:200]}\n\n"
+                        )
+                        current_prompt = repair_prefix + prompt
+                    response = get_discussion_message(
+                        model,
+                        tokenizer,
+                        current_prompt,
+                        max_new_tokens,
+                        fallback_action=fallback,
+                        enable_thinking=enable_thinking,
+                        thinking_budget=thinking_budget,
+                    )
+                    raw = response["raw"]
+                    attempt_token_count = 0
+                    if tokenizer is not None:
+                        attempt_token_count = len(tokenizer.encode(raw, add_special_tokens=False))
+                    token_count += attempt_token_count
+                    if not response.get("invalid_discussion_output"):
+                        break
+                    if attempt < max_discussion_retries:
+                        discussion_retry_count += 1
 
-                # JSON契約違反・壊れたJSON断片は有効発話として扱わない
+                # JSON契約違反・壊れたJSON断片は有効発話として扱わない。
+                # 監査用の別経路へ保存し、有効トランスクリプトには加えない。
+                # リトライ上限後もinvalidの場合はここで確定する。
                 if response.get("invalid_discussion_output"):
                     invalid_discussion_output_count += 1
-                    transcript.append(
+                    invalid_discussion_outputs.append(
                         {
-                            "speaker": speaker,
-                            "speech_act": None,
-                            "message": "",
-                            "action": "",
-                            "reason": "",
                             "message_id": str(next_message_id),
-                            "addressed_to": None,
-                            "requires_response": False,
-                            "reply_to_message_id": None,
-                            "invalid_discussion_output": True,
+                            "speaker": speaker,
                             "raw": raw,
+                            "raw_payload": response.get("raw_payload"),
                             "thinking": response["thinking"],
+                            "retry_attempts": max_discussion_retries,
                         }
                     )
                     next_message_id += 1
@@ -2046,13 +2188,23 @@ def run_one_game(
                 # information_request / question_objection / question は内部表現 question として扱う
                 is_question = response["requires_response"]
                 addressed_to = response["addressed_to"]
-                if is_question and addressed_to != other_speaker:
-                    addressed_to = other_speaker
                 reply_to_message_id = response["reply_to_message_id"]
+                requested_fields = response.get("requested_fields", [])
+                reask_reason = response.get("reask_reason", "")
 
-                # 質問の重複検出: 同一speakerが同一signatureのopen questionを再送したら、
-                # 予算を消費せず宛先エージェントの回答ターンへ切り替える
+                # §6.6.3: 質問の重複検出をscope判定の前に行う。
+                # 同一speakerが同一signatureのopen/closed questionを再送したら、
+                # scope判定に入る前にduplicateとして処理する。
+                # closed questionの再質問は reask_reason がある場合のみ許可する。
+                # §6.6.4: question_count はJSON契約を満たした全質問試行を含む分母とする。
+                # unanswerable/self_observable/duplicate いずれも question_count に含める。
                 if is_question:
+                    question_count += 1
+                    # addressed_to の正規化を先に行う（重複判定に必要）
+                    if addressed_to != other_speaker and addressed_to != speaker:
+                        addressed_to = other_speaker
+                    if not addressed_to or addressed_to == speaker:
+                        addressed_to = other_speaker
                     signature = _question_signature(
                         {
                             "speaker": speaker,
@@ -2060,12 +2212,20 @@ def run_one_game(
                             "action": response["action"].value if response["action"] else "",
                             "reason": response["reason"],
                             "message": response["message"],
+                            "requested_fields": requested_fields,
                         }
                     )
-                    if any(
+                    # open question の重複検出
+                    open_duplicate = any(
                         _question_signature(q) == signature and q["speaker"] == speaker
                         for q in open_questions
-                    ):
+                    )
+                    # closed question の再質問検出（reask_reason があれば許可）
+                    closed_duplicate = any(
+                        _question_signature(cq) == signature and cq["speaker"] == speaker
+                        for cq in closed_questions
+                    ) and not reask_reason
+                    if open_duplicate or closed_duplicate:
                         duplicate_question_count += 1
                         consecutive_duplicate_count += 1
                         if consecutive_duplicate_count > max_consecutive_duplicate_questions_recorded:
@@ -2083,6 +2243,8 @@ def run_one_game(
                                 "requires_response": True,
                                 "reply_to_message_id": None,
                                 "duplicate_question": True,
+                                "requested_fields": requested_fields,
+                                "reask_reason": reask_reason,
                                 "raw": raw,
                                 "thinking": response["thinking"],
                             }
@@ -2092,6 +2254,153 @@ def run_one_game(
                         continue
                     consecutive_duplicate_count = 0
                     last_duplicate_signature = None
+
+                # §6.6.1: observation_scope に基づく宛先選択と回答不能判定。
+                # requested_fields が明示されている場合、各fieldを観測できるagentを判定し:
+                # - 質問者自身だけが観測可能なfieldのみなら self_observable_question として閉じる
+                # - 全fieldを両者とも観測できない場合は unanswerable_question として閉じる
+                # - 一部fieldだけ観測不能な場合は unanswerable_partial_fields として明示
+                # - 相手が観測できるfieldがあれば、そのagentへルーティング
+                unanswerable_by_scope = False
+                self_observable_by_scope = False
+                unanswerable_partial_fields: list[str] = []
+                if is_question and requested_fields:
+                    alpha_scope = agent_observation_scope("alpha")
+                    beta_scope = agent_observation_scope("beta")
+                    speaker_scope = agent_observation_scope(speaker)
+                    other = "beta" if speaker == "alpha" else "alpha"
+                    other_scope = agent_observation_scope(other)
+                    neither_observes_fields: list[str] = []
+                    only_speaker_fields: list[str] = []
+                    only_other_fields: list[str] = []
+                    both_observe_fields: list[str] = []
+                    for field in requested_fields:
+                        in_speaker = field in speaker_scope
+                        in_other = field in other_scope
+                        if not in_speaker and not in_other:
+                            neither_observes_fields.append(field)
+                        elif in_speaker and not in_other:
+                            only_speaker_fields.append(field)
+                        elif in_other and not in_speaker:
+                            only_other_fields.append(field)
+                        else:
+                            both_observe_fields.append(field)
+                    # 全fieldを両者とも観測できない場合は回答不能
+                    # both_observe_fields がある場合は回答可能なので unanswerable にしない
+                    if neither_observes_fields and not only_speaker_fields and not only_other_fields and not both_observe_fields:
+                        unanswerable_by_scope = True
+                    # 質問者自身だけが観測可能なfieldのみで、相手が観測できない場合は自己観測可能質問
+                    # 相手に聞く必要がないので self_observable_question として閉じる
+                    if not unanswerable_by_scope and only_speaker_fields and not only_other_fields and not both_observe_fields:
+                        # 全fieldが質問者自身のみ観測可能、または質問者＋両者観測不能
+                        # いずれにせよ相手は観測できないので自己観測可能として閉じる
+                        self_observable_by_scope = True
+                    # 一部fieldだけ観測不能な場合は明示的に記録
+                    if neither_observes_fields and (only_speaker_fields or only_other_fields or both_observe_fields):
+                        unanswerable_partial_fields = neither_observes_fields
+                    # 宛先選択: 相手が観測できるfieldがあればそのagentへ優先ルーティング
+                    # 現在のaddressed_toが観測できず、もう一方が観測できる場合は切り替える
+                    if not unanswerable_by_scope and not self_observable_by_scope:
+                        # 相手に観測させたいfield（質問者自身が観測できないfield）
+                        fields_for_other = [f for f in requested_fields if f not in speaker_scope]
+                        if fields_for_other:
+                            current_can_observe = all(f in agent_observation_scope(addressed_to) for f in fields_for_other) if addressed_to else False
+                            other_can_observe = all(f in other_scope for f in fields_for_other)
+                            if not current_can_observe and other_can_observe:
+                                addressed_to = other
+
+                # 質問の宛先は従来通りもう一方のagentへ正規化する。
+                # requested_fields によるscopeルーティングが有効な場合は上記で切り替え済み。
+                # それ以外の場合（requested_fields なし、またはscope判定で切り替えなし）は
+                # addressed_to が未設定・自分自身・無効な値の場合はもう一方へ正規化する。
+                scope_routed = (
+                    is_question
+                    and bool(requested_fields)
+                    and not unanswerable_by_scope
+                    and not self_observable_by_scope
+                    and addressed_to in ("alpha", "beta")
+                    and addressed_to != speaker
+                )
+                if is_question and not scope_routed and addressed_to != other_speaker:
+                    addressed_to = other_speaker
+
+                if unanswerable_by_scope:
+                    this_message_id = str(next_message_id)
+                    transcript.append(
+                        {
+                            "speaker": speaker,
+                            "speech_act": speech_act.value if speech_act else None,
+                            "message": response["message"],
+                            "action": response["action"].value if response["action"] else "",
+                            "reason": response["reason"],
+                            "message_id": this_message_id,
+                            "addressed_to": addressed_to,
+                            "requires_response": False,
+                            "reply_to_message_id": None,
+                            "raw": raw,
+                            "thinking": response["thinking"],
+                            "requested_fields": requested_fields,
+                            "closed_as_unanswerable": True,
+                            "unanswerable_reason": "neither_agent_observes_requested_fields",
+                        }
+                    )
+                    next_message_id += 1
+                    total_free_messages += 1
+                    messages_this_opportunity += 1
+                    token_budget_used += token_count
+                    opportunity_token_used += token_count
+                    unanswerable_question_count += 1
+                    # §6.6.3: scope回答不能質問を closed_questions へ保存し、
+                    # reask_reason なしの再送を抑止する
+                    closed_questions.append({
+                        "message_id": this_message_id,
+                        "speaker": speaker,
+                        "addressed_to": addressed_to,
+                        "message": response["message"],
+                        "reason": response["reason"],
+                        "action": response["action"].value if response["action"] else "",
+                        "requested_fields": requested_fields,
+                    })
+                    continue
+
+                if self_observable_by_scope:
+                    this_message_id = str(next_message_id)
+                    transcript.append(
+                        {
+                            "speaker": speaker,
+                            "speech_act": speech_act.value if speech_act else None,
+                            "message": response["message"],
+                            "action": response["action"].value if response["action"] else "",
+                            "reason": response["reason"],
+                            "message_id": this_message_id,
+                            "addressed_to": addressed_to,
+                            "requires_response": False,
+                            "reply_to_message_id": None,
+                            "raw": raw,
+                            "thinking": response["thinking"],
+                            "requested_fields": requested_fields,
+                            "closed_as_self_observable": True,
+                            "self_observable_reason": "only_speaker_observes_requested_fields",
+                        }
+                    )
+                    next_message_id += 1
+                    total_free_messages += 1
+                    messages_this_opportunity += 1
+                    token_budget_used += token_count
+                    opportunity_token_used += token_count
+                    self_observable_question_count += 1
+                    # §6.6.3: 自己観測可能質問も closed_questions へ保存し、
+                    # reask_reason なしの再送を抑止する
+                    closed_questions.append({
+                        "message_id": this_message_id,
+                        "speaker": speaker,
+                        "addressed_to": addressed_to,
+                        "message": response["message"],
+                        "reason": response["reason"],
+                        "action": response["action"].value if response["action"] else "",
+                        "requested_fields": requested_fields,
+                    })
+                    continue
                 else:
                     consecutive_duplicate_count = 0
                     last_duplicate_signature = None
@@ -2170,23 +2479,28 @@ def run_one_game(
                 proposal, v_response = parse_v_negotiation(
                     response.get("raw_payload"), speaker, this_message_id
                 )
-                transcript.append(
-                    {
-                        "speaker": speaker,
-                        "speech_act": speech_act.value if speech_act else None,
-                        "message": response["message"],
-                        "action": response["action"].value if response["action"] else "",
-                        "reason": response["reason"],
-                        "message_id": this_message_id,
-                        "addressed_to": addressed_to,
-                        "requires_response": response["requires_response"],
-                        "reply_to_message_id": reply_to_message_id,
-                        "raw": raw,
-                        "thinking": response["thinking"],
-                        "v_proposal": proposal,
-                        "v_star_response": v_response,
-                    }
-                )
+                transcript_entry: dict[str, Any] = {
+                    "speaker": speaker,
+                    "speech_act": speech_act.value if speech_act else None,
+                    "message": response["message"],
+                    "action": response["action"].value if response["action"] else "",
+                    "reason": response["reason"],
+                    "message_id": this_message_id,
+                    "addressed_to": addressed_to,
+                    "requires_response": response["requires_response"],
+                    "reply_to_message_id": reply_to_message_id,
+                    "raw": raw,
+                    "thinking": response["thinking"],
+                    "v_proposal": proposal,
+                    "v_star_response": v_response,
+                }
+                if is_question:
+                    transcript_entry["requested_fields"] = requested_fields
+                    if reask_reason:
+                        transcript_entry["reask_reason"] = reask_reason
+                    if unanswerable_partial_fields:
+                        transcript_entry["unanswerable_partial_fields"] = unanswerable_partial_fields
+                transcript.append(transcript_entry)
                 raw_payload = response.get("raw_payload")
                 if (
                     enable_v_flow
@@ -2203,25 +2517,33 @@ def run_one_game(
                 if proposal is not None:
                     proposal = {**proposal, "speaker": speaker, "message_id": this_message_id}
                     v_proposals.append(proposal)
-                    # 提案者は自分の提案を受諾扱いとする
-                    v_responses[speaker].append({
-                        "response": "accept",
-                        "proposal_id": proposal["proposal_id"],
-                        "message_index": int(this_message_id) if str(this_message_id).isdigit() else 0,
-                    })
+                    # 提案を出しただけでは受諾扱いにしない。自分の提案を受諾するには
+                    # 同じ JSON に v_star_response: accept を含めるか、後続の V 応答で明示する。
                 if v_response is not None:
                     v_responses[speaker].append(v_response)
+                    # counter提案者は自分のcounterを自動受諾扱いにしない。
+                    # 両agentが同一提案を明示的にacceptすることがV*受諾の要件であり、
+                    # counter提案者も後続応答で明示的にacceptする必要がある。
+                    # ただし counter出力で self_accept=true が同時表現された場合は、
+                    # そのcounter提案への明示的acceptとして別途記録する。
                     if v_response.get("response") == "counter" and isinstance(v_response.get("counter_proposal"), dict):
                         counter = {**v_response["counter_proposal"], "speaker": speaker, "message_id": this_message_id}
                         v_proposals.append(counter)
-                        # counter提案者は自分のcounterを受諾扱いとする
-                        v_responses[speaker].append({
-                            "response": "accept",
-                            "proposal_id": counter["proposal_id"],
-                            "message_index": int(this_message_id) if str(this_message_id).isdigit() else 0,
-                        })
+                        self_accept_id = v_response.get("self_accept_for_counter_id")
+                        if self_accept_id:
+                            v_responses[speaker].append({
+                                "response": "accept",
+                                "proposal_id": self_accept_id,
+                                "message_index": int(this_message_id) if str(this_message_id).isdigit() else 0,
+                                "source": "counter_self_accept",
+                            })
                 if enable_v_flow and condition != "hivc_d_prescribed_v1" and (v_proposals or any(v_responses.values())):
-                    v_star_status, v_star_id, v_star, v_star_failure_reason = resolve_v_star(v_proposals, v_responses)
+                    v_star_status, v_star_id, v_star, reason = resolve_v_star(v_proposals, v_responses)
+                    if v_star_status == "unresolved" and reason:
+                        v_star_unresolved_reason = reason
+                        v_star_failure_reason = reason
+                    else:
+                        v_star_failure_reason = ""
                     if v_star_status == "accepted" and v_star and v_star.get("scope") == "game":
                         persistent_v_star = v_star
                         persistent_v_star_id = v_star_id
@@ -2230,7 +2552,7 @@ def run_one_game(
                 messages_this_opportunity += 1
 
                 if is_question:
-                    question_count += 1
+                    # question_count は重複検出ブロックで既に加算済み
                     open_questions.append(
                         {
                             "message_id": this_message_id,
@@ -2240,6 +2562,7 @@ def run_one_game(
                             "timestamp": total_free_messages - 1,
                             "reason": response["reason"],
                             "action": response["action"].value if response["action"] else "",
+                            "requested_fields": requested_fields,
                         }
                     )
                 else:
@@ -2268,6 +2591,9 @@ def run_one_game(
                                 transcript[-1]["closed_as_unanswerable"] = True
                             else:
                                 answered_question_count += 1
+                            # §6.6.3: 回答済み質問を closed_questions へ移動し、
+                            # 同一signatureの再質問を reask_reason なしで抑止する
+                            closed_questions.append(target_q)
                             open_questions = [q for q in open_questions if q["message_id"] != answered_id]
                         else:
                             # 質問の宛先ではないエージェントや存在しないIDを参照した無効な回答
@@ -2365,7 +2691,7 @@ def run_one_game(
                     msg_id = str(next_message_id)
                     payload = _extract_json_object(raw)
                     if kind == "proposal":
-                        proposal, _ = parse_v_negotiation(payload, agent, msg_id)
+                        proposal, self_response = parse_v_negotiation(payload, agent, msg_id)
                         transcript.append(
                             {
                                 "speaker": agent,
@@ -2380,19 +2706,21 @@ def run_one_game(
                                 "raw": raw,
                                 "thinking": "",
                                 "v_proposal": proposal,
+                                "v_star_response": self_response,
                             }
                         )
                         next_message_id += 1
                         if proposal is not None:
                             proposal = {**proposal, "speaker": agent, "message_id": msg_id}
                             v_proposals.append(proposal)
-                            v_responses[agent].append({
-                                "response": "accept",
-                                "proposal_id": proposal["proposal_id"],
-                                "message_index": int(msg_id) if str(msg_id).isdigit() else 0,
-                            })
+                            # v_proposal_required プロンプトでの提案も、明示的な v_star_response: accept
+                            # が同時に返されない限り、自動的には受諾扱いにしない。
+                            # プロンプトが self-accept を同時要求するため、同じJSON内の
+                            # v_star_response を v_responses へ記録する。
+                            if self_response is not None:
+                                v_responses[agent].append(self_response)
                             if v_protocol_state != "V_RESPOND":
-                                v_protocol_transition_history.append({"from": v_protocol_state, "to": "V_RESPOND", "reason": "v_proposal_required_prompt_accepted"})
+                                v_protocol_transition_history.append({"from": v_protocol_state, "to": "V_RESPOND", "reason": "v_proposal_required_prompt_submitted"})
                                 v_protocol_state = "V_RESPOND"
                         else:
                             if v_protocol_state not in {"V_PROPOSE", "V_RESPOND"}:
@@ -2419,20 +2747,33 @@ def run_one_game(
                         next_message_id += 1
                         if v_response is not None:
                             v_responses[agent].append(v_response)
+                            # counter提案者は自分のcounterを自動受諾扱いにしない。
+                            # 両agentが同一提案を明示的にacceptすることがV*受諾の要件であり、
+                            # counter提案者も後続応答で明示的にacceptする必要がある。
+                            # ただし counter出力で self_accept=true が同時表現された場合は、
+                            # そのcounter提案への明示的acceptとして別途記録する。
                             if (
                                 v_response.get("response") == "counter"
                                 and isinstance(v_response.get("counter_proposal"), dict)
                             ):
                                 counter = {**v_response["counter_proposal"], "speaker": agent, "message_id": msg_id}
                                 v_proposals.append(counter)
-                                v_responses[agent].append({
-                                    "response": "accept",
-                                    "proposal_id": counter["proposal_id"],
-                                    "message_index": int(msg_id) if str(msg_id).isdigit() else 0,
-                                })
+                                self_accept_id = v_response.get("self_accept_for_counter_id")
+                                if self_accept_id:
+                                    v_responses[agent].append({
+                                        "response": "accept",
+                                        "proposal_id": self_accept_id,
+                                        "message_index": int(msg_id) if str(msg_id).isdigit() else 0,
+                                        "source": "counter_self_accept",
+                                    })
 
                     if enable_v_flow and condition != "hivc_d_prescribed_v1":
-                        v_star_status, v_star_id, v_star, v_star_failure_reason = resolve_v_star(v_proposals, v_responses)
+                        v_star_status, v_star_id, v_star, reason = resolve_v_star(v_proposals, v_responses)
+                        if v_star_status == "unresolved" and reason:
+                            v_star_unresolved_reason = reason
+                            v_star_failure_reason = reason
+                        else:
+                            v_star_failure_reason = ""
                         if v_star_status == "accepted" and v_star and v_star.get("scope") == "game":
                             persistent_v_star = v_star
                             persistent_v_star_id = v_star_id
@@ -2444,11 +2785,11 @@ def run_one_game(
 
                 if v_star_status != "accepted":
                     missing_v_proposal_after_required_prompt = not v_proposals
-                    if not v_star_failure_reason:
-                        if v_negotiation_messages_used >= max_v_attempts:
-                            v_star_failure_reason = "v_negotiation_budget_exhausted"
-                        else:
-                            v_star_failure_reason = "missing_matching_explicit_acceptance"
+                    if v_negotiation_messages_used >= max_v_attempts:
+                        v_star_unresolved_reason = v_star_failure_reason or v_star_unresolved_reason
+                        v_star_failure_reason = "v_negotiation_budget_exhausted"
+                    else:
+                        v_star_failure_reason = v_star_unresolved_reason or v_star_failure_reason or "missing_matching_explicit_acceptance"
                     v_protocol_transition_history.append({"from": v_protocol_state, "to": "A_CHECK", "reason": "v_negotiation_budget_exhausted"})
                     v_protocol_state = "A_CHECK"
                     if not forced_decision_reason:
@@ -2762,6 +3103,7 @@ def run_one_game(
             "v_star_scope": str(v_star.get("scope", "")) if v_star is not None else "",
             "v_star_status": v_star_status,
             "v_star_failure_reason": v_star_failure_reason,
+            "v_star_unresolved_reason": v_star_unresolved_reason if enable_v_flow else "",
             "alpha_v_star_response": _canonical_json(v_responses["alpha"]),
             "beta_v_star_response": _canonical_json(v_responses["beta"]),
             "alpha_v_after": _canonical_json(v_after["alpha"]) if v_after["alpha"] is not None else "",
@@ -2826,11 +3168,14 @@ def run_one_game(
             "unanswered_question_count": unanswered_question_count,
             "silent_unanswered_question_count": silent_unanswered_question_count,
             "unanswerable_question_count": unanswerable_question_count,
+            "self_observable_question_count": self_observable_question_count,
             "question_count": question_count,
             "answered_question_count": answered_question_count,
             "duplicate_question_count": duplicate_question_count,
             "max_consecutive_duplicate_questions": max_consecutive_duplicate_questions_recorded,
             "invalid_discussion_output_count": invalid_discussion_output_count,
+            "invalid_discussion_outputs": _canonical_json(invalid_discussion_outputs),
+            "discussion_retry_count": discussion_retry_count,
             "question_response_latency": question_response_latency,
             "forced_decision_with_open_question": forced_decision_with_open_question,
             "forced_decision_reason": forced_decision_reason,
