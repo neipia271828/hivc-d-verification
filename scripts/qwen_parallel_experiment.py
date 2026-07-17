@@ -561,12 +561,28 @@ def _merge_value_manifests(shards: list[Shard], cfg: dict[str, Any]) -> dict[str
             }
         )
     merged["frameworks"] = frameworks
-    merged["game_profile_assignments"] = sorted(assignments, key=lambda item: (item.get("seed", -1), json.dumps(item, sort_keys=True)))
+    merged["game_profile_assignments"] = sorted(assignments, key=lambda item: (item.get("seed", -1), item.get("condition", ""), json.dumps(item, sort_keys=True)))
     merged["seed_range"] = {"start": cfg["seed"], "count": cfg["games"]}
     merged["framework_ids"] = list(cfg["conditions"])
     merged["runner_version"] = "qwen_parallel_experiment-merged-v2"
     merged["merged_at"] = _now_iso()
     merged["shard_sources"] = sources
+
+    # §9.2: 全 (seed, condition) の割当が欠落・重複なく揃っているか検査
+    expected_assignments = cfg["games"] * len(cfg["conditions"])
+    merged["expected_assignments"] = expected_assignments
+    merged["actual_assignments"] = len(assignments)
+    merged["assignment_completeness"] = len(assignments) == expected_assignments
+    if len(assignments) != expected_assignments:
+        # Build expected set for diagnostics
+        expected_keys = {
+            f"{seed}:{cond}"
+            for seed in range(cfg["seed"], cfg["seed"] + cfg["games"])
+            for cond in cfg["conditions"]
+        }
+        actual_keys = {f"{entry.get('seed')}:{entry.get('condition')}" for entry in assignments}
+        merged["missing_assignments"] = sorted(expected_keys - actual_keys)
+        merged["duplicate_or_extra_assignment_count"] = max(0, len(assignments) - len(actual_keys))
     return merged
 
 
@@ -1331,10 +1347,17 @@ def _merge_results(
 
     merged_value_manifest = _merge_value_manifests(shards, cfg) if all_completed else None
     if all_completed:
-        value_manifest_ok = merged_value_manifest is not None
+        base_ok = merged_value_manifest is not None
+        assignment_ok = merged_value_manifest.get("assignment_completeness") if merged_value_manifest else False
+        value_manifest_ok = base_ok and assignment_ok
         checks.append({"name": "value_manifests_mergeable", "passed": value_manifest_ok})
-        if not value_manifest_ok:
+        if not base_ok:
             logger.log("shard value_manifest.json の読込みまたは結合に失敗")
+        if not assignment_ok:
+            logger.log(
+                f"value_manifest 割当完全性エラー: expected={merged_value_manifest.get('expected_assignments')}, "
+                f"actual={merged_value_manifest.get('actual_assignments')}, missing={merged_value_manifest.get('missing_assignments', [])}"
+            )
     else:
         checks.append(
             {

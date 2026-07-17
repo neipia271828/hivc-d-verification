@@ -41,6 +41,8 @@ from typing import Iterable
 
 import numpy as np
 
+from profiles import DEFAULT_VALUE_CRITERIA_SCHEMA
+
 CONFLICT_THRESHOLD = 0.5
 
 
@@ -183,10 +185,23 @@ def _v_schema_complete(row: dict) -> bool | None:
         isinstance(v, str) and v not in ("", "not_recorded") for v in errors.values()
     ):
         return False
+    expected = set(DEFAULT_VALUE_CRITERIA_SCHEMA.criteria)
     alpha = _parse_json(row.get("alpha_v_before"), row.get("alpha_v_before"))
     beta = _parse_json(row.get("beta_v_before"), row.get("beta_v_before"))
+
     def valid(v: object) -> bool:
-        return isinstance(v, dict) and isinstance(v.get("weights"), dict) and isinstance(v.get("ordered_criteria"), (list, tuple))
+        if not isinstance(v, dict):
+            return False
+        weights = v.get("weights")
+        ordered = v.get("ordered_criteria")
+        if not isinstance(weights, dict) or not isinstance(ordered, (list, tuple)):
+            return False
+        if set(weights.keys()) != expected:
+            return False
+        if set(ordered) != expected or len(ordered) != len(expected):
+            return False
+        return True
+
     alpha_valid = valid(alpha)
     beta_valid = valid(beta)
     if alpha_valid or beta_valid:

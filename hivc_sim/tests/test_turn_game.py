@@ -733,8 +733,8 @@ def test_run_one_game_missing_reply_to_while_answer_required(monkeypatch) -> Non
     assert "missing_reply_to_message_id_while_answer_required" in first["forced_decision_reason"]
 
 
-def test_run_one_game_question_while_answer_required_forces_invalid(monkeypatch) -> None:
-    """未回答質問の宛先エージェントが回答せず新しい質問を返した場合は強制遷移する。"""
+def test_run_one_game_question_while_answer_required_retries(monkeypatch) -> None:
+    """未回答質問の宛先エージェントが回答せず新しい質問を返した場合、同じagentに再試行させる。"""
     import json
     from scripts.llm_turn_game_common import run_one_game
 
@@ -753,11 +753,19 @@ def test_run_one_game_question_while_answer_required_forces_invalid(monkeypatch)
                 '"reason":"質問","addressed_to":"beta","requires_response":true}',
             )
         # 2 beta は Q1 に回答せず alpha 宛の質問を返す（無効）
+        if call_count == 1:
+            call_count += 1
+            return (
+                "",
+                '{"speech_act":"question_objection","message":"Q2","action":"C",'
+                '"reason":"返質問","addressed_to":"alpha","requires_response":true}',
+            )
+        # 3 beta が Q1 に回答（再試行後）
         call_count += 1
         return (
             "",
-            '{"speech_act":"question_objection","message":"Q2","action":"C",'
-            '"reason":"返質問","addressed_to":"alpha","requires_response":true}',
+            '{"speech_act":"evidence","message":"A1","reply_to_message_id":"1",'
+            '"reason":"回答","addressed_to":"beta","requires_response":false}',
         )
 
     monkeypatch.setattr("scripts.llm_turn_game_common.run_prompt", fake_run_prompt)
@@ -774,7 +782,7 @@ def test_run_one_game_question_while_answer_required_forces_invalid(monkeypatch)
         persona_params=persona_params,
         role_keys=role_keys,
         max_new_tokens=96,
-        max_discussion_turns=2,
+        max_discussion_turns=3,
         discussion_token_budget=1024,
         evaluator_rollouts=4,
         scenario_id="comms_favored",
@@ -782,7 +790,8 @@ def test_run_one_game_question_while_answer_required_forces_invalid(monkeypatch)
     assert rows
     first = rows[0]
     transcript = json.loads(first["discussion_transcript"])
-    assert first["unanswered_question_count"] == 1
     assert transcript[1].get("invalid_response_while_answer_required") is True
-    assert first["forced_decision_with_open_question"] is True
-    assert "invalid_response_while_answer_required" in first["forced_decision_reason"]
+    assert first["forced_decision_with_open_question"] is False
+    assert "invalid_response_while_answer_required" not in first["forced_decision_reason"]
+    # Q1 は回答により閉じられている
+    assert first["unanswered_question_count"] == 0

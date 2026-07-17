@@ -485,3 +485,38 @@
   - 固定profileを含むseed・condition別manifest割当完全性
   - 会話契約指標、受入基準、Gate A〜Cの大規模GPU実験開始ゲート
 - 本更新は要件定義のみで、修正実装および追加GPU実験は実施していない
+
+## レビュー指摘7件の修正
+
+- `scripts/llm_turn_game_common.py`:
+  - V交渉ループを再構成し、提案者は自分の提案を自動受諾、相手には accept/reject/counter を要求
+  - HIVC-Dで `v_alignment_required=true` のターンは受諾済みV*ができるまでA_CHECK/FINAL_VOTEへ進まず、V予約予算（3発話）で再試行・counter応答に対応
+  - V予約予算を使い果たしても未解決の場合は `forced_decision_reason=v_negotiation_budget_exhausted` で状態遷移
+  - `_extract_json_object` を厳密化し、JSON以外の前後テキスト・Markdownフェンス・断片がある場合は契約違反として拒否
+  - `get_discussion_message` で `speech_act` 無効または `message` 空の出力を `invalid_discussion_output` として拒否し、`information_request` への補完を停止
+  - V測定（`v_before` / `v_after`）に `max_v_measurement_retries` による再試行を実装し、`v_measurement_retry_count` を記録
+  - 回答すべき未回答質問に新しい質問を返した場合は強制遷移せず、同じagentに再試行させる (`invalid_response_while_answer_required`)
+  - 観測不能を示す応答を `unanswerable_question` として閉じる簡易検出を追加
+  - 未回答質問が残ったまま強制遷移理由のない状態で決定した場合を `silent_unanswered_question_count` として記録
+  - CSV行に `unanswerable_question_count` と `silent_unanswered_question_count` を追加
+  - `hivc_d_prescribed_v1` のV*を共通Vオントロジー (`oxygen`, `power`, `hull_damage`, `flooding`, `communication`) に統一
+- `hivc_sim/turn_game_metrics.py`:
+  - `_v_schema_complete` で weights/ordered_criteria が共通Vオントロジーの5項目と完全一致することを検査
+  - `DEFAULT_VALUE_CRITERIA_SCHEMA` を `profiles.py` からインポート
+- `scripts/llm_turn_game_common.py` / `scripts/qwen_two_agent_experiment.py` / `scripts/qwen_parallel_worker.py`:
+  - `append_profile_assignment` を (seed, condition) 単位に変更し、`condition` フィールドを追加
+  - 同一seedのframework条件間では `role_value_assignment_id` を共有
+- `scripts/qwen_parallel_experiment.py`:
+  - `_merge_value_manifests` で `game_profile_assignments` の期待件数 `games × conditions` と実際件数を比較
+  - 欠落・重複がある場合は `assignment_completeness=false`、診断用 `missing_assignments` を記録
+  - `_merge_results` で `value_manifests_mergeable` チェックに assignment 完全性を含める
+- `configs/profiles_soft_value_swap.yaml` / `configs/profiles_soft_value_orthogonal.yaml`:
+  - Role×Value交換・直交のsmoke用割付けを新規作成
+- `hivc_sim/tests/test_turn_game.py`:
+  - 「回答すべき質問に再質問を返す」テストを、強制遷移から再試行後に正しく回答するケースへ更新
+- ローカル検証結果
+  - `uv run pytest hivc_sim/tests -q`: 133 passed
+  - 対象Pythonファイルの `py_compile`: 成功
+  - `git diff --check`: 成功
+  - GPU実験本体は実行していない
+  - pushは実行していない

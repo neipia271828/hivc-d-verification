@@ -273,10 +273,6 @@ def main() -> None:
                 persona_args.random_seed = cfg["random_seed"] if cfg["random_seed"] is not None else game_seed
                 personas, persona_params, role_keys = load_personas(persona_args)
                 print(f"[worker {output_dir.name}] random persona alpha={role_keys['alpha']} beta={role_keys['beta']}")
-            # 固定プロファイルでも seed ごとに明示的な割当レコードを生成する
-            append_profile_assignment(value_manifest, game_seed, personas, persona_params, role_keys)
-            write_value_manifest(value_manifest_path, value_manifest)
-
             for cond_index, condition in enumerate(seed_conditions):
                 if pause_file is not None and pause_file.exists():
                     print(f"[worker {output_dir.name}] pause requested after seed {game_seed} condition {condition}")
@@ -313,6 +309,8 @@ def main() -> None:
                     max_decision_opportunities=cfg["max_decision_opportunities"],
                     role_value_mode=cfg["role_value_mode"],
                 )
+                append_profile_assignment(value_manifest, game_seed, personas, persona_params, role_keys, condition=condition)
+                write_value_manifest(value_manifest_path, value_manifest)
                 condition_rows[condition].extend(game_rows)
 
         output_csvs: dict[str, Path] = {}

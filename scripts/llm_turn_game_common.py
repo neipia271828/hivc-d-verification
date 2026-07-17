@@ -396,10 +396,12 @@ def append_profile_assignment(
     personas: dict[str, str],
     persona_params: dict[str, dict[str, object] | None],
     role_keys: dict[str, str | None],
+    condition: str | None = None,
 ) -> None:
     """Record the exact per-game assignment as an authoritative snapshot.
 
-    固定プロファイルでもseedごとに明示的な割当レコードを生成する。
+    固定プロファイルでもseed・conditionごとに明示的な割当レコードを生成する。
+    同一seedのframework条件間ではrole_value_assignment_idを共有する。
     """
     agents: dict[str, Any] = {}
     for agent in ("alpha", "beta"):
@@ -414,11 +416,14 @@ def append_profile_assignment(
             "sha256": _profile_sha256(body),
         }
     assignment_id = _role_value_assignment_id(personas, persona_params, role_keys, seed)
-    manifest.setdefault("game_profile_assignments", []).append({
+    entry: dict[str, Any] = {
         "role_value_assignment_id": assignment_id,
         "seed": seed,
         "agents": agents,
-    })
+    }
+    if condition is not None:
+        entry["condition"] = condition
+    manifest.setdefault("game_profile_assignments", []).append(entry)
 
 
 def _normalize_v(
@@ -1008,15 +1013,41 @@ def _normalize_speech_act(value: Any) -> SpeechAct | None:
 
 
 def _extract_json_object(text: str) -> dict[str, Any] | None:
+    """Return the first JSON object only if it is the entire (stripped) text.
+
+    Any surrounding prose, markdown fences, or extra JSON fragments make the
+    output a contract violation rather than a valid message.
+    """
+    text = text.strip()
     decoder = json.JSONDecoder()
     for match in re.finditer(r"\{", text):
         try:
-            payload, _ = decoder.raw_decode(text[match.start():])
+            payload, end = decoder.raw_decode(text[match.start():])
         except json.JSONDecodeError:
             continue
         if isinstance(payload, dict):
-            return payload
+            start = match.start()
+            if text[:start].strip() == "" and text[start + end:].strip() == "":
+                return payload
+            # Found a valid JSON object but it is embedded in extra text.
+            return None
     return None
+
+
+def _is_unanswerable_response(response: dict[str, Any]) -> bool:
+    """Detect an explicit unanswerable marker in a reply.
+
+    Model may state it cannot observe the requested value using keywords such
+    as '不明' or '観測できない'. It may also explicitly set 'unanswerable': true
+    in the JSON payload.
+    """
+    raw_payload = response.get("raw_payload")
+    if isinstance(raw_payload, dict) and raw_payload.get("unanswerable") is True:
+        return True
+    message = str(response.get("message", "")).strip().lower()
+    reason = str(response.get("reason", "")).strip().lower()
+    indicators = ["不明", "観測できない", "unanswerable", "cannot observe", "not observable", "観測不能"]
+    return any(indicator in message or indicator in reason for indicator in indicators)
 
 
 def extract_json_action(response: str) -> tuple[Action | None, str, str, bool]:
@@ -1635,16 +1666,21 @@ def get_discussion_message(
             "invalid_discussion_output": True,
         }
     speech_act, message, action, reason, reply_to_message_id, addressed_to, requires_response = extract_json_discussion(raw)
-    if speech_act is None and action is None and not message:
-        # JSON 解析ができなかった場合のみフォールバック行動を使用する
-        if fallback_action is not None:
-            action = fallback_action
-            reason = "[fallback_action]"
-        speech_act = SpeechAct.INFORMATION_REQUEST
-    elif speech_act is None:
-        speech_act = SpeechAct.INFORMATION_REQUEST
-    if not message:
-        message = raw[:160].strip()
+    # 契約違反: speech_act が無効、または message が空、または JSON のみでない出力
+    if speech_act is None or not message:
+        return {
+            "speech_act": None,
+            "message": "",
+            "action": None,
+            "reason": "",
+            "reply_to_message_id": None,
+            "addressed_to": None,
+            "requires_response": False,
+            "raw": raw,
+            "thinking": thinking,
+            "raw_payload": None,
+            "invalid_discussion_output": True,
+        }
     return {
         "speech_act": speech_act,
         "message": message,
@@ -1753,31 +1789,39 @@ def run_one_game(
         measurement_call_count = 0
         measurement_token_count = 0
         measurement_retry_count = 0
+        max_v_measurement_retries = int(kwargs.get("max_v_measurement_retries", 2))
         if enable_v_flow:
             for agent in speakers:
-                _, raw_measurement = run_prompt(
-                    model,
-                    tokenizer,
-                    v_measurement_prompt(
-                        agent,
-                        state,
-                        phase="before",
-                        persona=personas[agent],
-                        persona_params=persona_params[agent],
-                        role=resolved_role_for(agent),
-                    ),
-                    max_new_tokens,
-                    enable_thinking=enable_thinking,
-                    thinking_budget=thinking_budget,
+                prompt = v_measurement_prompt(
+                    agent,
+                    state,
+                    phase="before",
+                    persona=personas[agent],
+                    persona_params=persona_params[agent],
+                    role=resolved_role_for(agent),
                 )
-                measurement_call_count += 1
-                if tokenizer is not None:
-                    measurement_token_count += len(tokenizer.encode(raw_measurement, add_special_tokens=False))
-                measured_v, measured_action, measured_reason, error = extract_json_v_measurement(raw_measurement)
+                measured_v: dict[str, Any] | None = None
+                measured_action: Action | None = None
+                measured_reason = ""
+                error = ""
+                raw_measurement = ""
+                for attempt in range(max_v_measurement_retries + 1):
+                    _, raw_measurement = run_prompt(
+                        model, tokenizer, prompt, max_new_tokens,
+                        enable_thinking=enable_thinking, thinking_budget=thinking_budget,
+                    )
+                    measurement_call_count += 1
+                    if tokenizer is not None:
+                        measurement_token_count += len(tokenizer.encode(raw_measurement, add_special_tokens=False))
+                    measured_v, measured_action, measured_reason, error = extract_json_v_measurement(raw_measurement)
+                    if not error:
+                        break
+                    if attempt < max_v_measurement_retries:
+                        measurement_retry_count += 1
                 v_before[agent] = measured_v
                 action_before[agent] = measured_action
                 reason_before[agent] = measured_reason
-                v_measurement_errors[f"{agent}_before"] = error
+                v_measurement_errors[f"{agent}_before"] = error or ("measurement_failed" if measured_v is None else "")
 
         # §6.2.1: v_alignment_required is determined from observed V and actions, not self-report.
         if enable_v_flow:
@@ -1787,11 +1831,12 @@ def run_one_game(
         else:
             turn_v_alignment_required, turn_v_alignment_requirement_reasons = False, []
 
-        # §6.2.2: reserve discussion budget for mandatory V proposal/response in hivc_d.
+        # §6.2.2: reserve discussion budget for mandatory V negotiation in hivc_d.
+        # proposal, opponent accept|reject|counter, and counter-response may be needed.
         reserved_v_messages = 0
         reserved_v_tokens = 0
         if enable_v_flow and condition == "hivc_d" and turn_v_alignment_required:
-            reserved_v_messages = 2
+            reserved_v_messages = 3
             reserved_v_tokens = reserved_v_messages * max_new_tokens
 
         # 少なくとも各エージェント1回ずつ発言できるよう実効値を確保
@@ -1840,6 +1885,7 @@ def run_one_game(
         question_response_latencies: list[int] = []
         question_count = 0
         answered_question_count = 0
+        unanswerable_question_count = 0
         duplicate_question_count = 0
         invalid_discussion_output_count = 0
         consecutive_duplicate_count = 0
@@ -1857,6 +1903,7 @@ def run_one_game(
         v_star_failure_reason = "" if inherited_game_v else ("missing_v_proposal" if enable_v_flow else "not_recorded")
         v_proposal_required_prompt_issued = False
         missing_v_proposal_after_required_prompt = False
+        v_negotiation_messages_used = 0
 
         # §6.2.3 V protocol state machine
         v_protocol_state = "I_SHARE"
@@ -1877,9 +1924,12 @@ def run_one_game(
 
         if enable_v_flow and condition == "hivc_d_prescribed_v1":
             v_star_id = f"seed{seed}-turn{state.turn}-prescribed-v1"
+            criteria = list(DEFAULT_VALUE_CRITERIA_SCHEMA.criteria)
+            weights = {"oxygen": 0.30, "power": 0.25, "hull_damage": 0.20, "flooding": 0.15, "communication": 0.10}
             v_star = {
                 "proposal_id": v_star_id,
-                "ordered_criteria": ["avoid_immediate_loss", "advance_win_condition", "preserve_next_turn_options"],
+                "ordered_criteria": criteria,
+                "weights": weights,
                 "scope": "turn",
                 "source": "external_prescription",
             }
@@ -2050,15 +2100,8 @@ def run_one_game(
                 token_budget_used += token_count
                 opportunity_token_used += token_count
 
-                # 回答すべき未回答質問があるのに質問を返した場合は無効
+                # 回答すべき未回答質問があるのに質問を返した場合は無効（質問を閉じず同じagentに再試行）
                 if is_question and question_to_answer is not None:
-                    forced_decision_with_open_question = True
-                    forced_decision_reason = (
-                        f"invalid_response_while_answer_required: {speaker} had question "
-                        f"from {question_to_answer['speaker']} (id={question_to_answer['message_id']}) "
-                        "but returned a question"
-                    )
-                    this_message_id = str(next_message_id)
                     transcript.append(
                         {
                             "speaker": speaker,
@@ -2066,11 +2109,15 @@ def run_one_game(
                             "message": response["message"],
                             "action": response["action"].value if response["action"] else "",
                             "reason": response["reason"],
-                            "message_id": this_message_id,
+                            "message_id": str(next_message_id),
                             "addressed_to": addressed_to,
                             "requires_response": False,
                             "reply_to_message_id": None,
                             "invalid_response_while_answer_required": True,
+                            "invalid_response_while_answer_required_reason": (
+                                f"{speaker} had question from {question_to_answer['speaker']} "
+                                f"(id={question_to_answer['message_id']}) but returned a question"
+                            ),
                             "raw": raw,
                             "thinking": response["thinking"],
                         }
@@ -2078,7 +2125,8 @@ def run_one_game(
                     next_message_id += 1
                     total_free_messages += 1
                     messages_this_opportunity += 1
-                    break
+                    next_speaker_override = speaker
+                    continue
 
                 # ターン全体の絶対上限で質問回答ができない場合は強制意思決定
                 if is_question and not can_ask_question:
@@ -2155,11 +2203,23 @@ def run_one_game(
                 if proposal is not None:
                     proposal = {**proposal, "speaker": speaker, "message_id": this_message_id}
                     v_proposals.append(proposal)
+                    # 提案者は自分の提案を受諾扱いとする
+                    v_responses[speaker].append({
+                        "response": "accept",
+                        "proposal_id": proposal["proposal_id"],
+                        "message_index": int(this_message_id) if str(this_message_id).isdigit() else 0,
+                    })
                 if v_response is not None:
                     v_responses[speaker].append(v_response)
                     if v_response.get("response") == "counter" and isinstance(v_response.get("counter_proposal"), dict):
                         counter = {**v_response["counter_proposal"], "speaker": speaker, "message_id": this_message_id}
                         v_proposals.append(counter)
+                        # counter提案者は自分のcounterを受諾扱いとする
+                        v_responses[speaker].append({
+                            "response": "accept",
+                            "proposal_id": counter["proposal_id"],
+                            "message_index": int(this_message_id) if str(this_message_id).isdigit() else 0,
+                        })
                 if enable_v_flow and condition != "hivc_d_prescribed_v1" and (v_proposals or any(v_responses.values())):
                     v_star_status, v_star_id, v_star, v_star_failure_reason = resolve_v_star(v_proposals, v_responses)
                     if v_star_status == "accepted" and v_star and v_star.get("scope") == "game":
@@ -2203,7 +2263,11 @@ def run_one_game(
                         if target_q is not None and target_q["addressed_to"] == speaker:
                             latency = (total_free_messages - 1) - target_q["timestamp"]
                             question_response_latencies.append(latency)
-                            answered_question_count += 1
+                            if _is_unanswerable_response(response):
+                                unanswerable_question_count += 1
+                                transcript[-1]["closed_as_unanswerable"] = True
+                            else:
+                                answered_question_count += 1
                             open_questions = [q for q in open_questions if q["message_id"] != answered_id]
                         else:
                             # 質問の宛先ではないエージェントや存在しないIDを参照した無効な回答
@@ -2228,125 +2292,168 @@ def run_one_game(
                     if not forced_decision_reason:
                         forced_decision_reason = "absolute_budget_limit_reached"
 
-            # §6.2.2: HIVC-Dで自由議論後も有効なV提案がない場合、v_proposal_requiredプロンプトを発行
-            if (
-                enable_v_flow
-                and condition == "hivc_d"
-                and turn_v_alignment_required
-                and not v_proposal_required_prompt_issued
-                and not v_proposals
-            ):
-                proposer = priority_agent(seed, state.turn)
-                if proposer not in speakers:
-                    proposer = speakers[0]
-                responder = "beta" if proposer == "alpha" else "alpha"
-                propose_prompt = v_proposal_required_prompt(
-                    proposer,
-                    personas[proposer],
-                    persona_params[proposer],
-                    state,
-                    condition,
-                    transcript,
-                    v_state=current_v_state(proposer),
-                    role=resolved_role_for(proposer),
-                )
-                _, raw_propose = run_prompt(
-                    model, tokenizer, propose_prompt, max_new_tokens,
-                    enable_thinking=enable_thinking, thinking_budget=thinking_budget,
-                )
-                if tokenizer is not None:
-                    token_budget_used += len(tokenizer.encode(raw_propose, add_special_tokens=False))
-                total_free_messages += 1
-                propose_payload = _extract_json_object(raw_propose)
-                propose_msg_id = str(next_message_id)
-                proposal, _ = parse_v_negotiation(propose_payload, proposer, propose_msg_id)
-                transcript.append(
-                    {
-                        "speaker": proposer,
-                        "speech_act": None,
-                        "message": "",
-                        "action": "",
-                        "reason": "",
-                        "message_id": propose_msg_id,
-                        "addressed_to": None,
-                        "requires_response": False,
-                        "reply_to_message_id": None,
-                        "raw": raw_propose,
-                        "thinking": "",
-                        "v_proposal": proposal,
-                    }
-                )
-                next_message_id += 1
-                if proposal is not None:
-                    proposal = {**proposal, "speaker": proposer, "message_id": propose_msg_id}
-                    v_proposals.append(proposal)
-                    v_protocol_transition_history.append({"from": v_protocol_state, "to": "V_RESPOND", "reason": "v_proposal_required_prompt_accepted"})
-                    v_protocol_state = "V_RESPOND"
-                    response_prompt = v_proposal_response_prompt(
-                        responder,
-                        personas[responder],
-                        persona_params[responder],
-                        state,
-                        condition,
-                        transcript,
-                        proposal,
-                        v_state=current_v_state(responder),
-                        role=resolved_role_for(responder),
-                    )
-                    _, raw_response = run_prompt(
-                        model, tokenizer, response_prompt, max_new_tokens,
+            # §6.2.2/6.2.3: mandatory V negotiation loop for hivc_d.
+            if enable_v_flow and condition == "hivc_d" and turn_v_alignment_required:
+                max_v_attempts = reserved_v_messages
+                while (
+                    v_negotiation_messages_used < max_v_attempts
+                    and v_star_status != "accepted"
+                ):
+                    v_negotiation_messages_used += 1
+                    v_proposal_required_prompt_issued = True
+
+                    current_proposal = v_proposals[-1] if v_proposals else None
+                    if current_proposal is None:
+                        # 自由議論で有効提案が出ていない場合、優先agentに提案を要求
+                        proposer = priority_agent(seed, state.turn)
+                        if proposer not in speakers:
+                            proposer = speakers[0]
+                        agent = proposer
+                        prompt = v_proposal_required_prompt(
+                            agent,
+                            personas[agent],
+                            persona_params[agent],
+                            state,
+                            condition,
+                            transcript,
+                            v_state=current_v_state(agent),
+                            role=resolved_role_for(agent),
+                        )
+                        kind = "proposal"
+                    else:
+                        # 最新提案に対してまだ受諾していないagentに応答を要求
+                        pid = current_proposal["proposal_id"]
+                        proposer = current_proposal.get("speaker")
+                        if proposer not in speakers:
+                            proposer = speakers[0]
+                        missing = []
+                        for a in speakers:
+                            accepted = any(
+                                r.get("proposal_id") == pid and r.get("response") == "accept"
+                                for r in v_responses.get(a, [])
+                            )
+                            if not accepted:
+                                missing.append(a)
+                        if not missing:
+                            # 全員受諾済みなら resolve_v_star が accepted を返すはず
+                            break
+                        # 提案者以外を優先してプロンプト
+                        if proposer in missing and len(missing) == 1:
+                            agent = proposer
+                        else:
+                            agent = [a for a in missing if a != proposer][0] if any(a != proposer for a in missing) else missing[0]
+                        prompt = v_proposal_response_prompt(
+                            agent,
+                            personas[agent],
+                            persona_params[agent],
+                            state,
+                            condition,
+                            transcript,
+                            current_proposal,
+                            v_state=current_v_state(agent),
+                            role=resolved_role_for(agent),
+                        )
+                        kind = "response"
+
+                    _, raw = run_prompt(
+                        model, tokenizer, prompt, max_new_tokens,
                         enable_thinking=enable_thinking, thinking_budget=thinking_budget,
                     )
                     if tokenizer is not None:
-                        token_budget_used += len(tokenizer.encode(raw_response, add_special_tokens=False))
+                        token_budget_used += len(tokenizer.encode(raw, add_special_tokens=False))
                     total_free_messages += 1
-                    response_payload = _extract_json_object(raw_response)
-                    response_msg_id = str(next_message_id)
-                    _, v_response = parse_v_negotiation(response_payload, responder, response_msg_id)
-                    transcript.append(
-                        {
-                            "speaker": responder,
-                            "speech_act": None,
-                            "message": "",
-                            "action": "",
-                            "reason": "",
-                            "message_id": response_msg_id,
-                            "addressed_to": None,
-                            "requires_response": False,
-                            "reply_to_message_id": None,
-                            "raw": raw_response,
-                            "thinking": "",
-                            "v_star_response": v_response,
-                        }
-                    )
-                    next_message_id += 1
-                    if v_response is not None:
-                        v_responses[responder].append(v_response)
-                        if (
-                            v_response.get("response") == "counter"
-                            and isinstance(v_response.get("counter_proposal"), dict)
-                        ):
-                            counter = {
-                                **v_response["counter_proposal"],
-                                "speaker": responder,
-                                "message_id": response_msg_id,
+                    msg_id = str(next_message_id)
+                    payload = _extract_json_object(raw)
+                    if kind == "proposal":
+                        proposal, _ = parse_v_negotiation(payload, agent, msg_id)
+                        transcript.append(
+                            {
+                                "speaker": agent,
+                                "speech_act": None,
+                                "message": "",
+                                "action": "",
+                                "reason": "",
+                                "message_id": msg_id,
+                                "addressed_to": None,
+                                "requires_response": False,
+                                "reply_to_message_id": None,
+                                "raw": raw,
+                                "thinking": "",
+                                "v_proposal": proposal,
                             }
-                            v_proposals.append(counter)
+                        )
+                        next_message_id += 1
+                        if proposal is not None:
+                            proposal = {**proposal, "speaker": agent, "message_id": msg_id}
+                            v_proposals.append(proposal)
+                            v_responses[agent].append({
+                                "response": "accept",
+                                "proposal_id": proposal["proposal_id"],
+                                "message_index": int(msg_id) if str(msg_id).isdigit() else 0,
+                            })
+                            if v_protocol_state != "V_RESPOND":
+                                v_protocol_transition_history.append({"from": v_protocol_state, "to": "V_RESPOND", "reason": "v_proposal_required_prompt_accepted"})
+                                v_protocol_state = "V_RESPOND"
+                        else:
+                            if v_protocol_state not in {"V_PROPOSE", "V_RESPOND"}:
+                                v_protocol_transition_history.append({"from": v_protocol_state, "to": "V_PROPOSE", "reason": "v_proposal_required_prompt_invalid"})
+                                v_protocol_state = "V_PROPOSE"
+                    else:
+                        _, v_response = parse_v_negotiation(payload, agent, msg_id)
+                        transcript.append(
+                            {
+                                "speaker": agent,
+                                "speech_act": None,
+                                "message": "",
+                                "action": "",
+                                "reason": "",
+                                "message_id": msg_id,
+                                "addressed_to": None,
+                                "requires_response": False,
+                                "reply_to_message_id": None,
+                                "raw": raw,
+                                "thinking": "",
+                                "v_star_response": v_response,
+                            }
+                        )
+                        next_message_id += 1
+                        if v_response is not None:
+                            v_responses[agent].append(v_response)
+                            if (
+                                v_response.get("response") == "counter"
+                                and isinstance(v_response.get("counter_proposal"), dict)
+                            ):
+                                counter = {**v_response["counter_proposal"], "speaker": agent, "message_id": msg_id}
+                                v_proposals.append(counter)
+                                v_responses[agent].append({
+                                    "response": "accept",
+                                    "proposal_id": counter["proposal_id"],
+                                    "message_index": int(msg_id) if str(msg_id).isdigit() else 0,
+                                })
+
                     if enable_v_flow and condition != "hivc_d_prescribed_v1":
                         v_star_status, v_star_id, v_star, v_star_failure_reason = resolve_v_star(v_proposals, v_responses)
                         if v_star_status == "accepted" and v_star and v_star.get("scope") == "game":
                             persistent_v_star = v_star
                             persistent_v_star_id = v_star_id
-                    v_protocol_transition_history.append({"from": v_protocol_state, "to": "A_CHECK", "reason": "v_star_resolved"})
-                    v_protocol_state = "A_CHECK"
-                else:
-                    missing_v_proposal_after_required_prompt = True
-                    v_star_failure_reason = "missing_v_proposal_after_required_prompt"
-                    v_protocol_transition_history.append({"from": v_protocol_state, "to": "A_CHECK", "reason": "v_proposal_required_prompt_rejected_or_invalid"})
-                    v_protocol_state = "A_CHECK"
-                v_proposal_required_prompt_issued = True
 
-            if enable_v_flow and v_protocol_state not in {"A_CHECK", "FINAL_VOTE"}:
+                    if v_star_status == "accepted":
+                        v_protocol_transition_history.append({"from": v_protocol_state, "to": "A_CHECK", "reason": "v_star_accepted"})
+                        v_protocol_state = "A_CHECK"
+                        break
+
+                if v_star_status != "accepted":
+                    missing_v_proposal_after_required_prompt = not v_proposals
+                    if not v_star_failure_reason:
+                        if v_negotiation_messages_used >= max_v_attempts:
+                            v_star_failure_reason = "v_negotiation_budget_exhausted"
+                        else:
+                            v_star_failure_reason = "missing_matching_explicit_acceptance"
+                    v_protocol_transition_history.append({"from": v_protocol_state, "to": "A_CHECK", "reason": "v_negotiation_budget_exhausted"})
+                    v_protocol_state = "A_CHECK"
+                    if not forced_decision_reason:
+                        forced_decision_reason = "v_negotiation_budget_exhausted"
+            elif enable_v_flow and v_protocol_state not in {"A_CHECK", "FINAL_VOTE"}:
                 v_protocol_transition_history.append({"from": v_protocol_state, "to": "A_CHECK", "reason": "pre_decision"})
                 v_protocol_state = "A_CHECK"
 
@@ -2496,35 +2603,40 @@ def run_one_game(
         v_after: dict[str, dict[str, Any] | None] = {"alpha": None, "beta": None}
         if enable_v_flow:
             for agent in speakers:
-                _, raw_measurement = run_prompt(
-                    model,
-                    tokenizer,
-                    v_measurement_prompt(
-                        agent,
-                        state,
-                        phase="after",
-                        current_v=v_before[agent],
-                        persona=personas[agent],
-                        persona_params=persona_params[agent],
-                        transcript=transcript,
-                        final_vote={
-                            "alpha": {"action": alpha_vote.value if alpha_vote else None, "reason": alpha_vote_reason},
-                            "beta": {"action": beta_vote.value if beta_vote else None, "reason": beta_vote_reason},
-                            "group_action": group_action.value,
-                        },
-                        v_state=current_v_state(agent),
-                        role=resolved_role_for(agent),
-                    ),
-                    max_new_tokens,
-                    enable_thinking=enable_thinking,
-                    thinking_budget=thinking_budget,
+                prompt = v_measurement_prompt(
+                    agent,
+                    state,
+                    phase="after",
+                    current_v=v_before[agent],
+                    persona=personas[agent],
+                    persona_params=persona_params[agent],
+                    transcript=transcript,
+                    final_vote={
+                        "alpha": {"action": alpha_vote.value if alpha_vote else None, "reason": alpha_vote_reason},
+                        "beta": {"action": beta_vote.value if beta_vote else None, "reason": beta_vote_reason},
+                        "group_action": group_action.value,
+                    },
+                    v_state=current_v_state(agent),
+                    role=resolved_role_for(agent),
                 )
-                measurement_call_count += 1
-                if tokenizer is not None:
-                    measurement_token_count += len(tokenizer.encode(raw_measurement, add_special_tokens=False))
-                measured_v, _, _, error = extract_json_v_measurement(raw_measurement)
+                measured_v: dict[str, Any] | None = None
+                error = ""
+                raw_measurement = ""
+                for attempt in range(max_v_measurement_retries + 1):
+                    _, raw_measurement = run_prompt(
+                        model, tokenizer, prompt, max_new_tokens,
+                        enable_thinking=enable_thinking, thinking_budget=thinking_budget,
+                    )
+                    measurement_call_count += 1
+                    if tokenizer is not None:
+                        measurement_token_count += len(tokenizer.encode(raw_measurement, add_special_tokens=False))
+                    measured_v, _, _, error = extract_json_v_measurement(raw_measurement)
+                    if not error:
+                        break
+                    if attempt < max_v_measurement_retries:
+                        measurement_retry_count += 1
                 v_after[agent] = measured_v
-                v_measurement_errors[f"{agent}_after"] = error
+                v_measurement_errors[f"{agent}_after"] = error or ("measurement_failed" if measured_v is None else "")
 
         alpha_v_star_consistent = v_star_status == "accepted" and verify_vote_v_star_consistency(
             alpha_vote, alpha_vote_reason, alpha_vote_v_star_id, alpha_vote_v_star_claim, v_star_id, v_star
@@ -2561,6 +2673,11 @@ def run_one_game(
         }
 
         unanswered_question_count = len(open_questions)
+        silent_unanswered_question_count = (
+            unanswered_question_count
+            if unanswered_question_count > 0 and not forced_decision_with_open_question and not forced_decision_reason
+            else 0
+        )
         question_response_latency = float(np.mean(question_response_latencies)) if question_response_latencies else float("nan")
 
         resolved_by_agent = resolved_profiles if isinstance(resolved_profiles, dict) else {}
@@ -2707,6 +2824,8 @@ def run_one_game(
             "alpha_evidence": role_evidence["alpha"],
             "beta_evidence": role_evidence["beta"],
             "unanswered_question_count": unanswered_question_count,
+            "silent_unanswered_question_count": silent_unanswered_question_count,
+            "unanswerable_question_count": unanswerable_question_count,
             "question_count": question_count,
             "answered_question_count": answered_question_count,
             "duplicate_question_count": duplicate_question_count,

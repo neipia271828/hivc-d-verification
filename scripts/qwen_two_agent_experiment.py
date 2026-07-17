@@ -211,9 +211,6 @@ def main() -> None:
             args.random_seed = cfg["random_seed"] if cfg["random_seed"] is not None else game_seed
             personas, persona_params, role_keys = load_personas(args)
             print(f"  [random_persona seed={game_seed}] alpha={role_keys['alpha']} beta={role_keys['beta']}")
-        # 固定プロファイルでも seed ごとに明示的な割当レコードを生成する
-        append_profile_assignment(value_manifest, game_seed, personas, persona_params, role_keys)
-        write_value_manifest(value_manifest_path, value_manifest)
         seed_conditions = condition_order_for_seed(list(conditions), game_seed)
         print(f"\n=== seed: {game_seed}; condition order: {seed_conditions} ===")
         for condition in seed_conditions:
@@ -236,8 +233,11 @@ def main() -> None:
                 max_decision_opportunities=cfg["max_decision_opportunities"],
                 role_value_mode=cfg["role_value_mode"],
             )
+            # seed・condition ごとの割当レコードを権威ソースとして保存する
+            append_profile_assignment(value_manifest, game_seed, personas, persona_params, role_keys, condition=condition)
             condition_rows[condition].extend(rows)
             all_rows.extend(rows)
+        write_value_manifest(value_manifest_path, value_manifest)
 
     for condition in conditions:
         cond_rows = condition_rows[condition]

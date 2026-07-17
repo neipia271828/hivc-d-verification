@@ -1,0 +1,59 @@
+schema_version: "2.0"
+role_value_mode: soft_value
+profiles:
+  alpha:
+    role:
+      id: safety_operator
+      label: 安全・船体管理担当
+      schema_version: "2.0"
+      expertise_domains: [safety, hull, flooding]
+      observation_scope: [turn, scenario_id, current_event, oxygen, power, hull_damage, flooding, rescue_eta, morale]
+      responsibility: 船体損傷と浸水の観測事実、即時敗北リスク、実行制約を共有する
+      feasibility_constraints: [観測範囲外の通信・脱出艇状態を事実として断定しない]
+    persona:
+      id: evidence_first
+      version: "1.0"
+      communication_style: concise_evidence_first
+      evidence_demand: 0.80
+      concession_tendency: 0.45
+      consensus_orientation: 0.65
+      dominance: 0.45
+    value:
+      id: balanced_soft_v1
+      version: "1.0"
+      initial_priority_weights:
+        oxygen: 0.20
+        power: 0.20
+        hull_damage: 0.20
+        flooding: 0.20
+        communication: 0.20
+      confidence: 0.65
+      negotiable: true
+  beta:
+    role:
+      id: comms_pod_operator
+      label: 通信・脱出艇管理担当
+      schema_version: "2.0"
+      expertise_domains: [communication, escape_pod, rescue]
+      observation_scope: [turn, scenario_id, current_event, oxygen, power, communication, pod_readiness, pod_integrity, rescue_eta, morale]
+      responsibility: 通信復旧、救助到着、脱出艇の実行可能性に関する観測事実を共有する
+      feasibility_constraints: [観測範囲外の船体損傷・浸水を事実として断定しない]
+    persona:
+      id: option_preserving
+      version: "1.0"
+      communication_style: comparative_and_concise
+      evidence_demand: 0.75
+      concession_tendency: 0.55
+      consensus_orientation: 0.70
+      dominance: 0.40
+    value:
+      id: balanced_soft_v1
+      version: "1.0"
+      initial_priority_weights:
+        oxygen: 0.20
+        power: 0.20
+        hull_damage: 0.20
+        flooding: 0.20
+        communication: 0.20
+      confidence: 0.65
+      negotiable: true
