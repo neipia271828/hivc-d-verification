@@ -21,7 +21,12 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import csv
+import datetime as dt
+import hashlib
+import json
+import re
 import sys
 from pathlib import Path
 
@@ -36,6 +41,7 @@ from llm_turn_game_common import (  # noqa: E402
     append_profile_assignment,
     build_value_manifest,
     condition_order_for_seed,
+    _git_commit,
     load_model,
     load_personas,
     resolve_role_file_path,
@@ -101,6 +107,93 @@ CLI_DEFAULTS: dict[str, object] = {
     "max_decision_opportunities": 3,
 }
 
+RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+WORKFLOW_BOOTSTRAP_FILES = {"run_id", "started_at", "command.txt", "run.log", "pid"}
+
+
+def _now_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).astimezone().isoformat()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _write_run_metadata(path: Path, metadata: dict[str, object]) -> None:
+    path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _prepare_direct_run(
+    output_dir: Path,
+    run_id: str | None,
+    live_jsonl: str | None,
+) -> tuple[str, str | None, dict[str, object], Path]:
+    """Reserve an isolated run directory and an exclusive stream path."""
+    resolved_run_id = run_id or output_dir.name
+    if not RUN_ID_RE.fullmatch(resolved_run_id):
+        raise ValueError(f"invalid run_id: {resolved_run_id!r}")
+    if output_dir.exists():
+        unexpected = sorted(path.name for path in output_dir.iterdir() if path.name not in WORKFLOW_BOOTSTRAP_FILES)
+        if unexpected:
+            raise FileExistsError(
+                f"output_dir already contains run artifacts: {output_dir} ({', '.join(unexpected)})"
+            )
+    else:
+        output_dir.mkdir(parents=True)
+    bootstrap_run_id = output_dir / "run_id"
+    if bootstrap_run_id.exists() and bootstrap_run_id.read_text(encoding="utf-8").strip() != resolved_run_id:
+        raise ValueError("output_dir run_id does not match --run-id")
+    if not bootstrap_run_id.exists():
+        bootstrap_run_id.write_text(resolved_run_id + "\n", encoding="utf-8")
+
+    live_path: Path | None = None
+    if live_jsonl:
+        live_path = Path(live_jsonl)
+        if not live_path.is_absolute():
+            live_path = REPO_ROOT / live_path
+        live_path = live_path.resolve()
+        if live_path.parent != output_dir.resolve():
+            raise ValueError("--live-jsonl must be inside the isolated output_dir")
+        try:
+            live_path.touch(exist_ok=False)
+        except FileExistsError as exc:
+            raise FileExistsError(f"refusing to reuse existing stream: {live_path}") from exc
+
+    metadata_path = output_dir / "run_metadata.json"
+    metadata = {
+        "run_id": resolved_run_id,
+        "runner": "qwen_two_agent_experiment-v3",
+        "status": "running",
+        "started_at": _now_iso(),
+        "completed_at": None,
+        "git_commit": _git_commit(),
+        "output_dir": str(output_dir),
+        "stream": live_path.name if live_path else None,
+        "value_manifest": "value_manifest.json",
+        "artifacts": {},
+    }
+    _write_run_metadata(metadata_path, metadata)
+    return resolved_run_id, str(live_path) if live_path else None, metadata, metadata_path
+
+
+def _complete_direct_run(
+    output_dir: Path,
+    metadata: dict[str, object],
+    metadata_path: Path,
+    artifact_names: list[str],
+) -> None:
+    artifacts = {}
+    for name in artifact_names:
+        path = output_dir / name
+        if path.is_file():
+            artifacts[name] = {"sha256": _sha256_file(path), "bytes": path.stat().st_size}
+    metadata.update({"status": "completed", "completed_at": _now_iso(), "artifacts": artifacts})
+    _write_run_metadata(metadata_path, metadata)
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -118,6 +211,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--discussion-token-budget", type=int, default=None)
     parser.add_argument("--evaluator-rollouts", type=int, default=None)
     parser.add_argument("--output-dir", default=None)
+    parser.add_argument("--run-id", default=None, help="run metadataに保存する識別子（既定: output-dir名）")
     parser.add_argument("--live-jsonl", default=None,
                         help="各ターン終了時にJSONLを追記するパス（visualize_game.html ライブモード用）")
     parser.add_argument("--enable-thinking", default=None, type=str,
@@ -170,7 +264,19 @@ def main() -> None:
     output_dir = Path(cfg["output_dir"])
     if not output_dir.is_absolute():
         output_dir = REPO_ROOT / output_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
+    run_id, live_jsonl_path, run_metadata, run_metadata_path = _prepare_direct_run(
+        output_dir, args.run_id, cfg["live_jsonl"]
+    )
+    print(f"Run ID: {run_id}")
+    completion_state = {"completed": False}
+
+    def mark_failed_at_exit() -> None:
+        if completion_state["completed"]:
+            return
+        run_metadata.update({"status": "failed", "completed_at": _now_iso()})
+        _write_run_metadata(run_metadata_path, run_metadata)
+
+    atexit.register(mark_failed_at_exit)
     value_manifest_path = output_dir / "value_manifest.json"
     value_manifest = build_value_manifest(
             cfg,
@@ -183,14 +289,7 @@ def main() -> None:
     )
     write_value_manifest(value_manifest_path, value_manifest)
 
-    live_jsonl_path = cfg["live_jsonl"]
     if live_jsonl_path:
-        live_path = Path(live_jsonl_path)
-        if not live_path.is_absolute():
-            live_path = REPO_ROOT / live_path
-        live_path.parent.mkdir(parents=True, exist_ok=True)
-        live_path.write_text("", encoding="utf-8")  # 実験開始時にリセット
-        live_jsonl_path = str(live_path)
         print(f"Live JSONL stream: {live_jsonl_path}")
 
     print(f"Loading model: {cfg['model_path']}")
@@ -248,6 +347,12 @@ def main() -> None:
 
     _write_csv(output_dir / "all_games.csv", all_rows)
     _write_csv(output_dir / "summary.csv", summary_rows)
+    artifact_names = [f"{condition}_games.csv" for condition in conditions]
+    artifact_names.extend(["all_games.csv", "summary.csv", "value_manifest.json"])
+    if live_jsonl_path:
+        artifact_names.append(Path(live_jsonl_path).name)
+    _complete_direct_run(output_dir, run_metadata, run_metadata_path, artifact_names)
+    completion_state["completed"] = True
     print(f"\nSaved {len(all_rows)} turn rows to {output_dir}")
 
 

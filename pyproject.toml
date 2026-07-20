@@ -18,6 +18,7 @@ sync = "scripts.workflow_cli:sync_main"
 experiment = "scripts.workflow_cli:experiment_main"
 download = "scripts.workflow_cli:download_main"
 visualize = "scripts.workflow_cli:visualize_main"
+validate-smoke = "scripts.validate_experiment_preflight:main"
 
 [build-system]
 requires = ["setuptools>=68"]

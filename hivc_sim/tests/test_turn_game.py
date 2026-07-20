@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -37,6 +39,7 @@ from scripts.llm_turn_game_common import (  # noqa: E402
     discussion_prompt,
     extract_json_discussion,
     format_state,
+    run_one_game,
 )
 
 
@@ -341,10 +344,33 @@ def test_discussion_prompt_schema_includes_question_metadata_keys() -> None:
         max_discussion_turns=6,
     )
 
-    assert "必須キー: speech_act, message, action, reason, addressed_to, reply_to_message_id" in prompt
+    assert "必須キー: speech_act, message, action, reason, reply_to_message_id" in prompt
+    assert "情報要求の質問では null 可" in prompt
+    assert "null/省略なら相手一名へ補完" in prompt
     assert '"addressed_to":null,"reply_to_message_id":null' in prompt
-    assert '"speech_act":"question_objection"' in prompt
+    assert '"speech_act":"information_request"' in prompt
+    assert '"action":null' in prompt
     assert '"addressed_to":"beta","reply_to_message_id":null' in prompt
+
+
+def test_discussion_answer_example_obeys_non_question_address_contract() -> None:
+    prompt = discussion_prompt(
+        "beta",
+        "beta",
+        None,
+        GameState(current_event=Event.NONE),
+        [],
+        max_discussion_turns=6,
+        open_question={
+            "speaker": "alpha",
+            "message_id": "q-1",
+            "message": "oxygenは?",
+        },
+    )
+
+    assert '"speech_act":"evidence"' in prompt
+    assert '"addressed_to":null,"reply_to_message_id":"q-1"' in prompt
+    assert '"addressed_to":"alpha","reply_to_message_id":"q-1"' not in prompt
 
 
 def test_discussion_prompt_schema_requires_exact_reply_id_for_open_question() -> None:
@@ -368,7 +394,7 @@ def test_discussion_prompt_schema_requires_exact_reply_id_for_open_question() ->
 
     assert "今は質問ID 7 への回答が必須です" in prompt
     assert "reply_to_message_id を省略しないでください" in prompt
-    assert '"addressed_to":"alpha","reply_to_message_id":"7"' in prompt
+    assert '"addressed_to":null,"reply_to_message_id":"7"' in prompt
     assert "通常発言JSON例" not in prompt
 
 
@@ -558,8 +584,9 @@ def test_run_one_game_forced_decision_still_collects_votes(monkeypatch) -> None:
     assert first["unanswered_question_count"] > 0
 
 
-def test_run_one_game_question_objection_requires_response_and_addressed_to_normalized(monkeypatch) -> None:
-    """question_objection は requires_response が false でも必ず回答待ちし、addressed_to は相手に補正される。"""
+@pytest.mark.parametrize("target_field", [',"addressed_to":null', ""])
+def test_run_one_game_question_with_null_or_missing_target_is_routed_to_partner(monkeypatch, target_field: str) -> None:
+    """二者ゲームの質問で null/省略宛先は一意な相手へ安全に補完される。"""
     import json
     from scripts.llm_turn_game_common import run_one_game
 
@@ -569,13 +596,13 @@ def test_run_one_game_question_objection_requires_response_and_addressed_to_norm
         nonlocal call_count
         if "意思決定機会" in prompt:
             return "", '{"action":"C","reason":"vote C","message":"C","ready":true}'
-        # 自由議論：1回目 alpha が質問（requires_response=false, addressed_to=gamma と狡猾に出す）
+        # 自由議論：1回目 alpha が行動案を伴わない情報要求を出す。
         if call_count == 0:
             call_count += 1
             return (
                 "",
-                '{"speech_act":"question_objection","message":"why?","action":"C",'
-                '"reason":"質問","addressed_to":"gamma","reply_to_message_id":null}',
+                '{"speech_act":"information_request","message":"why?","action":null,'
+                f'"reason":"質問"{target_field},"reply_to_message_id":null}}',
             )
         # 2回目 beta が回答
         call_count += 1
@@ -613,6 +640,39 @@ def test_run_one_game_question_objection_requires_response_and_addressed_to_norm
     assert first["unanswered_question_count"] == 0
     assert first["forced_decision_with_open_question"] is False
     assert first["question_response_latency"] == 1.0
+
+
+def test_run_one_game_unknown_question_target_is_rejected_not_normalized(monkeypatch) -> None:
+    """未知名の宛先は相手へ補正せず、無効なdiscussion出力として監査する。"""
+    def fake_run_prompt(model, tokenizer, prompt, max_new_tokens, enable_thinking=False, thinking_budget=None):
+        if "意思決定機会" in prompt:
+            return "", '{"action":"C","reason":"vote","message":"C","ready":true}'
+        return "", (
+            '{"speech_act":"information_request","message":"why?","action":null,'
+            '"reason":"質問","addressed_to":"gamma","reply_to_message_id":null}'
+        )
+
+    monkeypatch.setattr("scripts.llm_turn_game_common.run_prompt", fake_run_prompt)
+    rows = run_one_game(
+        None,
+        None,
+        "control",
+        seed=42,
+        personas={"alpha": "alpha", "beta": "beta"},
+        persona_params={"alpha": None, "beta": None},
+        role_keys={"alpha": "alpha", "beta": "beta"},
+        max_discussion_turns=2,
+        discussion_token_budget=1024,
+        evaluator_rollouts=4,
+        max_discussion_retries=0,
+        scenario_id="comms_favored",
+    )
+    first = rows[0]
+    assert first["invalid_discussion_output_count"] >= 1
+    transcript = json.loads(first["discussion_transcript"])
+    assert all(item.get("message") != "why?" for item in transcript)
+    assert all(item.get("addressed_to") != "gamma" for item in transcript)
+    assert first["question_count"] == 0
 
 
 def test_run_one_game_fake_reply_from_non_addressee_keeps_question_open(monkeypatch) -> None:
@@ -824,10 +884,16 @@ def test_extract_json_discussion_rejects_missing_keys_and_type_mismatch() -> Non
     speech_act3, _, action, _, _, _, _ = extract_json_discussion(invalid_action)
     assert speech_act3 is None
 
-    # 質問で addressed_to が欠落/空
+    # 質問では action=null と addressed_to=null/省略を受理する
     missing_addressed = '{"speech_act":"question_objection","message":"Q","action":"A","reason":"Q","addressed_to":null,"reply_to_message_id":null}'
-    speech_act4, _, _, _, _, _, _ = extract_json_discussion(missing_addressed)
-    assert speech_act4 is None
+    speech_act4, _, action4, _, _, target4, requires4 = extract_json_discussion(missing_addressed)
+    assert speech_act4 is not None and action4 == Action("A")
+    assert target4 is None and requires4 is True
+
+    missing_target = '{"speech_act":"information_request","message":"Q","action":null,"reason":"Q","reply_to_message_id":null}'
+    speech_act4b, _, action4b, _, _, target4b, requires4b = extract_json_discussion(missing_target)
+    assert speech_act4b is not None and action4b is None
+    assert target4b is None and requires4b is True
 
     # 非質問で addressed_to が設定されている
     spurious_addressed = '{"speech_act":"evidence","message":"ok","action":"A","reason":"ok","addressed_to":"beta","reply_to_message_id":null}'
@@ -838,6 +904,18 @@ def test_extract_json_discussion_rejects_missing_keys_and_type_mismatch() -> Non
     int_addressed = '{"speech_act":"question_objection","message":"Q","action":"A","reason":"Q","addressed_to":123,"reply_to_message_id":null}'
     speech_act6, _, _, _, _, addressed_to6, _ = extract_json_discussion(int_addressed)
     assert speech_act6 is None
+
+    # 未知名・辞書の宛先は二者ゲームでも補完せず拒否する
+    for invalid_target in ('"gamma"', '{}'):
+        raw = ('{"speech_act":"information_request","message":"Q","action":null,'
+               f'"reason":"Q","addressed_to":{invalid_target},"reply_to_message_id":null}}')
+        invalid_speech_act, *_ = extract_json_discussion(raw)
+        assert invalid_speech_act is None
+
+    # 非質問は action=null を受理しない
+    null_statement_action = '{"speech_act":"evidence","message":"ok","action":null,"reason":"ok","addressed_to":null,"reply_to_message_id":null}'
+    invalid_statement, _, invalid_action_value, _, _, _, _ = extract_json_discussion(null_statement_action)
+    assert invalid_statement is None and invalid_action_value is None
 
     # reply_to_message_id に辞書を設定（正規化でNoneになるのを防ぐ）
     dict_reply = '{"speech_act":"evidence","message":"ok","action":"A","reason":"ok","addressed_to":null,"reply_to_message_id":{}}'

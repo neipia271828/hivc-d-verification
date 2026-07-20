@@ -421,6 +421,14 @@ def _start_experiment_remote_command(
 ) -> tuple[str, str]:
     project = _remote_project_shell(cfg)
     run_dir = f"{DEFAULT_REMOTE_RUNS_ROOT}/{run_id}"
+    scientific_gate = getattr(args, "scientific_gate", "required")
+    smoke_run_id = getattr(args, "smoke_run_id", None)
+    needs_smoke_gate = args.games > 1 and not getattr(args, "resume", False) and scientific_gate != "not-applicable"
+    if needs_smoke_gate and not smoke_run_id:
+        raise WorkflowError(
+            "2ゲーム以上の本実験には --smoke-run-id が必要です。"
+            "Vゲート対象外のlegacy実験だけ --scientific-gate not-applicable を明示してください。"
+        )
     if getattr(args, "parallel", False):
         runner = shlex.join(_parallel_runner_args(cfg, args, run_dir))
     else:
@@ -456,6 +464,15 @@ def _start_experiment_remote_command(
             f"cd {project}",
             "test -d .git || { echo 'ERROR: 先に uv run sync を完了してください' >&2; exit 20; }",
             "grep -q '_discussion_json_contract' scripts/llm_turn_game_common.py || { echo 'ERROR: JSONスキーマ修正版が未同期です' >&2; exit 21; }",
+            *(
+                [
+                    f"test -d {shlex.quote(DEFAULT_REMOTE_RUNS_ROOT + '/' + _validate_run_id(smoke_run_id))} || {{ echo 'ERROR: smoke runが存在しません' >&2; exit 25; }}",
+                    f"{shlex.quote(str(cfg.get('remote_venv', '.venv')) + '/bin/python')} scripts/validate_experiment_preflight.py "
+                    f"{shlex.quote(DEFAULT_REMOTE_RUNS_ROOT + '/' + _validate_run_id(smoke_run_id))} --applicability required",
+                ]
+                if needs_smoke_gate
+                else []
+            ),
             "for pid_file in " + shlex.quote(DEFAULT_REMOTE_RUNS_ROOT) + "/*/pid; do",
             "  [ -f \"$pid_file\" ] || continue",
             "  active_run_dir=${pid_file%/pid}",
@@ -527,6 +544,16 @@ def _build_experiment_parser() -> argparse.ArgumentParser:
         help="使用するRoleプロファイルファイル（未指定時は--role-value-modeに応じたデフォルトを使用）",
     )
     parser.add_argument("--games", type=int, default=1)
+    parser.add_argument(
+        "--smoke-run-id",
+        help="2ゲーム以上の本実験を許可する、合格済みsmoke run ID",
+    )
+    parser.add_argument(
+        "--scientific-gate",
+        choices=["required", "not-applicable"],
+        default="required",
+        help="V固有preflightを要求する。対象外legacyモードのみnot-applicableを明示",
+    )
     parser.add_argument("--seed", type=int)
     parser.add_argument("--parallel", action="store_true", help="shard並列モードを有効化")
     parser.add_argument("--gpus", nargs="+", type=int, default=None, help="使用する物理GPU ID（未指定時は自動検出）")

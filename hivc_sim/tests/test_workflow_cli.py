@@ -22,13 +22,14 @@ from scripts.workflow_cli import (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_uv_project_exposes_four_workflow_commands() -> None:
+def test_uv_project_exposes_workflow_commands() -> None:
     data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert data["project"]["scripts"] == {
         "sync": "scripts.workflow_cli:sync_main",
         "experiment": "scripts.workflow_cli:experiment_main",
         "download": "scripts.workflow_cli:download_main",
         "visualize": "scripts.workflow_cli:visualize_main",
+        "validate-smoke": "scripts.validate_experiment_preflight:main",
     }
 
 
@@ -124,6 +125,7 @@ def test_parallel_runner_args_passes_parallel_and_gpu_options() -> None:
         temperature_stop_scheduling=83,
         power_limit_w=180,
         resume=False,
+        scientific_gate="not-applicable",
         role_value_mode="soft_value",
     )
     command = _parallel_runner_args(cfg, args, "hivc_sim/results/turn_game/experiment/runs/episode-test")
@@ -228,6 +230,7 @@ def test_parallel_experiment_command_uses_parallel_runner_and_blocks_other_paral
         temperature_warning=80,
         temperature_stop_scheduling=83,
         resume=False,
+        scientific_gate="not-applicable",
     )
     command, run_dir = _start_experiment_remote_command(cfg, args, "episode-test")
     assert run_dir.endswith("/episode-test")
@@ -266,3 +269,27 @@ def test_parallel_resume_reuses_existing_run_directory() -> None:
     assert "run IDが既に存在します" not in command
     assert "resumed_at" in command
     assert "exit_code" in command and ".pre-resume" in command
+
+
+def test_large_experiment_requires_and_runs_scientific_smoke_gate() -> None:
+    cfg = {
+        "remote_project_dir": "~/projects/hivc-d-verification",
+        "remote_venv": ".venv",
+    }
+    args = argparse.Namespace(
+        experiment_config="configs/experiment.yaml",
+        conditions=["hivc_d"],
+        games=100,
+        seed=42,
+        parallel=False,
+        resume=False,
+        scientific_gate="required",
+        smoke_run_id=None,
+    )
+    with pytest.raises(WorkflowError, match="--smoke-run-id"):
+        _start_experiment_remote_command(cfg, args, "episode-full")
+
+    args.smoke_run_id = "episode-smoke"
+    command, _ = _start_experiment_remote_command(cfg, args, "episode-full")
+    assert "scripts/validate_experiment_preflight.py" in command
+    assert "episode-smoke --applicability required" in command

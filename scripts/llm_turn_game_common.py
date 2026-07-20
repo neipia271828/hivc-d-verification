@@ -1121,7 +1121,7 @@ def _coerce_str_or_none(value: Any) -> str | None:
 
 def _is_valid_discussion_payload(payload: dict[str, Any]) -> bool:
     """自由議論 JSON が必須キー・型・値の契約を満たすか検証する。"""
-    required_keys = ("speech_act", "message", "action", "reason", "addressed_to", "reply_to_message_id")
+    required_keys = ("speech_act", "message", "action", "reason", "reply_to_message_id")
     if not all(k in payload for k in required_keys):
         return False
 
@@ -1137,20 +1137,27 @@ def _is_valid_discussion_payload(payload: dict[str, Any]) -> bool:
         return False
 
     action_val = payload.get("action")
-    if not isinstance(action_val, str):
-        return False
-    action_text = action_val.strip().upper()
-    if action_text not in {a.value for a in ALL_ACTIONS}:
-        return False
+    if speech_act in QUESTION_SPEECH_ACTS:
+        if action_val is not None:
+            if not isinstance(action_val, str):
+                return False
+            if action_val.strip().upper() not in {a.value for a in ALL_ACTIONS}:
+                return False
+    else:
+        if not isinstance(action_val, str):
+            return False
+        if action_val.strip().upper() not in {a.value for a in ALL_ACTIONS}:
+            return False
 
     # addressed_to は正規化前に厳密に型検査する。
-    # 仕様: 質問の場合は str(宛先agent名)、それ以外は null。
+    # 仕様: 質問の場合は alpha/beta/null/省略、質問以外は null/省略。
+    # null/省略の質問は二者ゲームの呼び出し側で相手へ安全に補完する。
     # 整数や辞書などの暗黙の型変換は契約違反として拒否する。
     raw_addressed_to = payload.get("addressed_to")
     if raw_addressed_to is not None and not isinstance(raw_addressed_to, str):
         return False
     addressed_to = _coerce_str_or_none(raw_addressed_to)
-    if speech_act in QUESTION_SPEECH_ACTS and not addressed_to:
+    if addressed_to is not None and addressed_to.strip().lower() not in {"alpha", "beta"}:
         return False
     if speech_act not in QUESTION_SPEECH_ACTS and addressed_to is not None:
         return False
@@ -1177,9 +1184,12 @@ def extract_json_discussion(response: str) -> tuple[SpeechAct | None, str, Actio
     speech_act = _normalize_speech_act(payload["speech_act"])
     message = str(payload["message"]).strip()
     reason = str(payload["reason"]).strip()
-    action = Action(str(payload["action"]).strip().upper())
+    raw_action = payload["action"]
+    action = None if raw_action is None else Action(str(raw_action).strip().upper())
     reply_to_message_id = _coerce_str_or_none(payload["reply_to_message_id"])
-    addressed_to = _coerce_str_or_none(payload["addressed_to"])
+    addressed_to = _coerce_str_or_none(payload.get("addressed_to"))
+    if addressed_to is not None:
+        addressed_to = addressed_to.lower()
     requires_response = speech_act in QUESTION_SPEECH_ACTS
     return speech_act, message, action, reason, reply_to_message_id, addressed_to, requires_response
 
@@ -1295,8 +1305,10 @@ def _discussion_json_contract(agent_name: str, open_question: dict[str, Any] | N
     """自由議論の状況に合った必須 JSON スキーマと例を返す。"""
     other_agent = "beta" if agent_name == "alpha" else "alpha"
     required_keys = (
-        "必須キー: speech_act, message, action, reason, addressed_to, reply_to_message_id\n"
-        "- addressed_to: 質問の宛先。質問以外は null\n"
+        "必須キー: speech_act, message, action, reason, reply_to_message_id\n"
+        "- action: 情報要求の質問では null 可。質問以外は必ず A-F\n"
+        "- addressed_to: 任意キー。質問では alpha/beta/null、質問以外は null。"
+        "二者ゲームで質問時に null/省略なら相手一名へ補完される。未知名や他の型は禁止\n"
         "- reply_to_message_id: 回答対象の質問ID。回答以外は null"
     )
 
@@ -1306,7 +1318,9 @@ def _discussion_json_contract(agent_name: str, open_question: dict[str, Any] | N
             "message": "質問への短い回答",
             "action": "A",
             "reason": "短い理由",
-            "addressed_to": open_question["speaker"],
+            # 回答先は reply_to_message_id で一意に決まる。非質問発話に
+            # addressed_to を設定すると直上のJSON契約と矛盾する。
+            "addressed_to": None,
             "reply_to_message_id": str(open_question["message_id"]),
         }
         return (
@@ -1325,9 +1339,9 @@ def _discussion_json_contract(agent_name: str, open_question: dict[str, Any] | N
         "reply_to_message_id": None,
     }
     question_example = {
-        "speech_act": "question_objection",
+        "speech_act": "information_request",
         "message": "相手への短い質問",
-        "action": "A",
+        "action": None,
         "reason": "確認したい理由",
         "addressed_to": other_agent,
         "reply_to_message_id": None,
@@ -1360,22 +1374,21 @@ def v_measurement_prompt(
         raise ValueError(f"Unknown V measurement phase: {phase}")
     current = "" if current_v is None else f"\n現在Vの参考記録:\n{_canonical_json(current_v)}\n"
     criteria = list(DEFAULT_VALUE_CRITERIA_SCHEMA.criteria)
-    weight_example = {c: 0.2 for c in criteria}
-    # 合計が1になるように最後の項目を微調整（浮動小数点誤差を避けるため）
-    weight_example[criteria[-1]] = round(1.0 - sum(weight_example[c] for c in criteria[:-1]), 6)
     criteria_json = _canonical_json(criteria)
-    weights_json = _canonical_json(weight_example)
+    weights_instruction = _canonical_json(
+        {criterion: f"<{criterion}の現在の優先度。0以上1以下>" for criterion in criteria}
+    )
     if phase == "before":
         contract = (
             f'{{"v_before":{{"ordered_criteria":{criteria_json},'
-            f'"weights":{weights_json},"confidence":0.6}},'
-            f'"action_before":"A","reason_before":"短い理由"}}'
+            f'"weights":{weights_instruction},"confidence":"<0以上1以下の数値>"}},'
+            f'"action_before":"<現在の観測から選ぶA-Fのいずれか>","reason_before":"短い理由"}}'
         )
         instruction = "相手の発言を見る前の、あなた自身の暫定判断基準と行動案を記録してください。"
     else:
         contract = (
             f'{{"v_after":{{"ordered_criteria":{criteria_json},'
-            f'"weights":{weights_json},"confidence":0.6}},'
+            f'"weights":{weights_instruction},"confidence":"<0以上1以下の数値>"}},'
             f'"reason_after":"短い理由"}}'
         )
         instruction = "最終投票確定後の、あなた自身の現在の判断基準を記録してください。"
@@ -1395,6 +1408,8 @@ def v_measurement_prompt(
 version: {DEFAULT_VALUE_CRITERIA_SCHEMA.version}
 criteria: {criteria_json}
 上記criteriaから1つでも欠けたり、未知の項目を追加したりしないでください。
+weights は ROLE_PERSONA_INITIAL_VALUE と CURRENT_OBSERVATION における、あなた自身の現在の優先順位から導出してください。
+テンプレートのプレースホルダーや例示値をコピーせず、5項目すべてに数値を割り当て、合計を1.0にしてください。
 
 【CURRENT_OBSERVATION id=state】
 {format_state(state, agent_name, role)}
@@ -1497,7 +1512,8 @@ def discussion_prompt(
 行動案を述べたい場合は action（A-F）と reason を含めてください。
 ready は不要です。
 {v_sharing_guide}
-質問をする場合は speech_act に "question_objection" を使い、addressed_to を指定してください。
+証拠・状態の情報要求は speech_act="information_request", action=null を使えます。
+反論を伴う質問は speech_act="question_objection" を使ってください。addressed_to は相手名、null、または省略が可能です。
 必ず次のJSONだけを返してください。説明文やMarkdownは不要です。
 {json_contract}
 """
@@ -2138,7 +2154,7 @@ def run_one_game(
                         repair_prefix = (
                             "【REPAIR_REQUEST id=discussion-repair】\n"
                             "直前の出力はJSON契約を満たしていません。"
-                            "必須キー(speech_act, message, action, reason, addressed_to, reply_to_message_id)"
+                            "必須キー(speech_act, message, action, reason, reply_to_message_id)"
                             "をすべて含め、説明文やMarkdownなしでJSONのみ返してください。\n"
                             f"直前の出力(先頭): {raw[:200]}\n\n"
                         )

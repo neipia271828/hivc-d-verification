@@ -13,6 +13,7 @@ from scripts.llm_turn_game_common import (
     resolve_v_star,
     v_alignment_distance,
     verify_vote_v_star_consistency,
+    v_measurement_prompt,
     _normalize_v_proposal,
 )
 from turn_game import Action, Event, GameState
@@ -25,6 +26,34 @@ _H = "hull_damage"
 _F = "flooding"
 _C = "communication"
 FULL_CRITERIA = [_O, _P, _H, _F, _C]
+
+
+def test_v_measurement_prompts_require_derived_weights_without_copyable_answers() -> None:
+    prompts = {
+        phase: v_measurement_prompt(
+            "alpha",
+            GameState(current_event=Event.NONE),
+            phase=phase,
+            persona="safety persona",
+            persona_params={"priority_weights": {_O: 0.4, _P: 0.1, _H: 0.2, _F: 0.2, _C: 0.1}},
+        )
+        for phase in ("before", "after")
+    }
+    uniform = '"weights":{"communication":0.2,"flooding":0.2,"hull_damage":0.2,"oxygen":0.2,"power":0.2}'
+    for phase, prompt in prompts.items():
+        assert uniform not in prompt
+        assert '"action_before":"A"' not in prompt
+        assert _canonical_json(FULL_CRITERIA) in prompt
+        assert '"weights"' in prompt and '"confidence"' in prompt
+        assert all(f'"{criterion}":"<{criterion}の現在の優先度。0以上1以下>"' in prompt for criterion in FULL_CRITERIA)
+        assert "プレースホルダーや例示値をコピーせず" in prompt
+        assert "ROLE_PERSONA_INITIAL_VALUE" in prompt
+        assert f"v-measurement-{phase}" in prompt
+    assert '"v_before"' in prompts["before"]
+    assert '"action_before"' in prompts["before"]
+    assert '"reason_before"' in prompts["before"]
+    assert '"v_after"' in prompts["after"]
+    assert '"reason_after"' in prompts["after"]
 
 
 def test_nested_v_proposal_and_response_parse() -> None:

@@ -1,6 +1,6 @@
 # GPU実験CLIの使い方
 
-HIVC-Dの実験は、ローカルMacのリポジトリルートから `uv run` の4コマンドで操作する。
+HIVC-Dの実験は、ローカルMacのリポジトリルートから `uv run` の各コマンドで操作する。
 実験本体はGPUサーバーで実行し、完了したログをMacへ取得してローカルGUIで閲覧する。
 
 GPU上でHTTPサーバーやngrokを起動する必要はない。GUIはMacの `127.0.0.1` のみに公開される。
@@ -13,13 +13,17 @@ GPU上でHTTPサーバーやngrokを起動する必要はない。GUIはMacの `
 # 1. ローカルのコードをcommit・pushし、GPUへ同期
 uv run sync
 
-# 2. GPUで実験を開始
+# 2. GPUで1ゲームのsmokeを開始
 uv run experiment
 
-# 3. 実験完了後、ログをMacへ取得
+# 3. smoke完了後、ログをMacへ取得して科学的妥当性を検証
 uv run download
+uv run validate-smoke hivc_sim/results/turn_game/downloads/<smoke-run-id> --applicability required
 
-# 4. MacでGUIビジュアライザーを起動
+# 4. 合格したsmoke runを指定して本実験を開始
+uv run experiment --conditions control consulting hivc_d --games 100 --smoke-run-id <smoke-run-id>
+
+# 5. MacでGUIビジュアライザーを起動
 uv run visualize
 ```
 
@@ -69,14 +73,47 @@ uv run experiment
 
 run IDは `episode-YYYYMMDD-HHMMSS` 形式で自動生成される。実験はGPU上でバックグラウンド実行されるため、開始後にSSH接続を維持する必要はない。
 
+### smoke科学的妥当性ゲート
+
+本実験の開始前に、完了したsmokeのCSV実測値を検証する。列が存在するだけでは合格にならない。
+
+```bash
+uv run download --run-id <smoke-run-id>
+uv run validate-smoke \
+  hivc_sim/results/turn_game/downloads/<smoke-run-id> \
+  --applicability required
+```
+
+次の全条件を満たす場合だけ終了コード0になる。
+
+- alpha/betaの測定Vが、同一の一様0.2ベクトルをコピーしたものではない
+- `v_alignment_required=true` のターンが1件以上ある
+- 必須V提案機会（`v_proposal_rate` の分母）が1件以上ある
+- ID付きの受諾済みV*が1件以上ある
+- `invalid_discussion_output_rate < 0.10` であり、実発言が存在する
+
+失敗時は各gateの観測値と診断をJSONで表示し、終了コード1を返す。診断を保存する場合は `--report <path>` を使う。
+
+V測定を行わないlegacy実験だけは、対象外であることを明示できる。
+
+```bash
+uv run validate-smoke <legacy-run-dir> --applicability not-applicable
+uv run experiment --games 100 --scientific-gate not-applicable
+```
+
+`not-applicable` はV固有gateを意図的に無効化するため、通常の `soft_value` 実験には使用しない。
+
 ### 条件、ゲーム数、seedを指定する
 
 ```bash
 uv run experiment \
   --conditions control consulting hivc_d \
   --games 30 \
-  --seed 42
+  --seed 42 \
+  --smoke-run-id episode-smoke-01
 ```
+
+2ゲーム以上の新規runでは `--smoke-run-id` が必須で、GPU側にある指定smokeを再検証してから本実験runを作成する。gate不合格時はGPU本実験を起動しない。`--resume` は同一runのshard再開なので、この事前指定を再要求しない。
 
 run IDを固定する場合:
 
@@ -85,6 +122,7 @@ uv run experiment --run-id episode-reproduction-01
 ```
 
 同じrun IDは再利用できない。再実行時は別のrun IDを指定するか、自動生成を使う。
+直列ランナーも既存CSV、`value_manifest.json`、`run_metadata.json`、既存 `stream.jsonl` を含む出力先を拒否する。`run_metadata.json` にはrun ID、git commit、開始・完了状態、およびCSV・stream・value manifestのハッシュが保存される。workflowが事前作成する `run_id`、`started_at`、`command.txt`、`run.log`、`pid` だけのディレクトリは使用可能である。
 
 ### 状態を確認する
 
@@ -217,6 +255,7 @@ uv run visualize
 ```bash
 uv run sync --help
 uv run experiment --help
+uv run validate-smoke --help
 uv run download --help
 uv run visualize --help
 ```

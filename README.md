@@ -113,20 +113,27 @@ python3 scripts/qwen3_14b_4bit_smoke.py --model-path ~/models/Qwen3-14B
 - `configs/agent_smoke.yaml` — 1エージェントスモーク（1ゲーム）
 
 ```bash
-# configファイルで実行（推奨・最も簡潔）
-python3 scripts/qwen_two_agent_experiment.py --config configs/experiment.yaml
+# configファイルで直接実行する場合は、runごとに新しいoutput-dirを指定する
+python3 scripts/qwen_two_agent_experiment.py --config configs/experiment.yaml \
+  --output-dir hivc_sim/results/turn_game/experiment/runs/episode-manual-01 \
+  --run-id episode-manual-01
 
 # CLI引数で個別項目を上書き（configより優先）
-python3 scripts/qwen_two_agent_experiment.py --config configs/experiment.yaml --games 50
-python3 scripts/qwen_two_agent_experiment.py --config configs/experiment.yaml --conditions control hivc_d
+python3 scripts/qwen_two_agent_experiment.py --config configs/experiment.yaml --games 50 \
+  --output-dir hivc_sim/results/turn_game/experiment/runs/episode-manual-02
+python3 scripts/qwen_two_agent_experiment.py --config configs/experiment.yaml --conditions control hivc_d \
+  --output-dir hivc_sim/results/turn_game/experiment/runs/episode-manual-03
 
 # スモークテストも同様
 python3 scripts/qwen_turn_game_agent_smoke.py --config configs/agent_smoke.yaml
 python3 scripts/qwen_two_agent_turn_game_smoke.py --config configs/smoke.yaml
 
 # configなし（従来通り全引数をCLIで指定も可能）
-python3 scripts/qwen_two_agent_experiment.py --model-path ~/models/Qwen3-14B --games 30
+python3 scripts/qwen_two_agent_experiment.py --model-path ~/models/Qwen3-14B --games 30 \
+  --output-dir hivc_sim/results/turn_game/experiment/runs/episode-manual-04
 ```
+
+直列ランナーは既存run成果物や既存 `stream.jsonl` の再利用を拒否する。各runの `run_metadata.json` がCSV、stream、`value_manifest.json`、git commit、開始・完了状態を結び付ける。本実験前のsmoke科学的妥当性gateは [GPU実験実行手順](document/run-experiments/GPU実験実行手順.md) を参照。
 
 configの主な項目（`configs/experiment.yaml`）:
 
