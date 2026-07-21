@@ -80,13 +80,26 @@ def _to_bool(value) -> bool:
 
 
 def normalized_l1_distance(left: object, right: object) -> float:
-    """Return L1 distance between normalized weight mappings.
+    """Return a comparable V distance for qualitative levels or legacy weights.
 
     Both mappings must contain the same criteria.  Missing/invalid vectors are
     not measurement opportunities and therefore return NaN rather than zero.
     """
     left = _parse_json(left, left)
     right = _parse_json(right, right)
+    if isinstance(left, dict) and isinstance(right, dict):
+        left_levels = left.get("priority_levels")
+        right_levels = right.get("priority_levels")
+        if isinstance(left_levels, dict) and isinstance(right_levels, dict):
+            if set(left_levels) != set(right_levels) or not left_levels:
+                return float("nan")
+            allowed = {"high", "mid", "low"}
+            if any(str(value).lower() not in allowed for value in [*left_levels.values(), *right_levels.values()]):
+                return float("nan")
+            return sum(
+                str(left_levels[key]).lower() != str(right_levels[key]).lower()
+                for key in left_levels
+            ) / len(left_levels)
     if isinstance(left, dict) and isinstance(left.get("weights"), dict):
         left = left["weights"]
     if isinstance(right, dict) and isinstance(right.get("weights"), dict):
@@ -185,8 +198,8 @@ def _v_schema_complete(row: dict) -> bool | None:
     検査対象:
     - alpha_v_before, beta_v_before
     - alpha_v_after, beta_v_after (存在する場合)
-    - weights の全値が有限かつ非負
-    - weights の合計が 1.0 に一致する（浮動小数点許容誤差内）
+    - 新形式では priority_levels が全criteriaを持ち high/mid/low のいずれか
+    - legacy形式では weights が有限・非負で合計1.0
     - ordered_criteria が期待集合に完全一致
     """
     errors = _parse_json(row.get("v_measurement_errors"), row.get("v_measurement_errors"))
@@ -199,13 +212,19 @@ def _v_schema_complete(row: dict) -> bool | None:
     def valid(v: object) -> bool:
         if not isinstance(v, dict):
             return False
-        weights = v.get("weights")
         ordered = v.get("ordered_criteria")
-        if not isinstance(weights, dict) or not isinstance(ordered, (list, tuple)):
-            return False
-        if set(weights.keys()) != expected:
+        if not isinstance(ordered, (list, tuple)):
             return False
         if set(ordered) != expected or len(ordered) != len(expected):
+            return False
+        levels = v.get("priority_levels")
+        if isinstance(levels, dict):
+            return set(levels) == expected and all(
+                isinstance(level, str) and level.lower() in {"high", "mid", "low"}
+                for level in levels.values()
+            )
+        weights = v.get("weights")
+        if not isinstance(weights, dict) or set(weights.keys()) != expected:
             return False
         # 全 weight 値が有限かつ非負
         for w in weights.values():
@@ -838,7 +857,7 @@ def max_consecutive_duplicate_questions_metric(rows: list[dict]) -> int | float:
 
 
 def invalid_discussion_output_rate(rows: list[dict]) -> float:
-    """議論発話のうち JSON 契約違反または破損JSON断片だった割合。"""
+    """論理発話のうち、全retry後も修復できなかった割合（既存定義）。"""
     total = 0
     invalid = 0
     for row in rows:
@@ -847,6 +866,44 @@ def invalid_discussion_output_rate(rows: list[dict]) -> float:
             total += int(messages)
             invalid += _safe_float(row.get("invalid_discussion_output_count"), 0.0)
     return invalid / total if total else float("nan")
+
+
+def discussion_attempt_metrics(rows: list[dict]) -> dict[str, float | int]:
+    """JSON契約違反をattempt単位で集計し、修復成否を論理発話単位で集計する。"""
+    invalid_attempts = 0
+    total_attempts = 0
+    repaired_outputs = 0
+    final_failures = 0
+    for row in rows:
+        discussion_turns = int(_safe_float(row.get("discussion_turns"), 0.0))
+        retries = int(_safe_float(row.get("discussion_retry_count"), 0.0))
+        total_attempts += discussion_turns + retries
+
+        recorded_attempts = row.get("invalid_attempt_count")
+        if recorded_attempts in (None, ""):
+            audit = _parse_json(row.get("invalid_discussion_outputs"), [])
+            if isinstance(audit, list):
+                recorded_attempts = len(audit)
+            else:
+                # 旧CSVでは最終失敗だけが記録されていたため、安全な下限として扱う。
+                recorded_attempts = row.get("invalid_discussion_output_count", 0)
+        invalid_attempts += int(_safe_float(recorded_attempts, 0.0))
+        repaired_outputs += int(_safe_float(row.get("repaired_invalid_output_count"), 0.0))
+        final_failures += int(_safe_float(row.get("invalid_discussion_output_count"), 0.0))
+
+    repair_opportunities = repaired_outputs + final_failures
+    return {
+        "invalid_discussion_attempt_rate": (
+            invalid_attempts / total_attempts if total_attempts else float("nan")
+        ),
+        "invalid_discussion_attempt_count": invalid_attempts,
+        "discussion_attempt_count": total_attempts,
+        "discussion_repair_success_rate": (
+            repaired_outputs / repair_opportunities if repair_opportunities else float("nan")
+        ),
+        "repaired_invalid_output_count": repaired_outputs,
+        "discussion_repair_opportunity_count": repair_opportunities,
+    }
 
 
 def silent_unanswered_question_count(rows: list[dict]) -> int:
@@ -878,6 +935,7 @@ def compute_summary_metrics(rows: list[dict], threshold: float = CONFLICT_THRESH
     summary["duplicate_question_rate"] = duplicate_question_rate(enriched)
     summary["max_consecutive_duplicate_questions"] = max_consecutive_duplicate_questions_metric(enriched)
     summary["invalid_discussion_output_rate"] = invalid_discussion_output_rate(enriched)
+    summary.update(discussion_attempt_metrics(enriched))
     summary["silent_unanswered_question_count"] = silent_unanswered_question_count(enriched)
     summary.update(v_process_metrics(enriched))
     return summary

@@ -1,0 +1,50 @@
+# Flagship model comparison smoke. Keep every scientific setting equal to
+# configs/zai_flashx_smoke.yaml and change only the model identifier.
+conditions:
+  - hivc_d
+games: 1
+seed: 42
+
+model: glm-4.7
+do_sample: false
+temperature: 0.2
+
+role_value_mode: soft_value
+role_file: configs/profiles_soft_value.yaml
+alpha_role_key: null
+beta_role_key: null
+personas_file: null
+persona_params_file: null
+alpha_persona: null
+beta_persona: null
+random_persona: false
+random_seed: null
+
+max_new_tokens: 256
+max_discussion_turns: 6
+discussion_token_budget: 1536
+evaluator_rollouts: 24
+decision_schedule_seed: 0
+max_decision_opportunities: 3
+
+request_timeout_seconds: 60
+http_max_retries: 0
+http_backoff_seconds: 1
+request_interval_seconds: 0
+adaptive_rate_limit: true
+adaptive_min_interval_seconds: 0.2
+adaptive_initial_interval_seconds: 0.5
+adaptive_max_interval_seconds: 5.0
+adaptive_cooldown_seconds: 30
+adaptive_max_retries: 20
+compact_prompts: true
+max_total_tokens: 2000000
+
+parallel_conditions: false
+api_concurrency: 1
+api_concurrency_per_key: 1
+api_key_envs:
+  - ZAI_API_KEY
+thinking_enabled: false
+
+output_dir: hivc_sim/results/turn_game/zai/runs

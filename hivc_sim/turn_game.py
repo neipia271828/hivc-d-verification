@@ -52,6 +52,17 @@ ACTION_LABELS: dict[Action, str] = {
     Action.EXECUTE_ESCAPE: "自力脱出を実行",
 }
 
+# ``step`` の固定効果と同じ内容をプロンプトへ渡すためのcanonical説明。
+# 確率分岐は予測state_afterには加えず、リスクとして明記する。
+ACTION_EFFECT_DESCRIPTIONS: dict[Action, str] = {
+    Action.STABILIZE_OXYGEN: "oxygen +3, power -1, morale +2",
+    Action.REPAIR_POWER: "power +3, morale -2; 25%でhull_damage +1",
+    Action.REPAIR_COMMUNICATION: "communication +1, power -1; signal_window時さらに+1; 25%でflooding +1",
+    Action.SEAL_FLOODING: "flooding -2, oxygen -1; leak_surge時さらに-1",
+    Action.PREP_POD: "pod_readinessまたはpod_integrity +1, power -1",
+    Action.EXECUTE_ESCAPE: "脱出条件を全て満たす時のみ勝利; 未充足なら不足項目に応じ重大損傷",
+}
+
 
 class Event(str, Enum):
     NONE = "none"
@@ -77,6 +88,20 @@ EVENT_LABELS: dict[Event, str] = {
     Event.CURRENT_CHANGE: "海流変化",
     Event.BACKUP_POWER_FOUND: "非常用電源発見",
     Event.HULL_FRACTURE: "船体亀裂拡大",
+}
+
+TURN_START_BASE_EFFECT = "oxygen -1, power -1"
+EVENT_EFFECT_DESCRIPTIONS: dict[Event, str] = {
+    Event.NONE: "追加効果なし",
+    Event.PRESSURE_SPIKE: "hull_damage +1",
+    Event.LEAK_SURGE: "flooding +1",
+    Event.SIGNAL_WINDOW: "Cのcommunication回復量がさらに+1",
+    Event.CREW_PANIC: "morale -10",
+    Event.RELAY_SHORT: "power -1, communication -1",
+    Event.POD_FLOODING: "flooding +1, pod_integrity -1",
+    Event.CURRENT_CHANGE: "hull_damage +1, flooding +1",
+    Event.BACKUP_POWER_FOUND: "power +2",
+    Event.HULL_FRACTURE: "hull_damage +2",
 }
 
 
@@ -266,10 +291,15 @@ def initial_state(seed: int | None = None, scenario_id: str | None = None) -> Ga
         rescue_eta=None,
         morale=jitter(scenario.base_morale, 50, 100, 5),
         severe_risk_count=0,
-        current_event=sample_event(rng, scenario_id=scenario.scenario_id, turn=0),
+        current_event=Event.NONE,
         scenario_id=scenario.scenario_id,
     )
-    return state
+    return replace(
+        state,
+        current_event=sample_viable_event(
+            rng, state, scenario_id=scenario.scenario_id, turn=0
+        ),
+    )
 
 
 def sample_event(rng: np.random.Generator, scenario_id: str | None = None, turn: int | None = None) -> Event:
@@ -279,6 +309,34 @@ def sample_event(rng: np.random.Generator, scenario_id: str | None = None, turn:
         if index is not None and 0 <= index < len(scenario.event_sequence):
             return scenario.event_sequence[index]
     return Event(rng.choice([event.value for event in EVENT_VALUES], p=EVENT_PROBS))
+
+
+def _event_has_safe_action(state: GameState, event: Event) -> bool:
+    candidate_state = replace(state, current_event=event, done=False, outcome="running")
+    return any(preview_action_safety(candidate_state, action)[0] for action in ALL_ACTIONS)
+
+
+def sample_viable_event(
+    rng: np.random.Generator,
+    state: GameState,
+    scenario_id: str | None = None,
+    turn: int | None = None,
+) -> Event:
+    """Action選択前に確実な敗北を強制しないイベントを抽選する。
+
+    固定シナリオも含め、予定イベントが全Actionを確実な敗北にする場合だけ、
+    元の分布から実行可能イベントへ決定論的に再抽選する。通常時の分布は変えない。
+    """
+    sampled = sample_event(rng, scenario_id=scenario_id, turn=turn)
+    if _event_has_safe_action(state, sampled):
+        return sampled
+    viable = [event for event in EVENT_VALUES if _event_has_safe_action(state, event)]
+    if not viable:
+        # イベント以前から回避不能な状態では、少なくとも追加損傷を与えない。
+        return Event.NONE
+    weights = np.array([EVENT_PROBS[EVENT_VALUES.index(event)] for event in viable], dtype=float)
+    weights /= weights.sum()
+    return Event(rng.choice([event.value for event in viable], p=weights))
 
 
 def terminalize(state: GameState) -> GameState:
@@ -397,6 +455,11 @@ def _post_start_state(state: GameState) -> GameState:
     )
 
 
+def preview_turn_start_state(state: GameState) -> GameState:
+    """ターン開始消費と現在イベントだけを反映した、Action比較用の基準状態。"""
+    return _post_start_state(state)
+
+
 def _escape_conditions_met(state: GameState) -> bool:
     """発進直前の状態（基本消費・イベント効果反映済み）で脱出条件を満たすか。
 
@@ -505,8 +568,19 @@ def step(state: GameState, action: Action, rng: np.random.Generator) -> StepResu
         rescue_eta=post_state.rescue_eta,
         morale=clamp(morale, 0, 100),
         severe_risk_count=severe_risk_count,
-        current_event=sample_event(rng, scenario_id=post_state.scenario_id, turn=post_state.turn),
+        current_event=Event.NONE,
         scenario_id=post_state.scenario_id,
+    )
+
+    # 次ターン開始時に少なくとも1つ確実に生存可能なActionが残るイベントだけを採用する。
+    next_state = replace(
+        next_state,
+        current_event=sample_viable_event(
+            rng,
+            next_state,
+            scenario_id=post_state.scenario_id,
+            turn=post_state.turn,
+        ),
     )
 
     if action == Action.EXECUTE_ESCAPE:
@@ -522,6 +596,101 @@ def step(state: GameState, action: Action, rng: np.random.Generator) -> StepResu
         next_state = terminalize(next_state)
 
     return StepResult(state, action, next_state, event, next_state.outcome, terminal_score(next_state), premature)
+
+
+def preview_action_safety(state: GameState, action: Action) -> tuple[bool, str, GameState]:
+    """確率分岐を除いた既知の即時効果から、確実な敗北を事前検査する。
+
+    REPAIR_POWER/REPAIR_COMMUNICATION の25%事故は「確実」ではないため加えない。
+    一方、ターン開始時消費、現在イベント、行動の固定消費、未準備脱出は
+    ``step`` と同じ順序で反映する。モデルへ非公開乱数を漏らさず、安全ゲートに使える。
+    """
+    post_state = _post_start_state(state)
+    oxygen = post_state.oxygen
+    power = post_state.power
+    hull_damage = post_state.hull_damage
+    flooding = post_state.flooding
+    communication = post_state.communication
+    pod_readiness = post_state.pod_readiness
+    pod_integrity = post_state.pod_integrity
+    morale = post_state.morale
+    severe_risk_count = post_state.severe_risk_count
+    escape_success = False
+    escape_failed = False
+
+    if action == Action.STABILIZE_OXYGEN:
+        oxygen += 3
+        power -= 1
+        morale += 2
+    elif action == Action.REPAIR_POWER:
+        power += 3
+        morale -= 2
+    elif action == Action.REPAIR_COMMUNICATION:
+        communication += 2 if state.current_event == Event.SIGNAL_WINDOW else 1
+        power -= 1
+    elif action == Action.SEAL_FLOODING:
+        flooding -= 3 if state.current_event == Event.LEAK_SURGE else 2
+        oxygen -= 1
+    elif action == Action.PREP_POD:
+        if _choose_pod_target(state) == "integrity":
+            pod_integrity += 1
+        else:
+            pod_readiness += 1
+        power -= 1
+    elif action == Action.EXECUTE_ESCAPE:
+        if _escape_conditions_met(post_state):
+            escape_success = True
+        else:
+            escape_failed = True
+            if post_state.pod_readiness < 2:
+                hull_damage += 2 - post_state.pod_readiness
+            if post_state.pod_integrity < 2:
+                hull_damage += 2 - post_state.pod_integrity
+            if post_state.oxygen < 3:
+                oxygen -= 3
+            if post_state.power < 2:
+                power -= 2
+            if post_state.flooding > 3:
+                flooding += 1
+            severe_risk_count += 2
+
+    # stepと同じ、固定状態に基づく士気・severe risk更新。
+    if oxygen <= 2:
+        morale -= 8
+        severe_risk_count += 1
+    if power <= 2:
+        morale -= 6
+        severe_risk_count += 1
+    if flooding >= 4 or hull_damage >= 4:
+        morale -= 6
+        severe_risk_count += 1
+
+    preview = GameState(
+        turn=post_state.turn,
+        oxygen=clamp(oxygen, -5, 12),
+        power=clamp(power, -5, 12),
+        hull_damage=clamp(hull_damage, 0, 6),
+        flooding=clamp(flooding, 0, 6),
+        communication=clamp(communication, 0, 4),
+        pod_readiness=clamp(pod_readiness, 0, 3),
+        pod_integrity=clamp(pod_integrity, 0, 4),
+        rescue_eta=post_state.rescue_eta,
+        morale=clamp(morale, 0, 100),
+        severe_risk_count=severe_risk_count,
+        current_event=post_state.current_event,
+        scenario_id=post_state.scenario_id,
+    )
+    if escape_success:
+        preview = replace(preview, done=True, outcome="win")
+    else:
+        preview = terminalize(preview)
+        if escape_failed and not preview.done:
+            preview = replace(preview, done=True, outcome="loss_escape_failed")
+    if escape_failed:
+        return False, "escape_conditions_not_met", preview
+    if preview.outcome.startswith("loss_"):
+        return False, f"guaranteed_{preview.outcome}", preview
+    return True, "", preview
 
 
 Policy = Callable[[GameState, np.random.Generator], Action]

@@ -19,6 +19,10 @@ experiment = "scripts.workflow_cli:experiment_main"
 download = "scripts.workflow_cli:download_main"
 visualize = "scripts.workflow_cli:visualize_main"
 validate-smoke = "scripts.validate_experiment_preflight:main"
+devin-experiment = "scripts.devin_two_agent_experiment:main"
+devin-validate-env = "scripts.devin_two_agent_experiment:validate_env"
+zai-experiment = "scripts.zai_two_agent_experiment:main"
+zai-validate-env = "scripts.zai_two_agent_experiment:validate_env"
 
 [build-system]
 requires = ["setuptools>=68"]

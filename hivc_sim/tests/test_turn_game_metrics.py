@@ -13,6 +13,7 @@ from turn_game_metrics import (  # noqa: E402
     conflict_level,
     compute_summary_metrics,
     discussion_diversity,
+    discussion_attempt_metrics,
     expert_match_rate,
     fallback_rate,
     forced_decision_with_open_question_rate,
@@ -25,6 +26,26 @@ from turn_game_metrics import (  # noqa: E402
     normalized_l1_distance,
     v_process_metrics,
 )
+
+
+def test_discussion_attempt_metrics_separate_repaired_from_final_failure() -> None:
+    metrics = discussion_attempt_metrics(
+        [
+            {
+                "discussion_turns": 2,
+                "discussion_retry_count": 2,
+                "invalid_attempt_count": 3,
+                "repaired_invalid_output_count": 1,
+                "invalid_discussion_output_count": 1,
+            }
+        ]
+    )
+    assert metrics["invalid_discussion_attempt_rate"] == 0.75
+    assert metrics["invalid_discussion_attempt_count"] == 3
+    assert metrics["discussion_attempt_count"] == 4
+    assert metrics["discussion_repair_success_rate"] == 0.5
+    assert metrics["repaired_invalid_output_count"] == 1
+    assert metrics["discussion_repair_opportunity_count"] == 2
 
 
 def test_conflict_level_two_agents() -> None:

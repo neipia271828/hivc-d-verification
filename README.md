@@ -135,6 +135,50 @@ python3 scripts/qwen_two_agent_experiment.py --model-path ~/models/Qwen3-14B --g
 
 直列ランナーは既存run成果物や既存 `stream.jsonl` の再利用を拒否する。各runの `run_metadata.json` がCSV、stream、`value_manifest.json`、git commit、開始・完了状態を結び付ける。本実験前のsmoke科学的妥当性gateは [GPU実験実行手順](document/run-experiments/GPU実験実行手順.md) を参照。
 
+### Z.ai GLM-4.7-Flash API実験（GPU/Qwenとは独立）
+
+GPUサーバーやDevin sessionを使わず、Z.ai一般推論APIから `glm-4.7-flash` を直接呼び出せる。
+API keyは `ZAI_API_KEY`、`ZAI_API_KEY_2`、`ZAI_API_KEY_3` 環境変数から読み、値は成果物に保存しない。詳しくは
+[Z.ai API実験ガイド](document/run-experiments/ZAI_API実験ガイド.md) を参照。
+
+```bash
+# ネットワーク接続なしの計画確認
+uv run zai-experiment --dry-run
+
+# 実モデルへの小さなJSON completionで利用可能性を検証
+read -s "ZAI_API_KEY?Z.ai API key: " && export ZAI_API_KEY && echo
+uv run zai-validate-env
+
+# control / consulting / hivc_dを各1ゲーム
+caffeinate -dimsu uv run zai-experiment --config configs/zai_experiment.yaml --parallel-conditions
+unset ZAI_API_KEY
+unset ZAI_API_KEY_2
+unset ZAI_API_KEY_3
+```
+
+各API応答の入力・出力・cache・合計token数を `zai_provenance.json` に記録する。各ゲーム条件の
+完了時に成果物をチェックポイント保存する。モデルと推論サービスが異なるため、過去のQwen/GPU
+結果とは直接比較せず、同一Z.ai run内の3条件を比較する。
+
+### Devin API v3 実験（GPU/Qwenとは独立）
+
+`scripts/devin_two_agent_experiment.py` は Devin API v3 organization endpoint 専用の実験ランナーで、GPU/Qwen 実行経路を使用しない。認証情報は環境変数 `DEVIN_API_KEY` と任意の `DEVIN_ORG_ID` だけから取得し、設定・manifest・provenance へ保存しない。詳しくは [Devin API実験ガイド](document/run-experiments/Devin_API実験ガイド.md) を参照。
+
+```bash
+# 無料・ネットワーク接続なしの計画確認
+uv run devin-experiment --dry-run
+
+# 安価な GET /v3/self のみで認証・organization readinessを確認
+read -s "DEVIN_API_KEY?Devin API key: " && export DEVIN_API_KEY && echo
+uv run devin-validate-env
+
+# 有料実験。内容と上限を確認してから明示的に実行する
+uv run devin-experiment --config configs/devin_experiment.yaml
+unset DEVIN_API_KEY
+```
+
+既定の `control / consulting / hivc_d × 1ゲーム` smoke は、各 `(seed, condition)` に alpha/beta の独立セッションを割り当てるため **6セッション**を新規作成する。セッションはゲーム・条件をまたいで再利用しない。この結果はモデル、推論サービス、セッション寿命、コスト実行環境が異なる **Devin-only の新規実験**であり、過去の Qwen/GPU run とは科学的に比較できない。
+
 configの主な項目（`configs/experiment.yaml`）:
 
 ```yaml
@@ -288,6 +332,13 @@ python3 scripts/download_gpu_logs.py
 python3 scripts/local_preview.py
 
 # 4. ブラウザで http://127.0.0.1:8765/ を開く
+```
+
+Devin のローカル出力は取得処理を挟まず、出力ルートを指定して同じプレビューを使える。
+
+```bash
+python3 scripts/local_preview.py \
+  --downloads-dir hivc_sim/results/turn_game/devin/runs
 ```
 
 `download_gpu_logs.py` は `configs/gpu_server.yaml` のSSH接続情報を使い、GPUサーバー上の `output_dir` を `hivc_sim/results/turn_game/downloads/<run-id>/` へ `rsync` する。取得時に `manifest.json` を生成し、どのGPU実験から来たかを追跡できる。

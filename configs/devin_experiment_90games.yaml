@@ -1,0 +1,38 @@
+# Devin API v3 three-condition experiment: 90 games total (30 per condition).
+conditions:
+  - control
+  - consulting
+  - hivc_d
+games: 30
+seed: 42
+
+role_value_mode: soft_value
+role_file: configs/profiles_soft_value.yaml
+alpha_role_key: null
+beta_role_key: null
+personas_file: null
+persona_params_file: null
+alpha_persona: null
+beta_persona: null
+random_persona: false
+random_seed: null
+
+max_new_tokens: 256
+max_discussion_turns: 6
+discussion_token_budget: 1536
+evaluator_rollouts: 24
+decision_schedule_seed: 0
+max_decision_opportunities: 3
+
+request_timeout_seconds: 20
+http_max_retries: 3
+http_backoff_seconds: 1
+poll_interval_seconds: 5
+response_timeout_seconds: 120
+response_max_retries: 2
+
+# 30 seeds x 3 conditions x 2 isolated agents = 180 sessions.
+max_acu_per_session: 1
+max_total_acu: 180
+
+output_dir: hivc_sim/results/turn_game/devin/runs

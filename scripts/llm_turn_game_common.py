@@ -27,10 +27,13 @@ if str(_HIVC_SIM_PATH) not in sys.path:
 
 from profiles import DEFAULT_VALUE_CRITERIA_SCHEMA, ROLE_VALUE_MODES  # noqa: E402
 from turn_game import (
+    ACTION_EFFECT_DESCRIPTIONS,
     ACTION_LABELS,
     ALL_ACTIONS,
     Action,
+    EVENT_EFFECT_DESCRIPTIONS,
     EVENT_LABELS,
+    TURN_START_BASE_EFFECT,
     acceptable_actions,
     best_action,
     estimate_q_values,
@@ -38,9 +41,56 @@ from turn_game import (
     optimal_route,
     role_specific_evidence,
     route_of_action,
+    preview_action_safety,
+    preview_turn_start_state,
     step,
     terminal_score,
 )
+
+PRIORITY_LEVELS = ("high", "mid", "low")
+
+
+def _qualitative_level(value: Any) -> str:
+    """既存の0..1設定をモデル表示用の離散レベルへ変換する。"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        text = str(value).strip().lower()
+        return text if text in PRIORITY_LEVELS else "mid"
+    if number >= 0.30:
+        return "high"
+    if number >= 0.15:
+        return "mid"
+    return "low"
+
+
+def _qualitative_scalar_level(value: Any) -> str:
+    """confidenceや傾向の0..1設定を三分割してモデル向けに離散化する。"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        text = str(value).strip().lower()
+        return text if text in PRIORITY_LEVELS else "mid"
+    if number >= 2 / 3:
+        return "high"
+    if number >= 1 / 3:
+        return "mid"
+    return "low"
+
+
+def _qualitative_value_profile(value: Any) -> Any:
+    """Value profileからmodel-facingな数値重み・数値confidenceを除く。"""
+    if not isinstance(value, dict):
+        return value
+    result = {key: item for key, item in value.items() if key not in {"initial_priority_weights", "confidence"}}
+    weights = value.get("initial_priority_weights")
+    if isinstance(weights, dict):
+        result["initial_priority_levels"] = {
+            str(key): _qualitative_level(item) for key, item in weights.items()
+        }
+    if "confidence" in value:
+        result["confidence_level"] = _qualitative_scalar_level(value["confidence"])
+    return result
 
 
 # REQUIREMENTS §7: 条件間で差をつけるのは合意形成手順の指示のみ。
@@ -432,19 +482,32 @@ def _normalize_v(
 ) -> dict[str, Any] | None:
     """Validate the model-facing V representation against the common ontology.
 
-    V測定（v_before / v_after）は完全なcriteria集合とweightsを必要とする。
+    新しいV測定は完全なcriteria集合と high/mid/low のpriority_levelsを必要とする。
+    既存run・legacy backendからの数値weightsも読み取り互換のため受理する。
     """
     if not isinstance(value, dict):
         return None
     expected = set(schema.criteria)
     criteria = value.get("ordered_criteria")
+    levels = value.get("priority_levels")
     weights = value.get("weights")
+    confidence_level = value.get("confidence_level")
     confidence = value.get("confidence")
     if not isinstance(criteria, list) or not criteria or not all(isinstance(v, str) and v.strip() for v in criteria):
         return None
     ordered = [v.strip() for v in criteria]
     if set(ordered) != expected or len(ordered) != len(expected):
         return None
+    if isinstance(levels, dict):
+        normalized_levels = {str(k): str(v).strip().lower() for k, v in levels.items()}
+        if set(normalized_levels) != expected or any(v not in PRIORITY_LEVELS for v in normalized_levels.values()):
+            return None
+        if confidence_level is not None and str(confidence_level).strip().lower() not in PRIORITY_LEVELS:
+            return None
+        result: dict[str, Any] = {"ordered_criteria": ordered, "priority_levels": normalized_levels}
+        if confidence_level is not None:
+            result["confidence_level"] = str(confidence_level).strip().lower()
+        return result
     if not isinstance(weights, dict) or set(weights) != expected:
         return None
     try:
@@ -468,8 +531,16 @@ def _normalize_v(
 
 
 def v_alignment_distance(first: dict[str, Any] | None, second: dict[str, Any] | None) -> float:
-    """Normalized L1 distance; NaN when comparable numeric V is unavailable."""
-    if not first or not second or not isinstance(first.get("weights"), dict) or not isinstance(second.get("weights"), dict):
+    """V差。新形式ではpriority levelの不一致率、legacyではL1距離を返す。"""
+    if not first or not second:
+        return float("nan")
+    first_levels = first.get("priority_levels")
+    second_levels = second.get("priority_levels")
+    if isinstance(first_levels, dict) and isinstance(second_levels, dict):
+        if set(first_levels) != set(second_levels) or not first_levels:
+            return float("nan")
+        return sum(first_levels[k] != second_levels[k] for k in first_levels) / len(first_levels)
+    if not isinstance(first.get("weights"), dict) or not isinstance(second.get("weights"), dict):
         return float("nan")
     first_weights = first["weights"]
     second_weights = second["weights"]
@@ -498,17 +569,15 @@ def v_alignment_required(
     beta_v: dict[str, Any] | None,
     threshold: float = 0.20,
 ) -> tuple[bool, list[str]]:
-    """§6.2.1: ターン開始時にモデル自己申告に依存せず v_alignment_required を判定する。"""
+    """Action案が衝突した場合だけV整合を要求する。
+
+    Role由来のpriority差は監査用distanceとして別途記録するが、それだけで
+    V交渉を強制しない。異なるValueから同じActionへ到達することを許容する。
+    """
     reasons: list[str] = []
     if alpha_action is not None and beta_action is not None and alpha_action != beta_action:
         reasons.append("action_before_mismatch")
-    distance = v_alignment_distance(alpha_v, beta_v)
-    if not math.isnan(distance) and distance >= threshold:
-        reasons.append(f"l1_distance_{distance:.3f}_above_{threshold}")
-    alpha_top = _top_criterion(alpha_v)
-    beta_top = _top_criterion(beta_v)
-    if alpha_top is not None and beta_top is not None and alpha_top != beta_top:
-        reasons.append("top_criterion_mismatch")
+    del alpha_v, beta_v, threshold
     return bool(reasons), reasons
 
 
@@ -595,7 +664,8 @@ def _normalize_v_proposal(
     """Validate a V* proposal against the common ontology.
 
     順位のみの提案も許容するが、ordered_criteria は全criteriaを重複なく含む必要がある。
-    weights が含まれる場合も同じcriteria集合を持つ必要がある。
+    priority_levels が含まれる場合も同じcriteria集合と high/mid/low 値を持つ必要がある。
+    legacyの数値weightsも読み取り互換のため受理する。
     """
     if not isinstance(value, dict):
         return None
@@ -611,6 +681,11 @@ def _normalize_v_proposal(
     if scope not in {"turn", "game"}:
         return None
     proposal = {"proposal_id": proposal_id, "ordered_criteria": ordered, "scope": scope}
+    if isinstance(value.get("priority_levels"), dict):
+        levels = {str(k): str(v).strip().lower() for k, v in value["priority_levels"].items()}
+        if set(levels) != expected or any(v not in PRIORITY_LEVELS for v in levels.values()):
+            return None
+        proposal["priority_levels"] = levels
     if isinstance(value.get("weights"), dict):
         weights = value["weights"]
         if set(weights) != expected:
@@ -689,6 +764,28 @@ def resolve_v_star(proposals: list[dict[str, Any]], responses: dict[str, list[di
     if ambiguous_ids:
         return "unresolved", "", None, "proposal_id_content_mismatch"
     return "unresolved", "", None, "missing_matching_explicit_acceptance"
+
+
+def ensure_unique_v_proposal_id(
+    proposal: dict[str, Any],
+    existing: list[dict[str, Any]],
+) -> tuple[dict[str, Any], str, str]:
+    """同じIDが別内容に再利用された場合だけ、決定論的な一意IDへ修復する。"""
+    original_id = str(proposal.get("proposal_id", "")).strip()
+    semantic_keys = ("ordered_criteria", "priority_levels", "weights", "scope")
+    semantic = {key: proposal.get(key) for key in semantic_keys if key in proposal}
+    conflicting = any(
+        str(item.get("proposal_id", "")).strip() == original_id
+        and _canonical_json({key: item.get(key) for key in semantic_keys if key in item}) != _canonical_json(semantic)
+        for item in existing
+    )
+    if not conflicting:
+        return proposal, original_id, original_id
+    digest = hashlib.sha256(_canonical_json(semantic).encode("utf-8")).hexdigest()[:10]
+    speaker = str(proposal.get("speaker", "agent")).strip() or "agent"
+    message_index = str(proposal.get("message_index", proposal.get("message_id", "0")))
+    repaired_id = f"{original_id}--{speaker}-{message_index}-{digest}"
+    return {**proposal, "proposal_id": repaired_id}, original_id, repaired_id
 
 
 SPEECH_ACT_LABELS: dict[SpeechAct, str] = {
@@ -899,21 +996,8 @@ def format_state(state, agent_name: str | None = None, role: Any | None = None) 
     def _v(value, hidden: bool) -> str:
         return "不明（パートナーに問い合わせ）" if hidden else str(value)
 
-    role_mapping = _role_body(role)
-    if role_mapping is not None:
-        scope = {str(item) for item in role_mapping.get("observation_scope", [])}
-
-        def hidden(field: str, *aliases: str) -> bool:
-            return not any(name in scope for name in (field, *aliases))
-    else:
-        # Legacy fallback: historical alpha/beta visibility remains unchanged.
-        hide = {
-            "alpha": {"communication": True, "pod_integrity": True, "pod_readiness": True},
-            "beta": {"hull_damage": True, "flooding": True},
-        }.get(agent_name, {})
-
-        def hidden(field: str, *aliases: str) -> bool:
-            return hide.get(field, False)
+    def hidden(field: str, *aliases: str) -> bool:
+        return not _state_field_visible(agent_name, role, field, *aliases)
 
     return "\n".join(
         [
@@ -934,7 +1018,177 @@ def format_state(state, agent_name: str | None = None, role: Any | None = None) 
 
 
 def action_list() -> str:
-    return "\n".join([f"{action.value}. {ACTION_LABELS[action]}" for action in ALL_ACTIONS])
+    # turn_game.step と共有するcanonical効果を提示し、記号と意味の取り違えを防ぐ。
+    return "\n".join(
+        f"{action.value}. {ACTION_LABELS[action]}（効果: {ACTION_EFFECT_DESCRIPTIONS[action]}）"
+        for action in ALL_ACTIONS
+    )
+
+
+def _state_field_visible(
+    agent_name: str | None,
+    role: Any | None,
+    field: str,
+    *aliases: str,
+) -> bool:
+    role_mapping = _role_body(role)
+    if role_mapping is not None:
+        scope = {str(item) for item in role_mapping.get("observation_scope", [])}
+        return any(name in scope for name in (field, *aliases))
+    # Legacy fallback: historical alpha/beta visibility remains unchanged.
+    hidden_fields = {
+        "alpha": {"communication", "pod_integrity", "pod_readiness"},
+        "beta": {"hull_damage", "flooding"},
+    }.get(agent_name, set())
+    return field not in hidden_fields
+
+
+_PROJECTED_FIELDS = (
+    "oxygen", "power", "hull_damage", "flooding", "communication",
+    "pod_readiness", "pod_integrity", "rescue_eta", "morale",
+)
+
+_OUTCOME_CAUSE_FIELDS = {
+    "loss_oxygen": ("oxygen",),
+    "loss_power": ("power",),
+    "loss_hull": ("hull_damage",),
+    "loss_flooding": ("flooding",),
+    "loss_escape_failed": (
+        "oxygen", "power", "flooding", "pod_readiness", "pod_integrity"
+    ),
+}
+
+
+def _outcome_visible(outcome: str, agent_name: str, role: Any | None) -> bool:
+    fields = _OUTCOME_CAUSE_FIELDS.get(outcome, ())
+    return not fields or all(
+        _state_field_visible(agent_name, role, field) for field in fields
+    )
+
+
+def _compact_projected_state(state: Any, agent_name: str, role: Any | None) -> str:
+    values: list[str] = []
+    for field in _PROJECTED_FIELDS:
+        if _state_field_visible(agent_name, role, field):
+            values.append(f"{field}={getattr(state, field)}")
+        else:
+            values.append(f"{field}=hidden")
+    outcome = state.outcome if _outcome_visible(state.outcome, agent_name, role) else "hidden"
+    values.append(f"outcome={outcome}")
+    return ", ".join(values)
+
+
+def _visible_safety_label(
+    safe: bool,
+    reason: str,
+    projected: Any,
+    agent_name: str,
+    role: Any | None,
+) -> str:
+    if safe:
+        return "safe"
+    if not _outcome_visible(projected.outcome, agent_name, role):
+        return "unsafe:hidden_constraint"
+    return f"unsafe:{reason}"
+
+
+def decision_support_block(state: Any, agent_name: str, role: Any | None = None) -> str:
+    """Roleの可視範囲を守りつつ、ターン遷移と全Actionの確定予測を示す。"""
+    event_visible = _state_field_visible(agent_name, role, "current_event", "event")
+    event_effect = (
+        EVENT_EFFECT_DESCRIPTIONS[state.current_event]
+        if event_visible
+        else "現在イベントは非可視。必要なら観測可能な相手へ確認"
+    )
+    projections: list[str] = []
+    for action in ALL_ACTIONS:
+        safe, reason, projected = preview_action_safety(state, action)
+        safety = _visible_safety_label(safe, reason, projected, agent_name, role)
+        projections.append(
+            f"{action.value}: [{safety}] {_compact_projected_state(projected, agent_name, role)}"
+        )
+    return (
+        "【TURN_TRANSITION id=turn-transition】\n"
+        f"Actionより先にターン開始消費が適用される: {TURN_START_BASE_EFFECT}\n"
+        f"現在イベントの効果: {event_effect}\n"
+        "その後に選択Actionの効果が適用され、敗北条件を判定する。\n\n"
+        "【ACTION_CATALOG id=action-catalog】\n"
+        f"{action_list()}\n\n"
+        "【PROJECTED_STATE_AFTER id=projected-state-after】\n"
+        "以下は既知の固定効果による予測。25%事故など未確定の確率分岐は含めない。\n"
+        + "\n".join(projections)
+    )
+
+
+def final_vote_repair_feedback(
+    state: Any,
+    rejected_action: Action,
+    agent_name: str,
+    role: Any | None = None,
+) -> str:
+    """拒否理由、計算順序、予測結果、安全候補を同時に返す。"""
+    safe, reason, projected = preview_action_safety(state, rejected_action)
+    safe_candidates = [
+        action.value for action in ALL_ACTIONS
+        if preview_action_safety(state, action)[0]
+    ]
+    event_effect = (
+        EVENT_EFFECT_DESCRIPTIONS[state.current_event]
+        if _state_field_visible(agent_name, role, "current_event", "event")
+        else "hidden_current_event"
+    )
+    visible_reason = (
+        reason
+        if _outcome_visible(projected.outcome, agent_name, role)
+        else "unsafe_hidden_constraint"
+    )
+    return (
+        f"{visible_reason or ('safe' if safe else 'unsafe')}; rejected_action={rejected_action.value}; "
+        f"calculation=state_before -> turn_start({TURN_START_BASE_EFFECT}) -> "
+        f"event({event_effect}) -> "
+        f"action({ACTION_EFFECT_DESCRIPTIONS[rejected_action]}); "
+        f"projected_state_after=({_compact_projected_state(projected, agent_name, role)}); "
+        f"safe_candidates={','.join(safe_candidates) if safe_candidates else 'none'}"
+    )
+
+
+def decision_relevant_hidden_fields(
+    state: Any,
+    observer_scope: set[str],
+    partner_scope: set[str],
+) -> list[str]:
+    """現在の判断に影響し、相手だけが観測できる危険・経路情報を返す。"""
+    candidates: list[str] = []
+    event = str(getattr(getattr(state, "current_event", None), "value", ""))
+    if getattr(state, "hull_damage", 0) >= 3 or event in {"pressure_spike", "current_change", "hull_fracture"}:
+        candidates.append("hull_damage")
+    if getattr(state, "flooding", 0) >= 3 or event in {"leak_surge", "pod_flooding", "current_change"}:
+        candidates.append("flooding")
+    if getattr(state, "communication", 0) >= 2 or event in {"signal_window", "relay_short"}:
+        candidates.append("communication")
+    if (
+        getattr(state, "pod_readiness", 0) >= 1
+        or getattr(state, "pod_integrity", 0) >= 1
+        or event == "pod_flooding"
+    ):
+        candidates.extend(["pod_readiness", "pod_integrity"])
+    return [
+        field for field in dict.fromkeys(candidates)
+        if field not in observer_scope and field in partner_scope
+    ]
+
+
+def _fields_already_shared(transcript: list[dict[str, Any]], speaker: str, fields: list[str]) -> set[str]:
+    """相手の有効発話に明示されたcanonical field名を抽出する。"""
+    shared: set[str] = set()
+    for item in transcript:
+        if item.get("speaker") == speaker:
+            continue
+        text = " ".join(str(item.get(key, "")) for key in ("message", "reason"))
+        for field in fields:
+            if re.search(rf"(?<![A-Za-z0-9_]){re.escape(field)}(?![A-Za-z0-9_])", text, re.IGNORECASE):
+                shared.add(field)
+    return shared
 
 
 def schedule_decision_opportunities(seed: int, turn: int, schedule_seed: int = 0, max_opportunities: int = 3) -> int:
@@ -1119,35 +1373,38 @@ def _coerce_str_or_none(value: Any) -> str | None:
     return None
 
 
-def _is_valid_discussion_payload(payload: dict[str, Any]) -> bool:
-    """自由議論 JSON が必須キー・型・値の契約を満たすか検証する。"""
+def _discussion_validation_reason(payload: Any) -> str:
+    """自由議論JSONの契約違反理由を、監査可能な安定コードで返す。"""
+    if not isinstance(payload, dict):
+        return "not_json_object"
     required_keys = ("speech_act", "message", "action", "reason", "reply_to_message_id")
-    if not all(k in payload for k in required_keys):
-        return False
+    missing = [key for key in required_keys if key not in payload]
+    if missing:
+        return "missing_required_keys:" + ",".join(missing)
 
     speech_act = _normalize_speech_act(payload.get("speech_act"))
     if speech_act is None:
-        return False
+        return "invalid_speech_act"
 
     message = payload.get("message")
     reason = payload.get("reason")
     if not isinstance(message, str) or not message.strip():
-        return False
+        return "invalid_or_empty_message"
     if not isinstance(reason, str) or not reason.strip():
-        return False
+        return "invalid_or_empty_reason"
 
     action_val = payload.get("action")
     if speech_act in QUESTION_SPEECH_ACTS:
         if action_val is not None:
             if not isinstance(action_val, str):
-                return False
+                return "invalid_question_action"
             if action_val.strip().upper() not in {a.value for a in ALL_ACTIONS}:
-                return False
+                return "invalid_question_action"
     else:
         if not isinstance(action_val, str):
-            return False
+            return "non_question_action_required"
         if action_val.strip().upper() not in {a.value for a in ALL_ACTIONS}:
-            return False
+            return "invalid_non_question_action"
 
     # addressed_to は正規化前に厳密に型検査する。
     # 仕様: 質問の場合は alpha/beta/null/省略、質問以外は null/省略。
@@ -1155,23 +1412,28 @@ def _is_valid_discussion_payload(payload: dict[str, Any]) -> bool:
     # 整数や辞書などの暗黙の型変換は契約違反として拒否する。
     raw_addressed_to = payload.get("addressed_to")
     if raw_addressed_to is not None and not isinstance(raw_addressed_to, str):
-        return False
+        return "invalid_addressed_to_type"
     addressed_to = _coerce_str_or_none(raw_addressed_to)
     if addressed_to is not None and addressed_to.strip().lower() not in {"alpha", "beta"}:
-        return False
+        return "invalid_addressed_to_agent"
     if speech_act not in QUESTION_SPEECH_ACTS and addressed_to is not None:
-        return False
+        return "addressed_to_for_non_question"
 
     # reply_to_message_id は正規化前に厳密に型検査する。
     # 仕様: str | int | null のみ受理。辞書やリストは契約違反として拒否する。
     raw_reply_to = payload.get("reply_to_message_id")
     if raw_reply_to is not None and not isinstance(raw_reply_to, (str, int)):
-        return False
+        return "invalid_reply_to_message_id_type"
     # bool は int の派生型だが、JSON契約では受理しない
     if isinstance(raw_reply_to, bool):
-        return False
+        return "invalid_reply_to_message_id_type"
 
-    return True
+    return ""
+
+
+def _is_valid_discussion_payload(payload: dict[str, Any]) -> bool:
+    """自由議論 JSON が必須キー・型・値の契約を満たすか検証する。"""
+    return not _discussion_validation_reason(payload)
 
 
 def extract_json_discussion(response: str) -> tuple[SpeechAct | None, str, Action | None, str, str | None, str | None, bool]:
@@ -1202,10 +1464,10 @@ def format_persona(agent_name: str, persona: str, persona_params: dict[str, obje
         role = resolved.get("role") or {}
         presentation = resolved.get("persona") or {}
         value = resolved.get("value")
-        value_text = "明示的な初期重みなし" if value is None else _canonical_json(value)
+        value_text = "明示的な初期優先度なし" if value is None else _canonical_json(_qualitative_value_profile(value))
         mode = str(resolved.get("role_value_mode", "soft_value"))
         value_guidance = (
-            "priority_weights は固定された意思決定基準です。変更・再交渉しないでください。"
+            "priority_levels は固定された意思決定基準です。変更・再交渉しないでください。"
             if mode == "legacy_hard"
             else "初期Vは暫定基準であり、観測事実、相手の根拠、受諾済みV*により更新可能です。"
         )
@@ -1222,19 +1484,19 @@ def format_persona(agent_name: str, persona: str, persona_params: dict[str, obje
         )
     priority_weights = persona_params.get("priority_weights", {})
     if isinstance(priority_weights, dict):
-        priority_text = ", ".join([f"{key}={value}" for key, value in priority_weights.items()])
+        priority_text = ", ".join([f"{key}={_qualitative_level(value)}" for key, value in priority_weights.items()])
     else:
         priority_text = str(priority_weights)
     return "\n".join(
         [
             f"name: {agent_name}",
             f"role: {persona_params.get('role', persona)}",
-            f"priority_weights: {priority_text}",
-            f"risk_tolerance: {persona_params.get('risk_tolerance', 'unspecified')}  # 0.0=極めて慎重, 1.0=高リスク許容",
+            f"priority_levels: {priority_text}",
+            f"risk_tolerance: {_qualitative_scalar_level(persona_params.get('risk_tolerance', 'mid'))}",
             f"goal_focus: {persona_params.get('goal_focus', 'unspecified')}",
             f"communication_style: {persona_params.get('communication_style', 'unspecified')}",
-            f"concession_tendency: {persona_params.get('concession_tendency', 'unspecified')}  # 0.0=譲らない, 1.0=譲歩しやすい",
-            f"evidence_demand: {persona_params.get('evidence_demand', 'unspecified')}  # 0.0=直感重視, 1.0=根拠要求が強い",
+            f"concession_tendency: {_qualitative_scalar_level(persona_params.get('concession_tendency', 'mid'))}",
+            f"evidence_demand: {_qualitative_scalar_level(persona_params.get('evidence_demand', 'mid'))}",
             f"notes: {persona_params.get('notes', '')}",
         ]
     )
@@ -1375,20 +1637,20 @@ def v_measurement_prompt(
     current = "" if current_v is None else f"\n現在Vの参考記録:\n{_canonical_json(current_v)}\n"
     criteria = list(DEFAULT_VALUE_CRITERIA_SCHEMA.criteria)
     criteria_json = _canonical_json(criteria)
-    weights_instruction = _canonical_json(
-        {criterion: f"<{criterion}の現在の優先度。0以上1以下>" for criterion in criteria}
+    levels_instruction = _canonical_json(
+        {criterion: "<high|mid|low>" for criterion in criteria}
     )
     if phase == "before":
         contract = (
             f'{{"v_before":{{"ordered_criteria":{criteria_json},'
-            f'"weights":{weights_instruction},"confidence":"<0以上1以下の数値>"}},'
+            f'"priority_levels":{levels_instruction},"confidence_level":"<high|mid|low>"}},'
             f'"action_before":"<現在の観測から選ぶA-Fのいずれか>","reason_before":"短い理由"}}'
         )
         instruction = "相手の発言を見る前の、あなた自身の暫定判断基準と行動案を記録してください。"
     else:
         contract = (
             f'{{"v_after":{{"ordered_criteria":{criteria_json},'
-            f'"weights":{weights_instruction},"confidence":"<0以上1以下の数値>"}},'
+            f'"priority_levels":{levels_instruction},"confidence_level":"<high|mid|low>"}},'
             f'"reason_after":"短い理由"}}'
         )
         instruction = "最終投票確定後の、あなた自身の現在の判断基準を記録してください。"
@@ -1408,11 +1670,13 @@ def v_measurement_prompt(
 version: {DEFAULT_VALUE_CRITERIA_SCHEMA.version}
 criteria: {criteria_json}
 上記criteriaから1つでも欠けたり、未知の項目を追加したりしないでください。
-weights は ROLE_PERSONA_INITIAL_VALUE と CURRENT_OBSERVATION における、あなた自身の現在の優先順位から導出してください。
-テンプレートのプレースホルダーや例示値をコピーせず、5項目すべてに数値を割り当て、合計を1.0にしてください。
+priority_levels は ROLE_PERSONA_INITIAL_VALUE と CURRENT_OBSERVATION における、あなた自身の現在の優先順位から導出してください。
+5項目すべてを high / mid / low のいずれかで示してください。小数、百分率、合計値による重み付けは禁止します。
 
 【CURRENT_OBSERVATION id=state】
 {format_state(state, agent_name, role)}
+
+{decision_support_block(state, agent_name, role)}
 
 【ROLE_PERSONA_INITIAL_VALUE id=agent-profile】
 {format_persona(agent_name, persona, persona_params)}{current}
@@ -1462,20 +1726,37 @@ def discussion_prompt(
     remaining_tokens: int = 0,
     v_state: dict[str, Any] | None = None,
     role: Any | None = None,
+    required_question_fields: list[str] | None = None,
+    counter_allowed: bool = True,
 ) -> str:
     context = _question_context(open_question, can_ask_question, remaining_messages, remaining_tokens)
     json_contract = _discussion_json_contract(agent_name, open_question)
     criteria_example = _canonical_json(list(DEFAULT_VALUE_CRITERIA_SCHEMA.criteria))
+    counter_guide = (
+        f"counterの場合は v_star_response.counter_proposal に proposal_id、ordered_criteria({criteria_example})、scope、任意のpriority_levels(high/mid/low)を含む完全な代替案を入れてください。"
+        if counter_allowed
+        else "counter上限に達しています。新しいcounterは出さず、最新提案をacceptまたはrejectしてください。"
+    )
     v_sharing_guide = (
         f"HIVC-D条件では必要に応じ v_proposal と v_star_response を追加できます。\n"
         f"HIVC-D条件で自分の事前V測定を明示共有する場合だけ share_v_before=true を追加できます。\n"
-        f'v_proposal={{"proposal_id":"一意ID","ordered_criteria":{criteria_example},"scope":"turn"}}\n'
+        f'v_proposal={{"proposal_id":"一意ID","ordered_criteria":{criteria_example},"priority_levels":{{各criterion:"high|mid|low"}},"scope":"turn"}}\n'
+        f"Vの強さを示す場合はpriority_levelsだけを使い、数値weights・小数・百分率を使わないでください。\n"
         f'v_star_response={{"response":"accept|reject|counter","proposal_id":"対象ID"}}。対象IDなしの応答は無効です。\n'
         f"自分が提示した v_proposal を受諾する場合、同じ JSON に v_star_response={{\"response\":\"accept\",\"proposal_id\":\"<v_proposal.proposal_id>\"}} を必ず含めてください。"
-        f"counterの場合は v_star_response.counter_proposal に proposal_id、ordered_criteria({criteria_example})、scope、任意のweightsを含む完全な代替案を入れてください。"
+        f"{counter_guide}"
         if condition in {"hivc_d", "hivc_d_prescribed_v1"}
         else ""
     )
+    required_question_guide = ""
+    if required_question_fields:
+        required_question_guide = (
+            "【REQUIRED_INFORMATION_CHECK id=required-information-question】\n"
+            "判断に必要な次の情報は相手だけが観測できます: "
+            + ", ".join(required_question_fields)
+            + "\n今回は結論を述べず、speech_act=information_request、action=null、"
+            "requested_fieldsに上記fieldを入れて相手へ質問してください。\n"
+        )
     return f"""【GAME_RULES_AND_JSON_CONTRACT id=discussion-contract】
 あなたは深海研究施設トラブルの意思決定エージェントです。
 
@@ -1493,11 +1774,10 @@ def discussion_prompt(
 現在状態（あなたの担当分野のみ可視）:
 {format_state(state, agent_name, role)}
 
+{decision_support_block(state, agent_name, role)}
+
 あなたの役割固有情報:
 {_role_evidence(agent_name, state, role)}
-
-選択可能な行動:
-{action_list()}
 
 【DISCUSSION_HISTORY id=history】
 これまでの議論:
@@ -1505,11 +1785,15 @@ def discussion_prompt(
 
 {context}
 
+{required_question_guide}
+
 自由議論の発言目的は以下のいずれかを speech_act として選んでください:
 {_speech_act_guide()}
 
 この自由議論フェーズでは最大 {max_discussion_turns} 発言までです。
-行動案を述べたい場合は action（A-F）と reason を含めてください。
+action は必須です。speech_act が information_request / question_objection / question の質問である場合だけ null を使えます。
+evidence、proposal、tradeoff、concession_integration、objection、answer を含む質問以外の全speech_actでは、actionに必ずA-Fの一つを入れてください。
+自分のactionとreason内で「採用・選択・実行する」と述べるactionを一致させてください。
 ready は不要です。
 {v_sharing_guide}
 証拠・状態の情報要求は speech_act="information_request", action=null を使えます。
@@ -1532,8 +1816,16 @@ def decision_opportunity_prompt(
     role: Any | None = None,
 ) -> str:
     accepted = bool(v_state and v_state.get("v_star_status") == "accepted")
+    action_reconciliation = ""
+    if opportunity_index > 1 and not accepted:
+        action_reconciliation = (
+            "【ACTION_RECONCILIATION id=action-reconciliation】\n"
+            "前回のAction投票は一致しませんでした。V*が未成立でも、Valueそのものを一致させる必要はありません。\n"
+            "議論履歴にある相手のActionと理由を確認し、自分のValueを保持したまま同じ安全なActionへ合意できるか再検討してください。\n"
+            "相手案へ変更する場合は、取り入れた根拠をreasonに示してください。\n\n"
+        )
     v_contract = (
-        ',"v_star_id":"' + str(v_state.get("v_star_id")) + '","v_star_consistent":true'
+        ',"v_star_id":"' + str(v_state.get("v_star_id")) + '"'
         if accepted else ""
     )
     return f"""【GAME_RULES_AND_JSON_CONTRACT id=decision-contract】
@@ -1553,21 +1845,23 @@ def decision_opportunity_prompt(
 現在状態（あなたの担当分野のみ可視）:
 {format_state(state, agent_name, role)}
 
+{decision_support_block(state, agent_name, role)}
+
 あなたの役割固有情報:
 {_role_evidence(agent_name, state, role)}
-
-選択可能な行動:
-{action_list()}
 
 【DISCUSSION_HISTORY id=history】
 これまでの議論:
 {format_transcript_text(transcript)}
 
+{action_reconciliation}
 これは第 {opportunity_index} / {opportunity_count} 回の意思決定機会です。
 各エージェントは独立に最終案を一つだけ出してください。
 出力には action（A-F）、短い reason、そして合意意思を表す ready（true/false）を含めてください。
 全員が同じ action かつ ready=true なら合意成立です。
-受諾済みV*が表示されている場合は、正確な v_star_id と v_star_consistent を必ず返してください。
+受諾済みV*が表示されている場合は、正確な v_star_id を返してください。
+V*は数値スコアや唯一の正解Actionを定めるものではなく、複数の安全なActionを比較して理由を説明するための共通観点です。
+システムはV*の参照・形式、reasonとactionの明示的矛盾、行動直後の安全性を検証します。整合性を自己申告する必要はありません。
 必ず次のJSONだけを返してください。説明文やMarkdownは不要です。
 {{"action":"A","reason":"短い理由","ready":true{v_contract}}}
 """
@@ -1586,9 +1880,7 @@ def v_proposal_required_prompt(
     """自由議論で v_proposal が出なかった場合、HIVC-D条件で必須のV提案を求めるプロンプト。"""
     criteria = list(DEFAULT_VALUE_CRITERIA_SCHEMA.criteria)
     criteria_json = _canonical_json(criteria)
-    weight_example = {c: 0.2 for c in criteria}
-    weight_example[criteria[-1]] = round(1.0 - sum(weight_example[c] for c in criteria[:-1]), 6)
-    weights_json = _canonical_json(weight_example)
+    levels_json = _canonical_json({c: "mid" for c in criteria})
     return f"""【GAME_RULES_AND_JSON_CONTRACT id=v-proposal-required】
 あなたは深海研究施設トラブルの意思決定エージェント {agent_name} です。
 
@@ -1599,6 +1891,7 @@ def v_proposal_required_prompt(
 version: {DEFAULT_VALUE_CRITERIA_SCHEMA.version}
 criteria: {criteria_json}
 上記criteriaから1つでも欠けたり、未知の項目を追加したりしないでください。
+各criterionの強さは priority_levels の high / mid / low だけで表し、数値weights・小数・百分率を使わないでください。
 
 【FRAMEWORK id={condition}】
 {_procedure_block(condition)}
@@ -1609,11 +1902,10 @@ criteria: {criteria_json}
 現在状態（あなたの担当分野のみ可視）:
 {format_state(state, agent_name, role)}
 
+{decision_support_block(state, agent_name, role)}
+
 あなたの役割固有情報:
 {_role_evidence(agent_name, state, role)}
-
-選択可能な行動:
-{action_list()}
 
 【DISCUSSION_HISTORY id=history】
 これまでの議論:
@@ -1622,7 +1914,7 @@ criteria: {criteria_json}
 {_v_state_block(v_state)}
 
 必ず次のJSONだけを返してください。説明文やMarkdownは不要です。
-{{"v_proposal":{{"proposal_id":"{agent_name}-turn{{state.turn}}-required","ordered_criteria":{criteria_json},"weights":{weights_json},"scope":"turn"}},"v_star_response":{{"response":"accept","proposal_id":"{agent_name}-turn{{state.turn}}-required"}},"action":"A","reason":"短い理由"}}
+{{"v_proposal":{{"proposal_id":"{agent_name}-turn{{state.turn}}-required","ordered_criteria":{criteria_json},"priority_levels":{levels_json},"scope":"turn"}},"v_star_response":{{"response":"accept","proposal_id":"{agent_name}-turn{{state.turn}}-required"}},"action":"A","reason":"短い理由"}}
 """
 
 
@@ -1636,16 +1928,33 @@ def v_proposal_response_prompt(
     proposal: dict[str, Any],
     v_state: dict[str, Any] | None,
     role: Any | None = None,
+    counter_allowed: bool = True,
 ) -> str:
     """v_proposal_required で出た提案に対し、相手エージェントに accept/reject/counter を求める。"""
     criteria = list(DEFAULT_VALUE_CRITERIA_SCHEMA.criteria)
     criteria_json = _canonical_json(criteria)
+    response_choices = "accept / reject / counter" if counter_allowed else "accept / reject"
+    counter_instruction = (
+        "counter の場合は完全な代替案を v_star_response.counter_proposal に入れてください。\n"
+        "counter を出す場合、自分のcounter提案にも明示的に同意するには "
+        "v_star_response.self_accept を true に設定してください。これにより counter提案者自身の同意も記録されます。"
+        if counter_allowed
+        else "counter上限に達しています。新しいcounterは無効です。最新提案をacceptまたはrejectしてください。"
+    )
+    response_contract = (
+        f'{{"v_star_response":{{"response":"accept|reject|counter","proposal_id":"{proposal.get("proposal_id", "")}",'
+        f'"counter_proposal":{{"proposal_id":"{agent_name}-counter-turn{{state.turn}}","ordered_criteria":{criteria_json},'
+        '"priority_levels":{"oxygen":"high","power":"mid","hull_damage":"mid","flooding":"mid","communication":"low"},"scope":"turn"},'
+        '"self_accept":false}}}'
+        if counter_allowed
+        else f'{{"v_star_response":{{"response":"accept|reject","proposal_id":"{proposal.get("proposal_id", "")}"}}}}'
+    )
     return f"""【GAME_RULES_AND_JSON_CONTRACT id=v-proposal-response】
 あなたは深海研究施設トラブルの意思決定エージェント {agent_name} です。
 
-相手から V* 提案が出ました。あなたの観測・役割から判断し、accept / reject / counter のいずれかを返してください。
-counter の場合は完全な代替案を v_star_response.counter_proposal に入れてください。
-counter を出す場合、自分のcounter提案にも明示的に同意するには v_star_response.self_accept を true に設定してください。これにより counter提案者自身の同意も記録されます。
+相手から V* 提案が出ました。あなたの観測・役割から判断し、{response_choices} のいずれかを返してください。
+{counter_instruction}
+counterで優先度の強さを示す場合は priority_levels の high / mid / low だけを使い、数値weightsは使わないでください。
 
 【VALUE_CRITERIA_SCHEMA id={DEFAULT_VALUE_CRITERIA_SCHEMA.id}】
 version: {DEFAULT_VALUE_CRITERIA_SCHEMA.version}
@@ -1661,11 +1970,10 @@ criteria: {criteria_json}
 現在状態（あなたの担当分野のみ可視）:
 {format_state(state, agent_name, role)}
 
+{decision_support_block(state, agent_name, role)}
+
 あなたの役割固有情報:
 {_role_evidence(agent_name, state, role)}
-
-選択可能な行動:
-{action_list()}
 
 【DISCUSSION_HISTORY id=history】
 これまでの議論:
@@ -1677,7 +1985,7 @@ criteria: {criteria_json}
 {_v_state_block(v_state)}
 
 必ず次のJSONだけを返してください。説明文やMarkdownは不要です。
-{{"v_star_response":{{"response":"accept|reject|counter","proposal_id":"{proposal.get('proposal_id', '')}","counter_proposal":{{"proposal_id":"{agent_name}-counter-turn{{state.turn}}","ordered_criteria":{criteria_json},"scope":"turn"}},"self_accept":false}}}}
+{response_contract}
 """
 
 
@@ -1720,6 +2028,38 @@ def run_prompt(model, tokenizer, prompt: str, max_new_tokens: int, enable_thinki
     return thinking_content, response_text
 
 
+def _invoke_prompt(
+    model,
+    tokenizer,
+    prompt: str,
+    max_new_tokens: int,
+    *,
+    enable_thinking: bool = False,
+    thinking_budget: int | None = None,
+    prompt_runner=None,
+    agent: str | None = None,
+) -> tuple[str, str]:
+    """Invoke the local model or a narrowly injected, speaker-aware backend."""
+    if prompt_runner is None:
+        return run_prompt(
+            model,
+            tokenizer,
+            prompt,
+            max_new_tokens,
+            enable_thinking=enable_thinking,
+            thinking_budget=thinking_budget,
+        )
+    if agent not in {"alpha", "beta"}:
+        raise ValueError("an injected prompt runner requires agent=alpha or agent=beta")
+    return prompt_runner(
+        agent,
+        prompt,
+        max_new_tokens=max_new_tokens,
+        enable_thinking=enable_thinking,
+        thinking_budget=thinking_budget,
+    )
+
+
 def load_model(model_path: str):
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
@@ -1739,9 +2079,9 @@ def load_model(model_path: str):
     return model, tokenizer
 
 
-def get_action(model, tokenizer, prompt: str, max_new_tokens: int, fallback: Action, enable_thinking: bool = False, thinking_budget: int | None = None) -> tuple[Action, str, str, bool, str, str]:
+def get_action(model, tokenizer, prompt: str, max_new_tokens: int, fallback: Action, enable_thinking: bool = False, thinking_budget: int | None = None, prompt_runner=None, agent: str | None = None) -> tuple[Action, str, str, bool, str, str]:
     """(action, reason, message, ready, raw_response, thinking) を返す。"""
-    thinking, raw = run_prompt(model, tokenizer, prompt, max_new_tokens, enable_thinking=enable_thinking, thinking_budget=thinking_budget)
+    thinking, raw = _invoke_prompt(model, tokenizer, prompt, max_new_tokens, enable_thinking=enable_thinking, thinking_budget=thinking_budget, prompt_runner=prompt_runner, agent=agent)
     action, reason, message, ready = extract_json_action(raw)
     if action is None:
         return fallback, f"invalid_response_fallback: {reason}", message, False, raw, thinking
@@ -1756,9 +2096,11 @@ def get_discussion_message(
     fallback_action: Action | None = None,
     enable_thinking: bool = False,
     thinking_budget: int | None = None,
+    prompt_runner=None,
+    agent: str | None = None,
 ) -> dict[str, Any]:
     """自由議論用の発言情報を dict で返す。JSON契約違反は有効発話として扱わない。"""
-    thinking, raw = run_prompt(model, tokenizer, prompt, max_new_tokens, enable_thinking=enable_thinking, thinking_budget=thinking_budget)
+    thinking, raw = _invoke_prompt(model, tokenizer, prompt, max_new_tokens, enable_thinking=enable_thinking, thinking_budget=thinking_budget, prompt_runner=prompt_runner, agent=agent)
     raw_payload: Any = _extract_json_object(raw.strip())
     if raw_payload is None:
         # JSON構文不正・壊れたJSON断片を有効発話にしない。監査用のrawは保持。
@@ -1773,6 +2115,7 @@ def get_discussion_message(
             "raw": raw,
             "thinking": thinking,
             "raw_payload": None,
+            "validation_reason": "not_json_object_or_extra_text",
             "invalid_discussion_output": True,
         }
     speech_act, message, action, reason, reply_to_message_id, addressed_to, requires_response = extract_json_discussion(raw)
@@ -1790,6 +2133,7 @@ def get_discussion_message(
             "raw": raw,
             "thinking": thinking,
             "raw_payload": raw_payload,
+            "validation_reason": _discussion_validation_reason(raw_payload) or "invalid_discussion_payload",
             "invalid_discussion_output": True,
         }
     # 質問の追加メタデータ: requested_fields と reask_reason
@@ -1811,6 +2155,7 @@ def get_discussion_message(
         "raw": raw,
         "thinking": thinking,
         "raw_payload": raw_payload,
+        "validation_reason": "",
         "invalid_discussion_output": False,
         "requested_fields": requested_fields,
         "reask_reason": reask_reason,
@@ -1836,17 +2181,41 @@ def verify_vote_v_star_consistency(
     claimed_consistent: bool | None,
     v_star_id: str,
     v_star: dict[str, Any] | None,
-) -> bool:
-    """Deterministic minimum check beyond the model's self-report."""
-    if action is None or claimed_consistent is not True or referenced_id != v_star_id or not v_star:
+    state: Any | None = None,
+) -> bool | None:
+    """V*の手続き的整合性を検証する。Vやリスクを数値採点してActionを順位付けしない。"""
+    del claimed_consistent
+    if action is None or referenced_id != v_star_id or not v_star:
         return False
+    if state is not None:
+        safe, _, _ = preview_action_safety(state, action)
+        if not safe:
+            return False
     ordered = v_star.get("ordered_criteria")
     if not isinstance(ordered, list) or not ordered:
         return False
-    top = str(ordered[0]).strip().casefold()
-    normalized_reason = reason.casefold().replace("_", " ").replace("-", " ")
-    candidates = {top, top.replace("_", " "), top.replace("-", " ")}
-    return any(candidate and candidate in normalized_reason for candidate in candidates)
+
+    criteria = list(DEFAULT_VALUE_CRITERIA_SCHEMA.criteria)
+    if set(map(str, ordered)) != set(criteria) or len(ordered) != len(criteria):
+        return False
+
+    # JSONのactionと、理由中で採用・選択・実行すると明言したactionが矛盾すれば拒否する。
+    committed_actions: set[str] = set()
+    for match in re.finditer(
+        r"(?:^|[^A-Za-z0-9_])(?:action\s*)?([A-F])\s*(?:を)?\s*(?:採用|選択|実行|支持|推奨|choose|select|execute)",
+        reason,
+        flags=re.IGNORECASE,
+    ):
+        committed_actions.add(match.group(1).upper())
+    for match in re.finditer(r"\b(?:choose|select|execute|adopt|recommend)\s+(?:action\s*)?([A-F])\b", reason, re.IGNORECASE):
+        committed_actions.add(match.group(1).upper())
+    if any(committed != action.value for committed in committed_actions):
+        return False
+
+    # V*は共通の熟議観点であり、重み付きutility、危険度倍率、順位差によって
+    # 一つのActionをシステム側から強制しない。安全なAction間のtrade-offは
+    # エージェントの観測・議論・合意に委ねる。
+    return True
 
 
 def run_one_game(
@@ -1877,7 +2246,12 @@ def run_one_game(
     """
     role_value_mode = kwargs.get("role_value_mode")
     resolved_profiles = kwargs.get("resolved_profiles")
+    prompt_runner = kwargs.get("prompt_runner")
     enable_v_flow = role_value_mode is not None
+    max_v_counter_rounds = max(0, int(kwargs.get("max_v_counter_rounds", 1)))
+    v_messages_per_counter_extension = max(
+        0, int(kwargs.get("v_messages_per_counter_extension", 2))
+    )
     state = initial_state(seed, scenario_id)
     rng = np.random.default_rng(seed)
     rows: list[dict[str, object]] = []
@@ -1908,7 +2282,15 @@ def run_one_game(
         q_values = estimate_q_values(state, n_rollouts=evaluator_rollouts, seed=seed + state.turn * 1000)
         optimal = best_action(q_values)
         allowed = acceptable_actions(q_values)
-        fallback = optimal
+        safe_fallback_candidates = [
+            candidate for candidate in ALL_ACTIONS
+            if preview_action_safety(state, candidate)[0]
+        ]
+        fallback = (
+            max(safe_fallback_candidates, key=lambda candidate: q_values[candidate])
+            if safe_fallback_candidates
+            else optimal
+        )
 
         # §6.1: all framework conditions use this exact pre-discussion measurement.
         v_before: dict[str, dict[str, Any] | None] = {"alpha": None, "beta": None}
@@ -1935,9 +2317,10 @@ def run_one_game(
                 error = ""
                 raw_measurement = ""
                 for attempt in range(max_v_measurement_retries + 1):
-                    _, raw_measurement = run_prompt(
+                    _, raw_measurement = _invoke_prompt(
                         model, tokenizer, prompt, max_new_tokens,
                         enable_thinking=enable_thinking, thinking_budget=thinking_budget,
+                        prompt_runner=prompt_runner, agent=agent,
                     )
                     measurement_call_count += 1
                     if tokenizer is not None:
@@ -1960,14 +2343,15 @@ def run_one_game(
         else:
             turn_v_alignment_required, turn_v_alignment_requirement_reasons = False, []
 
-        # §6.2.2: reserve discussion budget for mandatory V negotiation in hivc_d.
-        # counter経路は自動acceptを廃止したため、明示的合意に到達するには最大4発話が必要:
+        # §6.2.2: reserve the base budget for mandatory V negotiation in hivc_d.
+        # counter経路は自動acceptを廃止したため、明示的合意に到達する基礎4発話を確保:
         #   1. alpha: proposal + self-accept
         #   2. beta:  counter
         #   3. alpha: counter を accept
         #   4. beta:  自分の counter を accept
-        # counter出力で counter_proposal と同時に self-accept を表現できるスキーマも許容するが、
-        # モデルが同時表現しなかった場合の安全側として4発話を予約する。
+        # counter出力で counter_proposal と同時に self-accept を表現できるスキーマも許容する。
+        # counterが実際に発生した場合は、下の必須ループで1ラウンドにつき既定2発話を
+        # 動的に延長する。counter回数自体は max_v_counter_rounds で制限する。
         reserved_v_messages = 0
         reserved_v_tokens = 0
         if enable_v_flow and condition == "hivc_d" and turn_v_alignment_required:
@@ -2011,6 +2395,9 @@ def run_one_game(
         beta_vote_ready = False
         beta_vote_raw = ""
         beta_vote_thinking = ""
+        final_vote_retry_count = 0
+        rejected_final_votes: list[dict[str, Any]] = []
+        max_final_vote_retries = max(0, int(kwargs.get("max_final_vote_retries", 1)))
 
         # 質問/応答閉包用の状態
         next_message_id = 1
@@ -2024,10 +2411,14 @@ def run_one_game(
         unanswerable_question_count = 0
         self_observable_question_count = 0
         duplicate_question_count = 0
+        required_information_question_count = 0
+        missing_required_information_question_count = 0
         invalid_discussion_output_count = 0
+        invalid_attempt_count = 0
+        repaired_invalid_output_count = 0
         invalid_discussion_outputs: list[dict[str, Any]] = []
         discussion_retry_count = 0
-        max_discussion_retries = int(kwargs.get("max_discussion_retries", 1))
+        max_discussion_retries = max(0, int(kwargs.get("max_discussion_retries", 1)))
         consecutive_duplicate_count = 0
         max_consecutive_duplicate_questions_recorded = 0
         last_duplicate_signature: tuple[str, str, str] | None = None
@@ -2035,6 +2426,23 @@ def run_one_game(
 
         v_proposals: list[dict[str, Any]] = []
         v_responses: dict[str, list[dict[str, Any]]] = {"alpha": [], "beta": []}
+        v_proposal_id_repairs: list[dict[str, str]] = []
+
+        def register_proposal_id(
+            proposal: dict[str, Any], proposal_speaker: str, message_id: str
+        ) -> tuple[dict[str, Any], str, str]:
+            enriched = {**proposal, "speaker": proposal_speaker, "message_id": message_id}
+            repaired, original_id, repaired_id = ensure_unique_v_proposal_id(enriched, v_proposals)
+            if repaired_id != original_id:
+                v_proposal_id_repairs.append(
+                    {
+                        "original_id": original_id,
+                        "repaired_id": repaired_id,
+                        "speaker": proposal_speaker,
+                        "message_id": message_id,
+                    }
+                )
+            return repaired, original_id, repaired_id
         explicitly_shared_v_before: dict[str, dict[str, Any]] = {}
         inherited_game_v = persistent_v_star is not None
         v_star_status = "accepted" if inherited_game_v else ("unresolved" if enable_v_flow else "not_recorded")
@@ -2045,6 +2453,9 @@ def run_one_game(
         v_proposal_required_prompt_issued = False
         missing_v_proposal_after_required_prompt = False
         v_negotiation_messages_used = 0
+        v_counter_count = 0
+        rejected_v_counter_count = 0
+        v_negotiation_terminal_reason = ""
 
         # §6.2.3 V protocol state machine
         v_protocol_state = "I_SHARE"
@@ -2066,16 +2477,17 @@ def run_one_game(
         if enable_v_flow and condition == "hivc_d_prescribed_v1":
             v_star_id = f"seed{seed}-turn{state.turn}-prescribed-v1"
             criteria = list(DEFAULT_VALUE_CRITERIA_SCHEMA.criteria)
-            weights = {"oxygen": 0.30, "power": 0.25, "hull_damage": 0.20, "flooding": 0.15, "communication": 0.10}
+            priority_levels = {"oxygen": "high", "power": "high", "hull_damage": "mid", "flooding": "mid", "communication": "low"}
             v_star = {
                 "proposal_id": v_star_id,
                 "ordered_criteria": criteria,
-                "weights": weights,
+                "priority_levels": priority_levels,
                 "scope": "turn",
                 "source": "external_prescription",
             }
             v_star_status = "accepted"
             v_star_failure_reason = ""
+            v_star_unresolved_reason = ""
 
         def current_v_state(agent: str) -> dict[str, Any] | None:
             if not enable_v_flow:
@@ -2125,6 +2537,17 @@ def run_one_game(
                     and turn_remaining_messages >= k + 2
                     and turn_remaining_tokens >= (k + 2) * max_new_tokens
                 )
+                required_question_fields: list[str] = []
+                if can_ask_question and question_count == 0:
+                    candidate_fields = decision_relevant_hidden_fields(
+                        state,
+                        agent_observation_scope(speaker),
+                        agent_observation_scope(other_speaker),
+                    )
+                    already_shared = _fields_already_shared(transcript, speaker, candidate_fields)
+                    required_question_fields = [
+                        field for field in candidate_fields if field not in already_shared
+                    ]
 
                 prompt = discussion_prompt(
                     speaker,
@@ -2140,6 +2563,8 @@ def run_one_game(
                     remaining_tokens=turn_remaining_tokens,
                     v_state=current_v_state(speaker),
                     role=resolved_role_for(speaker),
+                    required_question_fields=required_question_fields,
+                    counter_allowed=v_counter_count < max_v_counter_rounds,
                 )
 
                 # §6.2: invalid JSON出力に対する修復リトライ。
@@ -2148,6 +2573,8 @@ def run_one_game(
                 response: dict[str, Any] = {}
                 raw = ""
                 token_count = 0
+                attempt_audit: list[dict[str, Any]] = []
+                max_attempts = max_discussion_retries + 1
                 for attempt in range(max_discussion_retries + 1):
                     current_prompt = prompt
                     if attempt > 0:
@@ -2167,7 +2594,20 @@ def run_one_game(
                         fallback_action=fallback,
                         enable_thinking=enable_thinking,
                         thinking_budget=thinking_budget,
+                        prompt_runner=prompt_runner,
+                        agent=speaker,
                     )
+                    if required_question_fields and not response.get("invalid_discussion_output"):
+                        returned_fields = set(response.get("requested_fields", []))
+                        if (
+                            not response.get("requires_response")
+                            or not returned_fields.intersection(required_question_fields)
+                        ):
+                            response = {
+                                **response,
+                                "invalid_discussion_output": True,
+                                "validation_reason": "required_information_question_missing",
+                            }
                     raw = response["raw"]
                     attempt_token_count = 0
                     if tokenizer is not None:
@@ -2175,24 +2615,50 @@ def run_one_game(
                     token_count += attempt_token_count
                     if not response.get("invalid_discussion_output"):
                         break
+                    attempt_audit.append(
+                        {
+                            "message_id": str(next_message_id),
+                            "speaker": speaker,
+                            "agent": speaker,
+                            "turn": state.turn,
+                            "opportunity": opp_idx,
+                            "attempt": attempt + 1,
+                            "max_attempts": max_attempts,
+                            "validation_reason": response.get("validation_reason", "invalid_discussion_payload"),
+                            "raw": raw,
+                            "raw_output": raw,
+                            "raw_payload": response.get("raw_payload"),
+                            "thinking": response["thinking"],
+                            "token_count": attempt_token_count,
+                            # ループ終了後、後続attemptの成否を見て確定する。
+                            "recovered": False,
+                            "final_exhausted": False,
+                            # 後方互換: 旧監査consumer向け。
+                            "retry_attempts": max_discussion_retries,
+                        }
+                    )
                     if attempt < max_discussion_retries:
                         discussion_retry_count += 1
+
+                recovered = bool(attempt_audit) and not response.get("invalid_discussion_output")
+                if attempt_audit:
+                    invalid_attempt_count += len(attempt_audit)
+                    if recovered:
+                        repaired_invalid_output_count += 1
+                    for audit_index, audit in enumerate(attempt_audit):
+                        audit["recovered"] = recovered
+                        audit["final_exhausted"] = bool(
+                            not recovered and audit_index == len(attempt_audit) - 1
+                        )
+                    invalid_discussion_outputs.extend(attempt_audit)
 
                 # JSON契約違反・壊れたJSON断片は有効発話として扱わない。
                 # 監査用の別経路へ保存し、有効トランスクリプトには加えない。
                 # リトライ上限後もinvalidの場合はここで確定する。
                 if response.get("invalid_discussion_output"):
+                    if required_question_fields:
+                        missing_required_information_question_count += 1
                     invalid_discussion_output_count += 1
-                    invalid_discussion_outputs.append(
-                        {
-                            "message_id": str(next_message_id),
-                            "speaker": speaker,
-                            "raw": raw,
-                            "raw_payload": response.get("raw_payload"),
-                            "thinking": response["thinking"],
-                            "retry_attempts": max_discussion_retries,
-                        }
-                    )
                     next_message_id += 1
                     total_free_messages += 1
                     messages_this_opportunity += 1
@@ -2216,6 +2682,8 @@ def run_one_game(
                 # unanswerable/self_observable/duplicate いずれも question_count に含める。
                 if is_question:
                     question_count += 1
+                    if required_question_fields and set(requested_fields).intersection(required_question_fields):
+                        required_information_question_count += 1
                     # addressed_to の正規化を先に行う（重複判定に必要）
                     if addressed_to != other_speaker and addressed_to != speaker:
                         addressed_to = other_speaker
@@ -2495,6 +2963,36 @@ def run_one_game(
                 proposal, v_response = parse_v_negotiation(
                     response.get("raw_payload"), speaker, this_message_id
                 )
+                if proposal is not None:
+                    proposal, original_id, repaired_id = register_proposal_id(
+                        proposal, speaker, this_message_id
+                    )
+                    if (
+                        repaired_id != original_id
+                        and v_response is not None
+                        and v_response.get("proposal_id") == original_id
+                    ):
+                        v_response = {**v_response, "proposal_id": repaired_id}
+                if (
+                    v_response is not None
+                    and v_response.get("response") == "counter"
+                    and isinstance(v_response.get("counter_proposal"), dict)
+                ):
+                    if v_counter_count >= max_v_counter_rounds:
+                        rejected_v_counter_count += 1
+                        v_response = {
+                            **v_response,
+                            "counter_proposal": None,
+                            "counter_rejected_reason": "counter_round_limit_reached",
+                        }
+                    else:
+                        counter, original_counter_id, repaired_counter_id = register_proposal_id(
+                            v_response["counter_proposal"], speaker, this_message_id
+                        )
+                        v_response = {**v_response, "counter_proposal": counter}
+                        if v_response.get("self_accept_for_counter_id") == original_counter_id:
+                            v_response["self_accept_for_counter_id"] = repaired_counter_id
+                        v_counter_count += 1
                 transcript_entry: dict[str, Any] = {
                     "speaker": speaker,
                     "speech_act": speech_act.value if speech_act else None,
@@ -2531,7 +3029,6 @@ def run_one_game(
                     }
                     transcript[-1]["shared_v_before"] = explicitly_shared_v_before[speaker]
                 if proposal is not None:
-                    proposal = {**proposal, "speaker": speaker, "message_id": this_message_id}
                     v_proposals.append(proposal)
                     # 提案を出しただけでは受諾扱いにしない。自分の提案を受諾するには
                     # 同じ JSON に v_star_response: accept を含めるか、後続の V 応答で明示する。
@@ -2543,7 +3040,7 @@ def run_one_game(
                     # ただし counter出力で self_accept=true が同時表現された場合は、
                     # そのcounter提案への明示的acceptとして別途記録する。
                     if v_response.get("response") == "counter" and isinstance(v_response.get("counter_proposal"), dict):
-                        counter = {**v_response["counter_proposal"], "speaker": speaker, "message_id": this_message_id}
+                        counter = v_response["counter_proposal"]
                         v_proposals.append(counter)
                         self_accept_id = v_response.get("self_accept_for_counter_id")
                         if self_accept_id:
@@ -2560,6 +3057,8 @@ def run_one_game(
                         v_star_failure_reason = reason
                     else:
                         v_star_failure_reason = ""
+                        if v_star_status == "accepted":
+                            v_star_unresolved_reason = ""
                     if v_star_status == "accepted" and v_star and v_star.get("scope") == "game":
                         persistent_v_star = v_star
                         persistent_v_star_id = v_star_id
@@ -2636,13 +3135,16 @@ def run_one_game(
 
             # §6.2.2/6.2.3: mandatory V negotiation loop for hivc_d.
             if enable_v_flow and condition == "hivc_d" and turn_v_alignment_required:
-                max_v_attempts = reserved_v_messages
                 while (
-                    v_negotiation_messages_used < max_v_attempts
+                    v_negotiation_messages_used
+                    < reserved_v_messages
+                    + v_counter_count * v_messages_per_counter_extension
                     and v_star_status != "accepted"
+                    and not v_negotiation_terminal_reason
                 ):
                     v_negotiation_messages_used += 1
                     v_proposal_required_prompt_issued = True
+                    valid_terminal_reject = False
 
                     current_proposal = v_proposals[-1] if v_proposals else None
                     if current_proposal is None:
@@ -2694,12 +3196,14 @@ def run_one_game(
                             current_proposal,
                             v_state=current_v_state(agent),
                             role=resolved_role_for(agent),
+                            counter_allowed=v_counter_count < max_v_counter_rounds,
                         )
                         kind = "response"
 
-                    _, raw = run_prompt(
+                    _, raw = _invoke_prompt(
                         model, tokenizer, prompt, max_new_tokens,
                         enable_thinking=enable_thinking, thinking_budget=thinking_budget,
+                        prompt_runner=prompt_runner, agent=agent,
                     )
                     if tokenizer is not None:
                         token_budget_used += len(tokenizer.encode(raw, add_special_tokens=False))
@@ -2708,6 +3212,16 @@ def run_one_game(
                     payload = _extract_json_object(raw)
                     if kind == "proposal":
                         proposal, self_response = parse_v_negotiation(payload, agent, msg_id)
+                        if proposal is not None:
+                            proposal, original_id, repaired_id = register_proposal_id(
+                                proposal, agent, msg_id
+                            )
+                            if (
+                                repaired_id != original_id
+                                and self_response is not None
+                                and self_response.get("proposal_id") == original_id
+                            ):
+                                self_response = {**self_response, "proposal_id": repaired_id}
                         transcript.append(
                             {
                                 "speaker": agent,
@@ -2727,7 +3241,6 @@ def run_one_game(
                         )
                         next_message_id += 1
                         if proposal is not None:
-                            proposal = {**proposal, "speaker": agent, "message_id": msg_id}
                             v_proposals.append(proposal)
                             # v_proposal_required プロンプトでの提案も、明示的な v_star_response: accept
                             # が同時に返されない限り、自動的には受諾扱いにしない。
@@ -2744,6 +3257,26 @@ def run_one_game(
                                 v_protocol_state = "V_PROPOSE"
                     else:
                         _, v_response = parse_v_negotiation(payload, agent, msg_id)
+                        if (
+                            v_response is not None
+                            and v_response.get("response") == "counter"
+                            and isinstance(v_response.get("counter_proposal"), dict)
+                        ):
+                            if v_counter_count >= max_v_counter_rounds:
+                                rejected_v_counter_count += 1
+                                v_response = {
+                                    **v_response,
+                                    "counter_proposal": None,
+                                    "counter_rejected_reason": "counter_round_limit_reached",
+                                }
+                            else:
+                                counter, original_counter_id, repaired_counter_id = register_proposal_id(
+                                    v_response["counter_proposal"], agent, msg_id
+                                )
+                                v_response = {**v_response, "counter_proposal": counter}
+                                if v_response.get("self_accept_for_counter_id") == original_counter_id:
+                                    v_response["self_accept_for_counter_id"] = repaired_counter_id
+                                v_counter_count += 1
                         transcript.append(
                             {
                                 "speaker": agent,
@@ -2763,6 +3296,11 @@ def run_one_game(
                         next_message_id += 1
                         if v_response is not None:
                             v_responses[agent].append(v_response)
+                            valid_terminal_reject = (
+                                v_response.get("response") == "reject"
+                                and current_proposal is not None
+                                and v_response.get("proposal_id") == current_proposal.get("proposal_id")
+                            )
                             # counter提案者は自分のcounterを自動受諾扱いにしない。
                             # 両agentが同一提案を明示的にacceptすることがV*受諾の要件であり、
                             # counter提案者も後続応答で明示的にacceptする必要がある。
@@ -2772,7 +3310,7 @@ def run_one_game(
                                 v_response.get("response") == "counter"
                                 and isinstance(v_response.get("counter_proposal"), dict)
                             ):
-                                counter = {**v_response["counter_proposal"], "speaker": agent, "message_id": msg_id}
+                                counter = v_response["counter_proposal"]
                                 v_proposals.append(counter)
                                 self_accept_id = v_response.get("self_accept_for_counter_id")
                                 if self_accept_id:
@@ -2790,77 +3328,150 @@ def run_one_game(
                             v_star_failure_reason = reason
                         else:
                             v_star_failure_reason = ""
+                            if v_star_status == "accepted":
+                                v_star_unresolved_reason = ""
                         if v_star_status == "accepted" and v_star and v_star.get("scope") == "game":
                             persistent_v_star = v_star
                             persistent_v_star_id = v_star_id
 
                     if v_star_status == "accepted":
+                        v_star_failure_reason = ""
+                        v_star_unresolved_reason = ""
                         v_protocol_transition_history.append({"from": v_protocol_state, "to": "A_CHECK", "reason": "v_star_accepted"})
                         v_protocol_state = "A_CHECK"
+                        break
+                    if valid_terminal_reject:
+                        # 有効なrejectは当該提案への最終回答。同じagentへ同じproposalの
+                        # accept/rejectを再要求せず、V*未成立のままAction調整へ進む。
+                        v_negotiation_terminal_reason = "v_proposal_rejected"
                         break
 
                 if v_star_status != "accepted":
                     missing_v_proposal_after_required_prompt = not v_proposals
-                    if v_negotiation_messages_used >= max_v_attempts:
-                        v_star_unresolved_reason = v_star_failure_reason or v_star_unresolved_reason
-                        v_star_failure_reason = "v_negotiation_budget_exhausted"
+                    if v_negotiation_terminal_reason:
+                        v_star_failure_reason = v_negotiation_terminal_reason
+                        v_star_unresolved_reason = v_negotiation_terminal_reason
+                        transition_reason = v_negotiation_terminal_reason
                     else:
-                        v_star_failure_reason = v_star_unresolved_reason or v_star_failure_reason or "missing_matching_explicit_acceptance"
-                    v_protocol_transition_history.append({"from": v_protocol_state, "to": "A_CHECK", "reason": "v_negotiation_budget_exhausted"})
+                        max_v_attempts = (
+                            reserved_v_messages
+                            + v_counter_count * v_messages_per_counter_extension
+                        )
+                        if v_negotiation_messages_used >= max_v_attempts:
+                            v_star_unresolved_reason = v_star_failure_reason or v_star_unresolved_reason
+                            v_star_failure_reason = "v_negotiation_budget_exhausted"
+                        else:
+                            v_star_failure_reason = v_star_unresolved_reason or v_star_failure_reason or "missing_matching_explicit_acceptance"
+                        transition_reason = "v_negotiation_budget_exhausted"
+                    if v_protocol_state != "A_CHECK":
+                        v_protocol_transition_history.append({"from": v_protocol_state, "to": "A_CHECK", "reason": transition_reason})
                     v_protocol_state = "A_CHECK"
-                    if not forced_decision_reason:
+                    if not forced_decision_reason and not v_negotiation_terminal_reason:
                         forced_decision_reason = "v_negotiation_budget_exhausted"
             elif enable_v_flow and v_protocol_state not in {"A_CHECK", "FINAL_VOTE"}:
                 v_protocol_transition_history.append({"from": v_protocol_state, "to": "A_CHECK", "reason": "pre_decision"})
                 v_protocol_state = "A_CHECK"
 
-            # 意思決定機会：例外時もエージェントの投票は実行する
-            alpha_vote, alpha_vote_reason, alpha_vote_message, alpha_vote_ready, alpha_vote_raw, alpha_vote_thinking = get_action(
-                model,
-                tokenizer,
-                decision_opportunity_prompt(
-                    "alpha",
-                    personas["alpha"],
-                    persona_params["alpha"],
+            # 最終投票はシステム側で安全性とV*整合性を検証し、違反時は同じagentへ再試行する。
+            # モデルの v_star_consistent 自己申告は判定に使用しない。
+            safe_action_candidates = [
+                candidate for candidate in ALL_ACTIONS
+                if preview_action_safety(state, candidate)[0]
+            ]
+            validated_fallback = fallback
+            if v_star_status == "accepted":
+                v_consistent_fallbacks = [
+                    candidate for candidate in safe_action_candidates
+                    if verify_vote_v_star_consistency(
+                        candidate, "", v_star_id, None, v_star_id, v_star, state
+                    ) is True
+                ]
+                if v_consistent_fallbacks:
+                    validated_fallback = max(
+                        v_consistent_fallbacks, key=lambda candidate: q_values[candidate]
+                    )
+
+            def collect_validated_vote(agent: str) -> tuple[Action | None, str, str, bool, str, str, str, bool | None]:
+                nonlocal final_vote_retry_count
+                base_prompt = decision_opportunity_prompt(
+                    agent,
+                    personas[agent],
+                    persona_params[agent],
                     state,
                     transcript,
                     condition,
                     opp_idx,
                     opportunity_count,
-                    v_state=current_v_state("alpha"),
-                    role=resolved_role_for("alpha"),
-                ),
-                max_new_tokens,
-                fallback,
-                enable_thinking=enable_thinking,
-                thinking_budget=thinking_budget,
-            )
-            if alpha_vote_reason.startswith("invalid_response_fallback"):
-                alpha_vote = None
-            alpha_vote_v_star_id, alpha_vote_v_star_claim = extract_vote_v_fields(alpha_vote_raw)
-            beta_vote, beta_vote_reason, beta_vote_message, beta_vote_ready, beta_vote_raw, beta_vote_thinking = get_action(
-                model,
-                tokenizer,
-                decision_opportunity_prompt(
-                    "beta",
-                    personas["beta"],
-                    persona_params["beta"],
-                    state,
-                    transcript,
-                    condition,
-                    opp_idx,
-                    opportunity_count,
-                    v_state=current_v_state("beta"),
-                    role=resolved_role_for("beta"),
-                ),
-                max_new_tokens,
-                fallback,
-                enable_thinking=enable_thinking,
-                thinking_budget=thinking_budget,
-            )
-            if beta_vote_reason.startswith("invalid_response_fallback"):
-                beta_vote = None
-            beta_vote_v_star_id, beta_vote_v_star_claim = extract_vote_v_fields(beta_vote_raw)
+                    v_state=current_v_state(agent),
+                    role=resolved_role_for(agent),
+                )
+                feedback = ""
+                last: tuple[Action | None, str, str, bool, str, str] = (None, "", "", False, "", "")
+                referenced_id = ""
+                system_consistent: bool | None = None
+                for attempt in range(max_final_vote_retries + 1):
+                    prompt = base_prompt if not feedback else (
+                        "【FINAL_VOTE_REPAIR id=final-vote-repair】\n"
+                        f"直前の投票はシステム検証で拒否されました: {feedback}\n"
+                        "別の安全かつ受諾V*に整合する行動をJSONだけで返してください。\n\n"
+                        + base_prompt
+                    )
+                    last = get_action(
+                        model,
+                        tokenizer,
+                        prompt,
+                        max_new_tokens,
+                        fallback,
+                        enable_thinking=enable_thinking,
+                        thinking_budget=thinking_budget,
+                        prompt_runner=prompt_runner,
+                        agent=agent,
+                    )
+                    action, reason, message, ready, raw, thinking = last
+                    referenced_id, claimed_consistent = extract_vote_v_fields(raw)
+                    rejection_reason = ""
+                    if reason.startswith("invalid_response_fallback") or action is None:
+                        rejection_reason = "invalid_final_vote"
+                    elif safe_action_candidates:
+                        safe, safety_reason, preview = preview_action_safety(state, action)
+                        if not safe:
+                            rejection_reason = "unsafe_action:" + final_vote_repair_feedback(
+                                state, action, agent, resolved_role_for(agent)
+                            )
+                    if not rejection_reason and v_star_status == "accepted":
+                        system_consistent = verify_vote_v_star_consistency(
+                            action, reason, referenced_id, claimed_consistent, v_star_id, v_star, state
+                        )
+                        if system_consistent is False:
+                            rejection_reason = "v_star_action_inconsistent"
+                    if not rejection_reason:
+                        return action, reason, message, ready, raw, thinking, referenced_id, system_consistent
+                    rejected_final_votes.append(
+                        {
+                            "agent": agent,
+                            "opportunity": opp_idx,
+                            "attempt": attempt + 1,
+                            "action": action.value if action else "",
+                            "reason": reason,
+                            "rejection_reason": rejection_reason,
+                        }
+                    )
+                    feedback = rejection_reason
+                    if attempt < max_final_vote_retries:
+                        final_vote_retry_count += 1
+                _, reason, message, ready, raw, thinking = last
+                return None, reason, message, ready, raw, thinking, referenced_id, False
+
+            (
+                alpha_vote, alpha_vote_reason, alpha_vote_message, alpha_vote_ready,
+                alpha_vote_raw, alpha_vote_thinking, alpha_vote_v_star_id, alpha_vote_system_consistent,
+            ) = collect_validated_vote("alpha")
+            (
+                beta_vote, beta_vote_reason, beta_vote_message, beta_vote_ready,
+                beta_vote_raw, beta_vote_thinking, beta_vote_v_star_id, beta_vote_system_consistent,
+            ) = collect_validated_vote("beta")
+            _, alpha_vote_v_star_claim = extract_vote_v_fields(alpha_vote_raw)
+            _, beta_vote_v_star_claim = extract_vote_v_fields(beta_vote_raw)
 
             # 投票は全エージェントが出し終わってからトランスクリプトへ追加
             transcript.append(
@@ -2906,6 +3517,8 @@ def run_one_game(
                     "consensus": consensus,
                     "v_star_id": v_star_id,
                     "v_star_status": v_star_status,
+                    "alpha_v_star_consistent": alpha_vote_system_consistent,
+                    "beta_v_star_consistent": beta_vote_system_consistent,
                 }
             )
 
@@ -2935,9 +3548,10 @@ def run_one_game(
                     group_reason = f"fallback priority agent alpha invalid; using beta: {beta_vote_reason}"
                     decision_rule = "fallback_priority"
                 else:
-                    group_action = fallback
-                    group_reason = "both votes invalid; fallback to best action"
-                    decision_rule = "fallback_best"
+                    group_action = validated_fallback
+                    group_reason = "both votes invalid; fallback to validated safe action"
+                    decision_rule = "fallback_validated"
+
             else:
                 if beta_vote is not None:
                     group_action = beta_vote
@@ -2948,9 +3562,26 @@ def run_one_game(
                     group_reason = f"fallback priority agent beta invalid; using alpha: {alpha_vote_reason}"
                     decision_rule = "fallback_priority"
                 else:
-                    group_action = fallback
-                    group_reason = "both votes invalid; fallback to best action"
-                    decision_rule = "fallback_best"
+                    group_action = validated_fallback
+                    group_reason = "both votes invalid; fallback to validated safe action"
+                    decision_rule = "fallback_validated"
+
+        # 最終防衛線: 将来の呼び出し側変更でも確実な即時敗北行動をstepへ渡さない。
+        safety_override_used = False
+        rejected_group_action = ""
+        rejected_group_action_reason = ""
+        group_safe, group_safety_reason, _ = preview_action_safety(state, group_action)
+        if not group_safe and safe_fallback_candidates:
+            rejected_group_action = group_action.value
+            rejected_group_action_reason = group_safety_reason
+            group_action = validated_fallback
+            safety_override_used = True
+            fallback_used = True
+            decision_rule = "safety_fallback"
+            group_reason = (
+                f"system safety gate rejected {rejected_group_action}: {group_safety_reason}; "
+                f"using safe action {group_action.value}"
+            )
 
         if enable_v_flow and v_protocol_state != "FINAL_VOTE":
             v_protocol_transition_history.append({"from": v_protocol_state, "to": "FINAL_VOTE", "reason": "final_votes_collected"})
@@ -2980,9 +3611,10 @@ def run_one_game(
                 error = ""
                 raw_measurement = ""
                 for attempt in range(max_v_measurement_retries + 1):
-                    _, raw_measurement = run_prompt(
+                    _, raw_measurement = _invoke_prompt(
                         model, tokenizer, prompt, max_new_tokens,
                         enable_thinking=enable_thinking, thinking_budget=thinking_budget,
+                        prompt_runner=prompt_runner, agent=agent,
                     )
                     measurement_call_count += 1
                     if tokenizer is not None:
@@ -2996,10 +3628,10 @@ def run_one_game(
                 v_measurement_errors[f"{agent}_after"] = error or ("measurement_failed" if measured_v is None else "")
 
         alpha_v_star_consistent = v_star_status == "accepted" and verify_vote_v_star_consistency(
-            alpha_vote, alpha_vote_reason, alpha_vote_v_star_id, alpha_vote_v_star_claim, v_star_id, v_star
+            alpha_vote, alpha_vote_reason, alpha_vote_v_star_id, alpha_vote_v_star_claim, v_star_id, v_star, state
         )
         beta_v_star_consistent = v_star_status == "accepted" and verify_vote_v_star_consistency(
-            beta_vote, beta_vote_reason, beta_vote_v_star_id, beta_vote_v_star_claim, v_star_id, v_star
+            beta_vote, beta_vote_reason, beta_vote_v_star_id, beta_vote_v_star_claim, v_star_id, v_star, state
         )
         v_star_action_consistency: bool | None = (
             alpha_v_star_consistent and beta_v_star_consistent
@@ -3114,6 +3746,16 @@ def run_one_game(
             "alpha_reason_before": reason_before["alpha"],
             "beta_reason_before": reason_before["beta"],
             "v_proposals": _canonical_json(v_proposals),
+            "v_proposal_id_repair_count": len(v_proposal_id_repairs),
+            "v_proposal_id_repairs": _canonical_json(v_proposal_id_repairs),
+            "v_counter_count": v_counter_count,
+            "rejected_v_counter_count": rejected_v_counter_count,
+            "v_negotiation_message_budget": (
+                reserved_v_messages + v_counter_count * v_messages_per_counter_extension
+                if enable_v_flow and condition == "hivc_d" and turn_v_alignment_required
+                else 0
+            ),
+            "v_negotiation_messages_used": v_negotiation_messages_used,
             "v_star_id": v_star_id,
             "v_star": _canonical_json(v_star) if v_star is not None else "",
             "v_star_scope": str(v_star.get("scope", "")) if v_star is not None else "",
@@ -3172,8 +3814,14 @@ def run_one_game(
             "decision_attempt_index": final_attempt_index,
             "free_discussion_message_count": total_free_messages,
             "decision_history": json.dumps(decision_history, ensure_ascii=False),
+            "final_vote_retry_count": final_vote_retry_count,
+            "rejected_final_vote_count": len(rejected_final_votes),
+            "rejected_final_votes": _canonical_json(rejected_final_votes),
             "fallback_used": fallback_used,
             "fallback_priority_agent": fallback_priority_agent,
+            "safety_override_used": safety_override_used,
+            "rejected_group_action": rejected_group_action,
+            "rejected_group_action_reason": rejected_group_action_reason,
             "planned_route": planned_route,
             "optimal_route": optimal_route_value,
             "route_switch": route_switch,
@@ -3188,8 +3836,12 @@ def run_one_game(
             "question_count": question_count,
             "answered_question_count": answered_question_count,
             "duplicate_question_count": duplicate_question_count,
+            "required_information_question_count": required_information_question_count,
+            "missing_required_information_question_count": missing_required_information_question_count,
             "max_consecutive_duplicate_questions": max_consecutive_duplicate_questions_recorded,
             "invalid_discussion_output_count": invalid_discussion_output_count,
+            "invalid_attempt_count": invalid_attempt_count,
+            "repaired_invalid_output_count": repaired_invalid_output_count,
             "invalid_discussion_outputs": _canonical_json(invalid_discussion_outputs),
             "discussion_retry_count": discussion_retry_count,
             "question_response_latency": question_response_latency,

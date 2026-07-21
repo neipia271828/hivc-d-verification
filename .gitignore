@@ -18,6 +18,7 @@ configs/gpu_server.yaml
 .hivc-workflow.json
 hivc_sim/results/turn_game/downloads/
 hivc_sim/results/turn_game/experiment/runs/
+hivc_sim/results/turn_game/devin/runs/
 
 # LaTeX build artifacts
 *.aux
@@ -27,3 +28,4 @@ hivc_sim/results/turn_game/experiment/runs/
 *.fls
 *.fdb_latexmk
 *.synctex.gz
+hivc_sim/results/turn_game/zai/runs/

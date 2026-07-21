@@ -25,6 +25,7 @@ from turn_game import (  # noqa: E402
     pod_ready_status,
     random_policy,
     role_specific_evidence,
+    sample_viable_event,
     step,
     summarize_games,
     terminal_score,
@@ -36,11 +37,162 @@ from scripts.llm_turn_game_common import (  # noqa: E402
     _question_signature,
     allocate_discussion_budgets,
     decision_opportunity_prompt,
+    decision_relevant_hidden_fields,
     discussion_prompt,
     extract_json_discussion,
     format_state,
     run_one_game,
 )
+
+
+def test_decision_relevant_hidden_fields_uses_scope_and_state() -> None:
+    state = GameState(
+        hull_damage=3,
+        flooding=1,
+        communication=2,
+        pod_readiness=1,
+        pod_integrity=0,
+        current_event=Event.NONE,
+    )
+    alpha_scope = {"oxygen", "power", "hull_damage", "flooding"}
+    beta_scope = {"oxygen", "power", "communication", "pod_readiness", "pod_integrity"}
+    assert decision_relevant_hidden_fields(state, alpha_scope, beta_scope) == [
+        "communication", "pod_readiness", "pod_integrity"
+    ]
+    assert decision_relevant_hidden_fields(state, beta_scope, alpha_scope) == ["hull_damage"]
+
+
+def test_final_vote_retries_guaranteed_loss_and_uses_safe_action(monkeypatch) -> None:
+    low_power = GameState(
+        turn=4,
+        oxygen=6,
+        power=2,
+        hull_damage=1,
+        flooding=1,
+        communication=0,
+        current_event=Event.NONE,
+        scenario_id="ambiguous",
+    )
+    monkeypatch.setattr("scripts.llm_turn_game_common.initial_state", lambda seed, scenario_id=None: low_power)
+
+    def fake_run_prompt(model, tokenizer, prompt, max_new_tokens, enable_thinking=False, thinking_budget=None):
+        if "id=final-vote-repair" in prompt:
+            return "", '{"action":"B","reason":"powerを回復するためBを選択する","ready":true}'
+        if "id=decision-contract" in prompt:
+            return "", '{"action":"A","reason":"Aを選択する","ready":true}'
+        return "", '{"speech_act":"evidence","message":"状況共有","action":"B","reason":"powerが低い","addressed_to":null,"reply_to_message_id":null}'
+
+    monkeypatch.setattr("scripts.llm_turn_game_common.run_prompt", fake_run_prompt)
+    rows = run_one_game(
+        None, None, "control", 42,
+        {"alpha": "alpha", "beta": "beta"},
+        {"alpha": None, "beta": None},
+        {"alpha": "a", "beta": "b"},
+        max_discussion_turns=2,
+        discussion_token_budget=512,
+        evaluator_rollouts=1,
+        max_decision_opportunities=1,
+        max_final_vote_retries=1,
+    )
+    first = rows[0]
+    assert first["alpha_vote"] == "B"
+    assert first["beta_vote"] == "B"
+    assert first["group_action"] == "B"
+    assert first["final_vote_retry_count"] == 2
+    assert first["rejected_final_vote_count"] == 2
+    rejected = json.loads(first["rejected_final_votes"])
+    assert all(item["rejection_reason"].startswith("unsafe_action:guaranteed_loss_power") for item in rejected)
+    assert first["outcome"] != "loss_power"
+
+
+def test_sample_viable_event_replaces_unavoidable_hull_fracture(monkeypatch) -> None:
+    state = GameState(
+        turn=3, oxygen=6, power=6, hull_damage=3, flooding=1,
+        current_event=Event.NONE, scenario_id="ambiguous",
+    )
+    monkeypatch.setattr("turn_game.sample_event", lambda *args, **kwargs: Event.HULL_FRACTURE)
+    event = sample_viable_event(np.random.default_rng(7), state, "ambiguous", 3)
+    assert event != Event.HULL_FRACTURE
+    candidate_state = GameState(**{**state.__dict__, "current_event": event})
+    from turn_game import preview_action_safety
+    assert any(preview_action_safety(candidate_state, action)[0] for action in Action)
+
+
+def test_required_hidden_information_question_is_retried_and_answered(monkeypatch) -> None:
+    from types import SimpleNamespace
+    from profiles import Role
+
+    state = GameState(
+        turn=4, oxygen=8, power=8, hull_damage=1, flooding=1,
+        communication=2, current_event=Event.SIGNAL_WINDOW, scenario_id="comms_favored",
+    )
+    monkeypatch.setattr("scripts.llm_turn_game_common.initial_state", lambda seed, scenario_id=None: state)
+    alpha_role = Role(
+        id="safety", label="安全", schema_version="2.0",
+        expertise_domains=("safety",),
+        observation_scope=("oxygen", "power", "hull_damage", "flooding"),
+        responsibility="安全", feasibility_constraints=(),
+    )
+    beta_role = Role(
+        id="comms", label="通信", schema_version="2.0",
+        expertise_domains=("communication",),
+        observation_scope=("oxygen", "power", "communication", "pod_readiness", "pod_integrity"),
+        responsibility="通信", feasibility_constraints=(),
+    )
+    profiles = {
+        "alpha": SimpleNamespace(role=alpha_role),
+        "beta": SimpleNamespace(role=beta_role),
+    }
+    alpha_discussion_attempts = 0
+
+    def fake_run_prompt(model, tokenizer, prompt, max_new_tokens, enable_thinking=False, thinking_budget=None):
+        nonlocal alpha_discussion_attempts
+        if "id=decision-contract" in prompt:
+            return "", '{"action":"B","reason":"Bを選択する","ready":true}'
+        if "質問ID 1 への回答が必須" in prompt:
+            return "", (
+                '{"speech_act":"evidence","message":"communicationは2",'
+                '"action":"B","reason":"回答","addressed_to":null,"reply_to_message_id":"1"}'
+            )
+        if "id=required-information-question" in prompt:
+            alpha_discussion_attempts += 1
+            if alpha_discussion_attempts == 1:
+                return "", (
+                    '{"speech_act":"evidence","message":"先に結論","action":"B",'
+                    '"reason":"修理","addressed_to":null,"reply_to_message_id":null}'
+                )
+            return "", (
+                '{"speech_act":"information_request","message":"communicationを確認したい",'
+                '"action":null,"reason":"通信窓の判断に必要","addressed_to":"beta",'
+                '"reply_to_message_id":null,"requested_fields":["communication"]}'
+            )
+        return "", (
+            '{"speech_act":"evidence","message":"共有","action":"B",'
+            '"reason":"共有","addressed_to":null,"reply_to_message_id":null}'
+        )
+
+    monkeypatch.setattr("scripts.llm_turn_game_common.run_prompt", fake_run_prompt)
+    rows = run_one_game(
+        None, None, "control", 42,
+        {"alpha": "alpha", "beta": "beta"},
+        {"alpha": None, "beta": None},
+        {"alpha": "a", "beta": "b"},
+        max_discussion_turns=2,
+        discussion_token_budget=512,
+        evaluator_rollouts=1,
+        max_decision_opportunities=1,
+        max_discussion_retries=1,
+        resolved_profiles=profiles,
+    )
+    first = rows[0]
+    assert first["required_information_question_count"] == 1
+    assert first["missing_required_information_question_count"] == 0
+    assert first["question_count"] == 1
+    assert first["answered_question_count"] == 1
+    assert first["discussion_retry_count"] >= 1
+    audit = json.loads(first["invalid_discussion_outputs"])
+    assert audit[0]["validation_reason"] == "required_information_question_missing"
+    assert audit[0]["recovered"] is True
 
 
 def test_initial_state_is_reproducible() -> None:
@@ -346,11 +498,15 @@ def test_discussion_prompt_schema_includes_question_metadata_keys() -> None:
 
     assert "必須キー: speech_act, message, action, reason, reply_to_message_id" in prompt
     assert "情報要求の質問では null 可" in prompt
+    assert "質問以外の全speech_actでは、actionに必ずA-Fの一つ" in prompt
+    assert "evidence、proposal、tradeoff" in prompt
     assert "null/省略なら相手一名へ補完" in prompt
     assert '"addressed_to":null,"reply_to_message_id":null' in prompt
     assert '"speech_act":"information_request"' in prompt
     assert '"action":null' in prompt
     assert '"addressed_to":"beta","reply_to_message_id":null' in prompt
+    assert "A. 酸素供給を安定化（効果: oxygen +3, power -1" in prompt
+    assert "F. 自力脱出を実行（効果: 脱出条件を全て満たす時のみ勝利" in prompt
 
 
 def test_discussion_answer_example_obeys_non_question_address_contract() -> None:
@@ -1031,11 +1187,21 @@ def test_invalid_discussion_output_triggers_retry_and_recovers(monkeypatch) -> N
     first = rows[0]
     transcript = json.loads(first["discussion_transcript"])
     assert not any(item.get("raw") == "this is not valid json" for item in transcript)
-    # リトライ成功時は監査経路にinvalidを保存しない
+    # リトライ成功時も、最初のinvalid attemptを回復済みとして監査保存する。
     audit = json.loads(first["invalid_discussion_outputs"])
-    assert len(audit) == 0
+    assert len(audit) == 1
+    assert audit[0]["recovered"] is True
+    assert audit[0]["final_exhausted"] is False
+    assert audit[0]["attempt"] == 1
+    assert audit[0]["max_attempts"] == 2
+    assert audit[0]["turn"] == 0
+    assert audit[0]["opportunity"] == 1
+    assert audit[0]["agent"] == audit[0]["speaker"]
+    assert "token_count" in audit[0]
     assert first["discussion_retry_count"] >= 1
     assert first["invalid_discussion_output_count"] == 0
+    assert first["invalid_attempt_count"] == 1
+    assert first["repaired_invalid_output_count"] == 1
 
 
 def test_invalid_discussion_output_retry_exhaustion_records_audit(monkeypatch) -> None:
@@ -1068,10 +1234,20 @@ def test_invalid_discussion_output_retry_exhaustion_records_audit(monkeypatch) -
     first = rows[0]
     audit = json.loads(first["invalid_discussion_outputs"])
     assert len(audit) >= 1
-    assert audit[0]["raw"] == "this is not valid json"
+    assert all(item["raw"] == "this is not valid json" for item in audit)
+    assert all(item["raw_output"] == "this is not valid json" for item in audit)
+    assert all(item["agent"] in {"alpha", "beta"} for item in audit)
+    assert [item["attempt"] for item in audit[:2]] == [1, 2]
+    assert all(item["max_attempts"] == 2 for item in audit)
+    assert all(item["validation_reason"] == "not_json_object_or_extra_text" for item in audit)
+    assert audit[0]["recovered"] is False
+    assert audit[0]["final_exhausted"] is False
+    assert audit[1]["final_exhausted"] is True
     assert audit[0]["retry_attempts"] >= 1
     assert first["discussion_retry_count"] >= 1
     assert first["invalid_discussion_output_count"] >= 1
+    assert first["invalid_attempt_count"] >= 2
+    assert first["repaired_invalid_output_count"] == 0
 
 
 def test_scope_unanswerable_question_is_closed_and_not_resent(monkeypatch) -> None:
