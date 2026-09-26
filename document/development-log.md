@@ -1128,3 +1128,10 @@ scope分岐後の `question_count` が unanswerable/self_observable/duplicate �
 - dry-runで`planned_games=90`、`condition_workers=3`、`effective_api_concurrency=3`、`seed_counterbalanced_condition_workers_bounded_parallel_api`を確認した。`pytest hivc_sim/tests -q`は224 passed。
 - commit `340b13e` をpush・GPUサーバーへ同期し、2026-07-21 21:47 JSTにrun `zai-glm47-3x30-singlekey-parallel-20260721-1`をtmux session `hivc-glm47-90-p3`で開始した。
 - 起動後にmanifestの`status=running / planned_games=90 / condition_workers=3 / effective_api_concurrency=3`、3つの`zai-seed-42` worker thread、credential一時ファイルの削除を確認した。
+
+### 追記: 口頭発表資料を32枚の統一デザインへ再構成（2026-09-26）
+
+- 元の71ページPDFと既存のゲームルール・実験結果・合意率分析スライドを参照し、背景、仮説、設計、結果、考察、結論を32枚の編集可能なHTMLへ再構成した。画像貼り込みだった後半の内容もHTMLの文字・表・パネルへ置き換えた。
+- `document/slides/experiment_results_slides.html`のCSSと画面フィット・印刷時のtransform解除を流用し、白背景、黒文字・罫線、青と赤のアクセント、1280×720px、全ページのフッターを統一した。元PDFに残っていたセクションの英語プレースホルダは実内容に置換した。
+- モデル名を実験記録に合わせてGLM-4.7へ修正し、勝率、終端スコア、合意率、対応比較、シナリオ別結果を既存スライドと`analysis/glm47-final-90/`に照合した。
+- `document/slides/build_unified_presentation.py`からHTMLを再生成できる。ChromeでPDFを生成し、32ページ・MediaBox `0 0 960 540`を確認した。50dpiの全ページPNGで非白ピクセルがページ端に接しないことを確認し、全32ページの縮小一覧を目視した。192dpiのPNGを32枚出力し、すべて2560×1440pxであることを確認した。
