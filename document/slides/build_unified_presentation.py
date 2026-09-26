@@ -44,8 +44,13 @@ SLIDES = [
     """),
     ("背景", """
       <h2>問題意識：安心して議論できるか</h2>
-      <div class="flow"><div>意見が分かれる</div><span>→</span><div>理由が伝わらない</div><span>→</span><div class="red-text">感情的な議論</div></div>
-      <div class="panel"><p class="big">「相手が間違っている」で止めず、<span class="blue">何が違うのか</span>を整理して話せないか。</p></div>
+      <div class="illustration-layout">
+        <div class="illustration-copy">
+          <div class="flow compact-flow"><div>意見が分かれる</div><span>→</span><div>理由が伝わらない</div><span>→</span><div class="red-text">感情的な議論</div></div>
+          <div class="panel"><p class="big">「相手が間違っている」で止めず、<span class="blue">何が違うのか</span>を整理して話せないか。</p></div>
+        </div>
+        <div class="illustration-panel"><img src="assets/discussion_conflict.png" alt="元資料にある、感情的な議論を表す二人のイラスト"></div>
+      </div>
       <p class="muted">心理的安全性を直接測定した実験ではなく、そのための議論手続きを設計する動機である。</p>
     """),
     ("仮説", """<div class="section-no">02 / 仮説</div><h1>対立の原因を見分ける</h1><p class="section-desc">目標・情報・能力の違いを分け、必要な介入を考える。</p>"""),
@@ -56,13 +61,21 @@ SLIDES = [
     """),
     ("仮説", """
       <h2>山登りの例：対立はどこで始まるか</h2>
-      <div class="mountain"><div class="summit">▲ 山頂へ行く</div><div class="route-line"><span class="route-a">A：斜度の小さい赤ルート</span><span class="route-b">B：青ルートがよい</span></div></div>
+      <div class="mountain-scene">
+        <div class="scene-summit">ゴール：山頂へ行く</div>
+        <img class="mountain-art" src="assets/mountain_original.png" alt="元資料の緑の山のイラスト">
+        <img class="hiker hiker-left" src="assets/hiker_a.png" alt="赤ルートを提案する登山者">
+        <img class="hiker hiker-right" src="assets/hiker_b.png" alt="青ルートを提案する登山者">
+        <div class="scene-speech speech-left">赤ルートは斜度が小さい</div>
+        <div class="scene-speech speech-right">青ルートがよい</div>
+        <svg class="scene-arrows" viewBox="0 0 1100 330" preserveAspectRatio="none" aria-hidden="true"><defs><marker id="red-arrow" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#d93025"/></marker><marker id="blue-arrow" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#0b57d0"/></marker></defs><path d="M170 240 L500 60" stroke="#d93025" stroke-width="4" fill="none" marker-end="url(#red-arrow)"/><path d="M930 240 L590 60" stroke="#0b57d0" stroke-width="4" fill="none" marker-end="url(#blue-arrow)"/></svg>
+      </div>
       <div class="cols"><div class="panel"><h3>見えている根拠</h3><p>Aは地形を見て「赤の方が安全」と言う。</p></div><div class="panel red"><h3>まだ共有されていないこと</h3><p>Bの目的や情報、体力上の事情は分からない。</p></div></div>
-      <p class="muted">元資料p21–31の山登りルートの絵コンテを再構成。</p>
+      <p class="muted">元資料p21–31の人物と山のイラストを再利用して再構成。</p>
     """),
     ("仮説", """
       <h2>議論の破綻と原因分類</h2>
-      <div class="panel red"><p class="big">「赤の方が斜度が小さい」対「青ルートの気分」だけでは、<span class="red">比較する基準が共有されない</span>。</p></div>
+      <div class="reason-illustration"><img src="assets/hiker_a.png" alt="赤ルートを提案する登山者"><div class="panel red"><p class="big">「赤の方が斜度が小さい」対「青ルートの気分」だけでは、<span class="red">比較する基準が共有されない</span>。</p></div><img src="assets/hiker_b.png" alt="青ルートを提案する登山者"></div>
       <table><tr><th>確認する違い</th><th>山登りでの問い</th><th>介入</th></tr><tr><td>ゴール</td><td>速く登る？ 安全に登る？</td><td>目的を共有する</td></tr><tr><td>情報</td><td>地形・天候を同じように見ている？</td><td>根拠を共有する</td></tr><tr><td>能力</td><td>その道を全員が歩ける？</td><td>役割やルートを調整する</td></tr></table>
     """),
     ("仮説", """
@@ -187,12 +200,26 @@ EXTRA_CSS = """
   .flow > span { font-size: 28px; color: var(--accent); }
   .flow small { display: block; font-size: 16px; font-weight: 400; margin-top: 8px; }
   .flow .red-text { border-top-color: var(--accent2); color: var(--accent2); }
-  .mountain { border: 1.5px solid #ccc; padding: 22px 30px; margin-bottom: 18px; }
-  .summit { text-align: center; font-size: 28px; font-weight: 700; margin-bottom: 25px; }
-  .route-line { display: flex; justify-content: space-between; gap: 28px; }
-  .route-line span { flex: 1; border: 3px solid var(--accent); padding: 20px; text-align: center; font-size: 21px; font-weight: 700; }
-  .route-line .route-a { border-color: var(--accent2); color: var(--accent2); }
-  .route-line .route-b { color: var(--accent); }
+  .illustration-layout { display: flex; gap: 20px; align-items: center; }
+  .illustration-copy { flex: 1.7; min-width: 0; }
+  .illustration-panel { flex: 0.8; min-width: 0; text-align: center; }
+  .illustration-panel img { width: 100%; max-height: 260px; object-fit: contain; }
+  .compact-flow { gap: 8px; margin: 0 0 15px; }
+  .compact-flow > div { font-size: 17px; min-height: 90px; padding: 16px 8px; }
+  .compact-flow > span { font-size: 23px; }
+  .mountain-scene { position: relative; height: 330px; border: 1.5px solid #ccc; margin-bottom: 16px; overflow: hidden; }
+  .mountain-art { position: absolute; width: 480px; height: 310px; object-fit: contain; left: calc(50% - 240px); bottom: 0; }
+  .hiker { position: absolute; width: 130px; height: 155px; object-fit: contain; bottom: 4px; }
+  .hiker-left { left: 25px; }
+  .hiker-right { right: 25px; }
+  .scene-summit { position: absolute; top: 8px; left: 0; right: 0; text-align: center; font-size: 21px; font-weight: 700; z-index: 2; }
+  .scene-speech { position: absolute; top: 72px; width: 235px; font-size: 18px; font-weight: 700; text-align: center; z-index: 2; }
+  .speech-left { left: 5px; color: var(--accent2); }
+  .speech-right { right: 5px; color: var(--accent); }
+  .scene-arrows { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1; }
+  .reason-illustration { display: flex; align-items: center; gap: 15px; margin-bottom: 12px; }
+  .reason-illustration img { width: 100px; height: 115px; object-fit: contain; }
+  .reason-illustration .panel { flex: 1; margin-bottom: 0; }
   .hero-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 18px; }
   .hero-grid div { border: 1.5px solid #ccc; border-top: 4px solid var(--accent); padding: 20px; text-align: center; }
   .hero-grid b { display: block; font-size: 55px; color: var(--accent); }
