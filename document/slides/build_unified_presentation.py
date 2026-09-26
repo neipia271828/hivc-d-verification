@@ -30,28 +30,31 @@ SLIDES = [
       <div class="cols"><div class="panel"><h3>実験で扱えること</h3><p>同じゲームとseedを使い、追加する議論手続きだけを変えて比較する。</p></div><div class="panel red"><h3>解釈の範囲</h3><p>LLMが実際の人間の感情・心理的安全性を代替できるかは、この実験だけでは判断できない。</p></div></div>
     """),
     ("流れ", """
-      <h2>本日の流れ</h2>
-      <div class="agenda">
-        <div><b>01</b><span>背景</span></div><div><b>02</b><span>仮説</span></div><div><b>03</b><span>実験設計</span></div>
-        <div><b>04</b><span>実験結果</span></div><div><b>05</b><span>考察</span></div><div><b>06</b><span>まとめ</span></div>
-      </div>
+      <h2>発表の流れ</h2>
+      <ol class="agenda-list"><li>背景</li><li>仮説</li><li>実験設計</li><li>実験結果</li><li>考察</li><li>まとめ</li></ol>
     """),
     ("背景", """<div class="section-no">01 / 背景</div><h1>日常のMTGから生まれた問い</h1><p class="section-desc">自主制作の場で、意見の対立をどう建設的な議論につなげるか。</p>"""),
     ("背景", """
-      <h2>神山まるごと高専のMTG</h2>
-      <div class="cols"><div class="panel"><h3>自主制作・活動</h3><p>学生が主体的に制作や活動を進める。複数人で方針を決める機会が多い。</p></div><div class="panel"><h3>日常的なMTG</h3><p>案を持ち寄り、理由を伝え、作業の進め方を決める。</p></div></div>
-      <div class="panel red"><p class="big">同じ制作目標に向かっていても、<span class="red">意見の対立</span>は起こる。</p></div>
+      <div class="section-no">神山まるごと高専のMTG　1 / 3</div>
+      <h1 class="story-key">自主活動が多い</h1>
+      <p class="story-support">学生が主体的に制作・活動を進めている。</p>
     """),
     ("背景", """
-      <h2>問題意識：安心して議論できるか</h2>
-      <div class="illustration-layout">
-        <div class="illustration-copy">
-          <div class="flow compact-flow"><div>意見が分かれる</div><span>→</span><div>理由が伝わらない</div><span>→</span><div class="red-text">感情的な議論</div></div>
-          <div class="panel"><p class="big">「相手が間違っている」で止めず、<span class="blue">何が違うのか</span>を整理して話せないか。</p></div>
-        </div>
-        <div class="illustration-panel"><img src="assets/discussion_conflict.png" alt="元資料にある、感情的な議論を表す二人のイラスト"></div>
+      <div class="section-no">神山まるごと高専のMTG　2 / 3</div>
+      <h1 class="story-key">日常的にMTGが起きる</h1>
+      <p class="story-support">活動の方針や進め方を、仲間と話し合う。</p>
+    """),
+    ("背景", """
+      <div class="section-no">神山まるごと高専のMTG　3 / 3</div>
+      <h1 class="story-key red">意見の対立が起こりやすい</h1>
+      <p class="story-support">同じ活動でも、進め方や優先順位が分かれる。</p>
+    """),
+    ("背景", """
+      <h2>見つけた課題</h2>
+      <div class="question-layout">
+        <p class="question-text">どうすれば<br><span class="blue">安心した議論</span>を作れるか？</p>
+        <img src="assets/discussion_conflict.png" alt="元資料にある、感情的な議論を表す二人のイラスト">
       </div>
-      <p class="muted">心理的安全性を直接測定した実験ではなく、そのための議論手続きを設計する動機である。</p>
     """),
     ("仮説", """<div class="section-no">02 / 仮説</div><h1>対立の原因を見分ける</h1><p class="section-desc">目標・情報・能力の違いを分け、必要な介入を考える。</p>"""),
     ("仮説", """
@@ -179,6 +182,85 @@ SLIDES = [
       <p class="speaker">神山まるごと高専 本科2年　鈴木陽向</p>
       <p class="muted">出典：HIVCD_GLM47_INTERIM.md、analysis/glm47-final-90/、既存のゲームルール・実験結果・合意率分析スライド</p>
     """),
+    ("APPENDIX", """
+      <div class="section-no">APPENDIX / 補足資料</div>
+      <h1>実験環境と詳細データ</h1>
+      <p class="section-desc">設定・評価方法・集計値を、質疑用にまとめた資料。</p>
+    """),
+    ("APPENDIX", """
+      <h2>実行環境と再現条件</h2>
+      <table class="appendix-table"><tr><th>項目</th><th>設定</th></tr>
+        <tr><td>モデル / 提供元</td><td>GLM-4.7 / Z.ai API。alphaとbetaの両役割に同一モデルを使用</td></tr>
+        <tr><td>生成設定</td><td>temperature 0.2、sampling無効、1応答256 token上限</td></tr>
+        <tr><td>試行</td><td>control / consulting / hivc_d 各30ゲーム、seed 42–71、計90ゲーム</td></tr>
+        <tr><td>対応設計</td><td>同一seedを3条件で共有。条件順はLatin squareで入れ替え</td></tr>
+        <tr><td>実行</td><td>単一の有料APIアカウントを共有、最大3並列。GPUサーバー上で実験を起動</td></tr>
+        <tr><td>評価器</td><td>候補行動ごとに24 rolloutでQ値を推定</td></tr>
+        <tr><td>データ整合</td><td>中断・再開runを結合し、condition × seedの重複なし・終端記録各1件を確認</td></tr>
+      </table>
+      <p class="muted">設定：configs/zai_glm47_90games_single_key_parallel.yaml。分析：scripts/analyze_glm47_final_paper.py。</p>
+    """),
+    ("APPENDIX", """
+      <h2>対話・投票・安全処理</h2>
+      <div class="cols"><div class="panel"><h3>共通の対話予算</h3><ul><li>各ターン1–3回の意思決定機会（seedとturnから決定）</li><li>最大6発話・1,536 tokenを機会数に分配</li><li>個別投票が同じactionかつ両者ready=trueなら共同実行</li></ul></div><div class="panel red"><h3>未合意時</h3><ul><li>fallbackの優先役割は(seed + turn)の偶奇で決定</li><li>両投票が無効なら安全候補を採用</li><li>既知の固定効果で即時敗北する行動は安全ゲートが置換</li><li>B・Cの25%事故は安全ゲートの対象外</li></ul></div></div>
+      <div class="panel"><h3>条件間で変えた部分</h3><p>役割・観測・規則・出力形式・対話予算は同じ。追加のFRAMEWORK文面だけを変更。hivc_dでは初期行動が対立した場合にV*提案と両者の明示的受諾を求める。</p></div>
+      <p class="muted">出典：HIVCD_GLM47_INTERIM.md §3.4–3.6。</p>
+    """),
+    ("APPENDIX", """
+      <h2>ゲーム状態とイベント</h2>
+      <div class="cols"><div class="panel"><h3>状態・しきい値</h3><table class="appendix-table"><tr><th>変数</th><th>条件</th></tr><tr><td>oxygen / power</td><td class="red">各0以下で敗北</td></tr><tr><td>hull_damage / flooding</td><td class="red">各5以上で敗北</td></tr><tr><td>communication</td><td class="blue">3以上で救助要請</td></tr><tr><td>pod_readiness / integrity</td><td class="blue">各2以上で脱出条件</td></tr><tr><td>morale / severe_risk</td><td>終端スコアへ反映</td></tr></table><p>各ターン開始時にoxygenとpowerが各1減少。</p></div>
+      <div class="panel"><h3>通常イベント10種類と確率</h3><table class="appendix-table"><tr><td>異常なし</td><td class="num">22%</td><td>外圧上昇</td><td class="num">10%</td></tr><tr><td>浸水増加</td><td class="num">10%</td><td>通信窓</td><td class="num">10%</td></tr><tr><td>乗員動揺</td><td class="num">8%</td><td>中継器短絡</td><td class="num">10%</td></tr><tr><td>脱出艇区画漏水</td><td class="num">10%</td><td>海流変化</td><td class="num">8%</td></tr><tr><td>非常用電源発見</td><td class="num">7%</td><td>船体亀裂拡大</td><td class="num">5%</td></tr></table></div></div>
+      <p class="muted">通常シナリオは初期値に±1の揺らぎ。route_reversalのみ固定イベント列。</p>
+    """),
+    ("APPENDIX", """
+      <h2>終端スコアと統計手法</h2>
+      <div class="cols"><div class="panel"><h3>終端スコアの重み</h3><table class="appendix-table"><tr><th>要素</th><th class="num">重み</th><th>要素</th><th class="num">重み</th></tr><tr><td>勝利 / 敗北</td><td class="num">+1000 / −200</td><td>酸素 / 電力</td><td class="num">+30 / +20</td></tr><tr><td>船体損傷 / 浸水</td><td class="num">−80 / −70</td><td>通信</td><td class="num">+50</td></tr><tr><td>艇整備度 / 健全性</td><td class="num">+80 / +60</td><td>士気</td><td class="num">+5</td></tr><tr><td>経過turn</td><td class="num">−10</td><td>危険回数</td><td class="num">−25</td></tr></table><p>生存タイムアウトには勝利加点・敗北減点を付けない。</p></div><div class="panel"><h3>推定と比較</h3><ul><li>Q値：候補を選んだ後を共通の方策で進める24回のrollout平均</li><li>regret：Q(推定最善) − Q(選択行動)</li><li>対応seedの20,000回bootstrap（乱数seed 20260724）で95%区間</li><li>連続値：Wilcoxon符号順位検定／二値：exact McNemar検定</li></ul></div></div>
+      <p class="muted">検出力設計と多重比較補正は事前登録していない。regretは内部評価器による推定値。</p>
+    """),
+    ("APPENDIX", """
+      <h2>条件別集計：成果と手続き</h2>
+      <h3>ゲーム成果</h3>
+      <table class="appendix-table"><tr><th>条件</th><th class="num">ゲーム</th><th class="num">勝利</th><th class="num">生存timeout</th><th class="num">敗北</th><th class="num">終端スコア</th><th class="num">平均regret</th></tr><tr><td>control</td><td class="num">30</td><td class="num">14</td><td class="num">14</td><td class="num">2</td><td class="num">744.8</td><td class="num">100.8</td></tr><tr><td>consulting</td><td class="num">30</td><td class="num">18</td><td class="num">12</td><td class="num">0</td><td class="num">935.3</td><td class="num">119.0</td></tr><tr><td>hivc_d</td><td class="num">30</td><td class="num">14</td><td class="num">16</td><td class="num">0</td><td class="num">740.2</td><td class="num">127.3</td></tr></table>
+      <h3 style="margin-top:12px;">対話・決定</h3>
+      <table class="appendix-table"><tr><th>条件</th><th class="num">turn</th><th class="num">合意決定</th><th class="num">fallback</th><th class="num">合意率</th><th class="num">無効出力</th><th class="num">再試行</th><th class="num">議論token/ゲーム</th></tr><tr><td>control</td><td class="num">133</td><td class="num">125</td><td class="num">8</td><td class="num">94.0%</td><td class="num">11</td><td class="num">24</td><td class="num">3062.2</td></tr><tr><td>consulting</td><td class="num">129</td><td class="num">123</td><td class="num">6</td><td class="num">95.3%</td><td class="num">14</td><td class="num">25</td><td class="num">3073.2</td></tr><tr><td>hivc_d</td><td class="num">139</td><td class="num">109</td><td class="num">30</td><td class="num">78.4%</td><td class="num">4</td><td class="num">18</td><td class="num">3040.0</td></tr></table>
+      <p class="muted">出典：analysis/glm47-final-90/condition_summary.csv。合意率は合意決定 / turn。</p>
+    """),
+    ("APPENDIX", """
+      <h2>対応seedの比較：推定差と検定</h2>
+      <table class="appendix-table"><tr><th>比較（前者 − 後者）</th><th>指標</th><th class="num">平均差</th><th class="num">bootstrap 95%区間</th><th class="num">p値</th></tr>
+        <tr><td>hivc_d − control</td><td>終端スコア</td><td class="num">−4.7</td><td class="num">[−172.3, 158.5]</td><td class="num">0.929</td></tr>
+        <tr><td>hivc_d − consulting</td><td>終端スコア</td><td class="num red">−195.2</td><td class="num">[−390.2, −4.5]</td><td class="num">0.0357</td></tr>
+        <tr><td>consulting − control</td><td>終端スコア</td><td class="num blue">+190.5</td><td class="num">[56.2, 345.2]</td><td class="num">0.0258</td></tr>
+        <tr><td>hivc_d − control</td><td>行動合意率</td><td class="num red">−15.3pt</td><td class="num">[−21.5, −9.3]</td><td class="num">0.00030</td></tr>
+        <tr><td>hivc_d − consulting</td><td>行動合意率</td><td class="num red">−16.7pt</td><td class="num">[−23.2, −10.0]</td><td class="num">0.00036</td></tr>
+        <tr><td>hivc_d − control</td><td>V測定token</td><td class="num">+138.4</td><td class="num">[38.8, 242.3]</td><td class="num">0.0197</td></tr>
+      </table>
+      <div class="panel"><p>勝利のexact McNemar p値：hivc_d対control 1.00、hivc_d対consulting 0.289、consulting対control 0.125。</p></div>
+      <p class="muted">出典：analysis/glm47-final-90/paired_comparisons.json。連続指標のp値はWilcoxon検定。</p>
+    """),
+    ("APPENDIX", """
+      <h2>シナリオ別の全条件データ</h2>
+      <table class="appendix-table dense"><tr><th>シナリオ</th><th>条件</th><th class="num">ゲーム</th><th class="num">勝利</th><th class="num">終端スコア</th><th class="num">平均regret</th><th class="num">fallback率*</th></tr>
+        <tr><td>ambiguous</td><td>control</td><td class="num">8</td><td class="num">0</td><td class="num">−43.1</td><td class="num">80.5</td><td class="num">7.5%</td></tr>
+        <tr><td>ambiguous</td><td>consulting</td><td class="num">8</td><td class="num">3</td><td class="num">458.1</td><td class="num">60.7</td><td class="num">5.0%</td></tr>
+        <tr><td>ambiguous</td><td>hivc_d</td><td class="num">8</td><td class="num">1</td><td class="num">142.5</td><td class="num">64.0</td><td class="num">25.6%</td></tr>
+        <tr><td>comms_favored</td><td>control</td><td class="num">7</td><td class="num">4</td><td class="num">955.7</td><td class="num">58.9</td><td class="num">2.9%</td></tr>
+        <tr><td>comms_favored</td><td>consulting</td><td class="num">7</td><td class="num">4</td><td class="num">903.6</td><td class="num">150.9</td><td class="num">2.9%</td></tr>
+        <tr><td>comms_favored</td><td>hivc_d</td><td class="num">7</td><td class="num">4</td><td class="num">875.7</td><td class="num">120.6</td><td class="num">21.4%</td></tr>
+        <tr><td>escape_favored</td><td>control</td><td class="num">7</td><td class="num">4</td><td class="num">805.7</td><td class="num">101.0</td><td class="num">5.7%</td></tr>
+        <tr><td>escape_favored</td><td>consulting</td><td class="num">7</td><td class="num">5</td><td class="num">1097.9</td><td class="num">82.7</td><td class="num">0.0%</td></tr>
+        <tr><td>escape_favored</td><td>hivc_d</td><td class="num">7</td><td class="num">3</td><td class="num">650.0</td><td class="num">147.3</td><td class="num">17.9%</td></tr>
+        <tr><td>route_reversal</td><td>control</td><td class="num">8</td><td class="num">6</td><td class="num">1295.0</td><td class="num">157.5</td><td class="num">5.0%</td></tr>
+        <tr><td>route_reversal</td><td>consulting</td><td class="num">8</td><td class="num">6</td><td class="num">1298.1</td><td class="num">181.2</td><td class="num">7.5%</td></tr>
+        <tr><td>route_reversal</td><td>hivc_d</td><td class="num">8</td><td class="num">6</td><td class="num">1298.1</td><td class="num">178.9</td><td class="num">17.5%</td></tr>
+      </table>
+      <p class="muted">*ゲーム別fallback率の平均。各セル7–8ゲームの探索的比較。出典：analysis/glm47-final-90/scenario_summary.csv。</p>
+    """),
+    ("APPENDIX", """
+      <h2>V合意の内訳とデータの所在</h2>
+      <div class="cols"><div class="panel"><h3>hivc_dの交渉</h3><table class="appendix-table"><tr><th>指標</th><th class="num">件数</th></tr><tr><td>V整合が必要なターン</td><td class="num">87</td></tr><tr><td>V*受諾ターン</td><td class="num">52（59.8%）</td></tr><tr><td>counter / V交渉メッセージ</td><td class="num">52 / 234</td></tr><tr><td>受諾が一度以上あるゲーム</td><td class="num">27 / 30</td></tr></table></div><div class="panel"><h3>受諾の有無別</h3><table class="appendix-table"><tr><th>受諾</th><th class="num">n</th><th class="num">スコア</th><th class="num">regret</th><th class="num">勝率</th></tr><tr><td>あり</td><td class="num">27</td><td class="num">775.2</td><td class="num">115.5</td><td class="num">48.1%</td></tr><tr><td>なし</td><td class="num">3</td><td class="num">425.0</td><td class="num">233.0</td><td class="num">33.3%</td></tr></table><p class="muted">「なし」は3ゲームのみ。難易度の交絡を除けない。</p></div></div>
+      <div class="panel"><h3>完全な分析成果物</h3><p><code>document/paper/analysis/glm47-final-90/</code>：games.csv、condition_summary.csv、scenario_summary.csv、hivcd_v_summary.csv、paired_comparisons.json、provenance.json。</p></div>
+    """),
 ]
 
 
@@ -190,23 +272,20 @@ EXTRA_CSS = """
   .cover-rule { width: 150px; border-top: 5px solid var(--accent); margin: 34px 0; }
   .speaker { font-size: 24px; line-height: 1.7; }
   .section-desc { font-size: 25px; line-height: 1.6; margin-top: 12px; }
-  .agenda { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
-  .agenda div { border: 1.5px solid #ccc; border-top: 4px solid var(--accent); padding: 30px 25px; border-radius: 6px; }
-  .agenda b { display: block; color: var(--accent); font-size: 30px; }
-  .agenda span { font-size: 26px; }
+  .agenda-list { margin: 0 0 0 50px; padding-left: 45px; list-style-type: decimal-leading-zero; }
+  .agenda-list li { font-size: 29px; line-height: 1.35; padding: 7px 0 9px 15px; margin: 0; border-bottom: 1px solid #cccccc; }
+  .agenda-list li::marker { color: var(--accent); font-weight: 700; }
+  .story-key { font-size: 60px; margin-bottom: 26px; }
+  .story-support { font-size: 28px; line-height: 1.55; }
+  .question-layout { display: flex; align-items: center; gap: 55px; min-height: 300px; }
+  .question-text { flex: 1.5; font-size: 43px; font-weight: 700; line-height: 1.6; }
+  .question-layout img { flex: 0.8; width: 310px; max-height: 280px; object-fit: contain; }
   .three > .panel { min-width: 0; }
   .flow { display: flex; gap: 13px; align-items: center; margin: 12px 0 24px; }
   .flow > div { flex: 1; border: 1.5px solid #ccc; border-top: 4px solid var(--accent); padding: 22px 15px; text-align: center; font-size: 22px; font-weight: 700; min-height: 100px; }
   .flow > span { font-size: 28px; color: var(--accent); }
   .flow small { display: block; font-size: 16px; font-weight: 400; margin-top: 8px; }
   .flow .red-text { border-top-color: var(--accent2); color: var(--accent2); }
-  .illustration-layout { display: flex; gap: 20px; align-items: center; }
-  .illustration-copy { flex: 1.7; min-width: 0; }
-  .illustration-panel { flex: 0.8; min-width: 0; text-align: center; }
-  .illustration-panel img { width: 100%; max-height: 260px; object-fit: contain; }
-  .compact-flow { gap: 8px; margin: 0 0 15px; }
-  .compact-flow > div { font-size: 17px; min-height: 90px; padding: 16px 8px; }
-  .compact-flow > span { font-size: 23px; }
   .mountain-scene { position: relative; height: 330px; border: 1.5px solid #ccc; margin-bottom: 16px; overflow: hidden; }
   .mountain-art { position: absolute; width: 480px; height: 310px; object-fit: contain; left: calc(50% - 240px); bottom: 0; }
   .hiker { position: absolute; width: 130px; height: 155px; object-fit: contain; bottom: 4px; }
@@ -225,6 +304,8 @@ EXTRA_CSS = """
   .hero-grid b { display: block; font-size: 55px; color: var(--accent); }
   .hero-grid span { font-size: 17px; }
   .compact th, .compact td { padding: 5px 7px; font-size: 15px; }
+  .appendix-table th, .appendix-table td { padding: 5px 8px; font-size: 15px; line-height: 1.35; }
+  .appendix-table.dense th, .appendix-table.dense td { padding: 4px 7px; font-size: 14px; line-height: 1.25; }
   ol { padding-left: 28px; }
   .slide > .muted:last-child { margin-top: 8px; font-size: 15px; }
 """
