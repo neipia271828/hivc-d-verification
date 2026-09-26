@@ -1,13 +1,11 @@
 """Build the editable, unified oral presentation from the existing slide CSS."""
 
 from pathlib import Path
-import re
 
 
 HERE = Path(__file__).resolve().parent
-SOURCE = (HERE / "experiment_results_slides.html").read_text(encoding="utf-8")
-BASE_CSS = re.search(r"<style>(.*?)</style>", SOURCE, re.S).group(1)
-FIT_SCRIPT = re.search(r"<script>(.*?)</script>", SOURCE, re.S).group(1)
+BASE_CSS = (HERE / "unified_presentation_base.css").read_text(encoding="utf-8")
+FIT_SCRIPT = (HERE / "unified_presentation_fit.js").read_text(encoding="utf-8")
 TITLE = "2026年度情報処理学会 関西支部 支部大会 口頭発表資料"
 OUTPUT = HERE / "ipsj_kansai_2026_unified_presentation.html"
 

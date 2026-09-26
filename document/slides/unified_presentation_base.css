@@ -1,0 +1,72 @@
+
+  :root {
+    --bg: #ffffff;
+    --text: #000000;
+    --muted: #555555;
+    --accent: #0b57d0;   /* 青 */
+    --accent2: #d93025;  /* 赤 */
+    --border: #000000;
+    --panel-border: #cccccc;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { background: #f0f0f0; color: var(--text);
+    font-family: "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic", sans-serif; }
+
+  /* ---- 16:9 固定サイズスライド (1280x720) ---- */
+  .slide {
+    width: 1280px; height: 720px;
+    background: var(--bg);
+    padding: 52px 72px;
+    display: flex; flex-direction: column; justify-content: center;
+    position: relative;
+    page-break-after: always;
+    break-after: page;
+    overflow: hidden;
+  }
+  .deck { width: 1280px; }
+  .slide + .slide { margin-top: 24px; }
+
+  .slide::after {
+    content: attr(data-footer);
+    position: absolute; bottom: 18px; left: 72px; right: 72px;
+    display: flex; justify-content: space-between;
+    color: var(--muted); font-size: 14px;
+  }
+
+  h1 { font-size: 44px; line-height: 1.25; margin-bottom: 18px; }
+  h2 { font-size: 34px; color: var(--accent);
+       border-left: 10px solid var(--accent2); padding-left: 16px;
+       margin-bottom: 24px; }
+  h3 { font-size: 19px; color: var(--accent); margin-bottom: 8px; }
+  p, li, td, th { font-size: 17px; line-height: 1.55; }
+  ul { padding-left: 22px; }
+  li { margin-bottom: 5px; }
+  table { border-collapse: collapse; width: 100%; margin: 6px 0 10px; }
+  th, td { padding: 7px 12px; text-align: left; border: 1.5px solid var(--border); }
+  th { background: #eef3fb; color: var(--accent); font-weight: 700; }
+  tr:nth-child(even) td { background: #fafafa; }
+  td.num, th.num { text-align: right; }
+
+  .panel { background: #ffffff; border: 1.5px solid var(--panel-border);
+           border-top: 4px solid var(--accent);
+           border-radius: 6px; padding: 16px 22px; margin-bottom: 14px; }
+  .panel.red { border-top-color: var(--accent2); }
+  .cols { display: flex; gap: 18px; align-items: stretch; }
+  .cols > .panel { flex: 1; }
+  .muted { color: var(--muted); }
+  .blue { color: var(--accent); font-weight: 700; }
+  .red { color: var(--accent2); font-weight: 700; }
+  .big { font-size: 23px; font-weight: 700; line-height: 1.5; }
+  code { background: #f3f3f3; border: 1px solid #ddd; border-radius: 4px;
+         padding: 0 5px; font-family: "SF Mono", Menlo, monospace;
+         font-size: 0.88em; color: #000; }
+  .sig { font-weight: 700; color: var(--accent2); }
+  .ns { color: var(--muted); }
+
+  @page { size: 1280px 720px; margin: 0; }
+  @media print {
+    html, body { background: #ffffff; }
+    .deck { width: auto; }
+    .slide { margin: 0; box-shadow: none; }
+    .slide + .slide { margin-top: 0; }
+  }
